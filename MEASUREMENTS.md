@@ -1022,3 +1022,68 @@ still under-specify the thing a model most needs to get right.**
 **This is one message and one refusal — not a lane's work.** It is the first thing here that is a
 non-Claude **agent** rather than a non-Claude **client**, and that is all it is.
 **Everything measured is capability; none of it is yet capacity.**
+
+---
+
+## 18. ✅ AN END-TO-END DISPATCH — a free-tier model is sent work and reports back
+
+**Observed running 2026-09-10 ~17:5xZ** against the live FAM server. This is the smallest unit of
+*"could this replace a Claude lane"*: a task arrives from another agent, a non-Claude model does it
+through the gate, and the answer returns to the sender.
+
+```
+[sender] dispatched -> DELIVERED to probe@probe@example.com (ID: 13) … Sealed
+[agent]  dispatch: from claudeside@probe@example.com: 'Please list the entities … how many'
+[agent]  reply: model already replied; not sending a second time
+         model          : groq:qwen/qwen3.8-27b
+         tools EXECUTED : ['fam_list_entities', 'fam_send_message']
+         tools DENIED   : 0
+reply seen by sender: True
+  -> 'There are 2 entities on this FAM server:\n1. claudeside@… (agent, online)\n2. probe@… (agent, online)'
+```
+
+⚠️ **The last line is the one that matters, and it is read from the SENDER'S inbox — not from the
+agent's claim to have replied.** `replied=True` only says the ledger recorded a send; whether it
+*arrived* is a different subject and needs the other end of the wire.
+
+### Three constraints the design had to obey, each from a prior measurement
+
+- **Delivery must be LIVE.** §7.2 — the offline-backlog path pushes the sealed envelope
+  **unopened**, and `classify` refuses to hand a JSON wrapper to a model as though it were a task.
+  So the agent subscribes *first* and the sender transmits after.
+- **The subscription is registered BEFORE the handshake, not after discovering capabilities.**
+  §7.1 — an authenticated connection dispatches and **acks** the backlog, so the
+  connect-discover-reconnect pattern would consume and destroy this agent's mail. Negotiation is a
+  **check** here (`channel_warnings`), not a probe.
+- **The inbound content is untrusted.** It is another agent's text becoming this model's
+  instructions. **The gate is what makes accepting it safe**, and it is the only thing that does —
+  tests assert that a dispatch instructing a forbidden action, and a dispatch *claiming authority
+  to permit it*, both leave the forbidden tool uncalled.
+
+### 🔴 Two defects this run found in my own code
+
+**1. The sender was connecting UNSUBSCRIBED.** §1 + §7.1 combined: an authenticated client with no
+binding registered receives the reply, **drops it at `logger.debug`, and FAM acks it anyway** — the
+message is consumed and destroyed and nothing anywhere reports the loss. **My own demo had the
+exact trap I documented in §7.1.**
+
+**2. The reply-observation filter asked the wrong question.** It searched inbound text for the
+`[overmind]` prefix — which only the *service* adds. When the **model** replies on its own the
+prefix is absent, so the check printed `reply seen by sender: False` **about a reply that had
+arrived**. ⚠️ A wrong query returning a plausible-looking answer, again. Filtering on the sender
+entity is the right question.
+
+**3. Duplicate replies.** A capable model replies to the sender *itself* using the same send tool,
+and the service then replied again — the sender got the answer twice. Neither half is wrong alone.
+Suppressed, keyed on the recipient, with a control test asserting the service still replies when
+the model did not.
+
+### ⚠️ Scope — what this is not
+
+**One dispatch, one task, one model.** The task was read-only (`fam_list_entities`); the only
+write was the reply. `sender_vouched` was **false** — identity was the relay's word, not an
+account-vouched key. Nothing here ran unattended, recovered from an error, or handled a task it
+could not complete.
+
+**It is the first time a non-Claude model has been SENT work and returned an answer without a
+human in the loop.** That is a real threshold and it is still not a lane's day.

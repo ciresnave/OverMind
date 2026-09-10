@@ -260,5 +260,46 @@ class TestUsageIdentityElement(unittest.TestCase):
         self.assertFalse((Usage() + Usage(10, 5, 15, reported=True)).reported)
 
 
+class TestTruncationIsDistinguishable(unittest.TestCase):
+    """🔴 MEASURED THREE TIMES, on three models, each time read as incapacity.
+
+    gemini-3.6-flash returned 2-8 visible characters at max_tokens=160 and every
+    rule scored VOID. qwen3:8b at max_tokens=600 executed nothing and scored
+    SILENT; at 2000 - same schemas, same task - it completed. A budget problem
+    and a refusal are indistinguishable in the CONTENT. Only finish_reason
+    separates them.
+    """
+
+    def setUp(self):
+        self.prov = Provider(key="p", base_url="http://x", secret_name="NOPE",
+                             fallback_models=("m",), models_path=None)
+
+    def result_with(self, reason):
+        b = chat_body("")
+        b["choices"][0]["finish_reason"] = reason
+        t = FakeTransport({"m": b})
+        return ProviderClient(self.prov, opener=t).chat([{"role": "user", "content": "hi"}])
+
+    def test_length_is_truncation(self):
+        self.assertTrue(self.result_with("length").truncated)
+
+    def test_provider_specific_spellings_are_caught(self):
+        for reason in ("max_tokens", "MAX_OUTPUT_TOKENS", "Length"):
+            with self.subTest(reason=reason):
+                self.assertTrue(self.result_with(reason).truncated)
+
+    def test_a_normal_stop_is_not_truncation(self):
+        """The control - a finished reply must not be blamed on the budget."""
+        self.assertFalse(self.result_with("stop").truncated)
+
+    def test_a_tool_call_finish_is_not_truncation(self):
+        self.assertFalse(self.result_with("tool_calls").truncated)
+
+    def test_a_missing_finish_reason_is_not_truncation(self):
+        """⚠️ Absent means unknown, and unknown must not become an accusation
+        against our own configuration any more than against the model."""
+        self.assertFalse(self.result_with(None).truncated)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

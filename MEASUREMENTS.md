@@ -881,3 +881,38 @@ broken gate**, and the negative test cannot see the difference.
 ⚠️ **It failed CLOSED here, which is luck rather than design.** A policy that used the ledger to
 **grant** permission — *"this was already approved earlier in the session"* — would have failed
 **open** on the identical bug. A regression test now pins it.
+
+### 14.1 A second axis: the permissive majority hides the strict minority
+
+**Same family, different shape.** Four of five providers accept the `content: null` that an
+OpenAI-compatible API returns on a tool-call message; **Cloudflare validates it and rejects**
+(§12.2). The error names a schema path, not the cause.
+
+⚠️ **A client that echoes the response verbatim works on four integrations and breaks on the
+fifth** — and the four are not evidence of correctness, they are evidence of *tolerance*. **You
+discover the contract on the strictest implementation, and you meet it last.**
+
+**The general form: the assistant message an API HANDS YOU is not always a valid message to HAND
+BACK.** Normalise what you echo; do not infer a contract from the implementations that forgive you.
+
+### 14.2 ⚠️ When the instrument lies about ITSELF, a second instrument does not help
+
+The `ledger or Ledger()` bug (§15) belongs to this family but differs in one way that changes the
+remedy.
+
+| | the lie | remedy |
+|---|---|---|
+| §14 cases (×3) | the instrument lied about a **SUBJECT** — a repo, a file, an account | **a second instrument** whose answer differs between the two conditions |
+| §15 | the instrument lied about **ITSELF** — a green test reporting on a gate that could not work | 🔴 **a control in the OPPOSITE DIRECTION** |
+
+⚠️ **A second instrument cannot save you here, because both instruments agree and both are
+measuring a subject that is fine.** The gate genuinely refused; the test genuinely observed a
+refusal. Nothing was misread. **What was missing was the case that should have SUCCEEDED.**
+
+**A detector that only ever fires one way has not been shown to discriminate. A gate with no
+passing case is indistinguishable from a broken gate — and the negative test cannot tell them
+apart, no matter how many negative tests you add.**
+
+**Structural answer, now in the code: every policy ships with a passing case as well as a refusing
+one.** The class is `x or Default()` on any object defining `__len__` or `__bool__`, and a
+security component is the worst place for it.

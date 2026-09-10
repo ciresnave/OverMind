@@ -7,7 +7,10 @@ name = "overmind"
 version = "0.1.0"
 description = "A multi-agent orchestrating harness for running agent work on non-Claude providers"
 readme = "README.md"
-license = "MIT"
+# ⚠️ RULED, not inferred. This read `MIT` because I inferred it from
+# sibling crates - an observation, never a ruling. CireSnave ruled the
+# portfolio licence `MIT OR Apache-2.0`.
+license = "MIT OR Apache-2.0"
 requires-python = ">=3.11"
 # The core (gate, providers, agent) is STDLIB-ONLY and stays that way: it must
 # be runnable anywhere without resolving a dependency tree.

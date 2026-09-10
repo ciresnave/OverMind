@@ -18,6 +18,9 @@ imply.
 - **`src/overmind/mcp_tools.py`** — MCP as the tool source, so an agent is a participant in the
   fabric rather than a gated script. ⚠️ The gate stays at tool execution; `gate.py` is untouched
   by it.
+- **`src/overmind/dispatch.py`** — being dispatched to. An inbound message becomes a task, runs
+  through the gate, and the answer goes back. ⚠️ Inbound content is **untrusted** — another
+  agent's text becoming this model's instructions — and the gate is what makes accepting it safe.
 
 Why it exists, in one measured sentence: **a model that states a prohibition perfectly violates it
 4 to 7 times out of 8 when its reasoning is disabled** (`MEASUREMENTS.md` §11, §16) — and
@@ -35,6 +38,7 @@ python -m unittest discover -s tests -v
 - All five free-tier providers reach a verified tool call (§12).
 - A free local model holds a full ~45k-token instruction load and still completes the task (§10.4).
 - CLI lifecycle control works: the process survives `/clear`, and `/clear` actually forgets (§2).
+- A free-tier model can be **sent** a task and return an answer, with no human in the loop (§18).
 
 ## What is not
 

@@ -189,6 +189,9 @@ class McpToolSource:
     env: Mapping[str, str] | None = None
     cwd: str | None = None
     timeout: float = 120.0
+    #: Experimental capability keys to subscribe to, e.g. "claude/channel".
+    #: The notification method is derived as "notifications/" + key.
+    expect_channels: Sequence[str] = ()
 
     _loop: Any = field(default=None, repr=False)
     _thread: Any = field(default=None, repr=False)
@@ -197,14 +200,18 @@ class McpToolSource:
     _tools: list[Any] = field(default_factory=list, repr=False)
     _issues: list[SchemaIssue] = field(default_factory=list, repr=False)
     _experimental: dict[str, Any] = field(default_factory=dict, repr=False)
+    _inbox: Any = field(default=None, repr=False)
+    _channel_warnings: list[str] = field(default_factory=list, repr=False)
 
     # -- lifecycle ---------------------------------------------------------- #
 
     @classmethod
     def stdio(cls, command: str, args: Sequence[str] = (), *,
               env: Mapping[str, str] | None = None, cwd: str | None = None,
-              timeout: float = 120.0) -> "McpToolSource":
-        return cls(command=command, args=list(args), env=env, cwd=cwd, timeout=timeout)
+              timeout: float = 120.0,
+              expect_channels: Sequence[str] = ()) -> "McpToolSource":
+        return cls(command=command, args=list(args), env=env, cwd=cwd, timeout=timeout,
+                   expect_channels=tuple(expect_channels))
 
     def __enter__(self) -> "McpToolSource":
         self.open()
@@ -235,10 +242,15 @@ class McpToolSource:
                                        env=dict(self.env) if self.env else None,
                                        cwd=self.cwd)
 
+        import queue
+        self._inbox = queue.Queue()
+        bindings = self._build_bindings() if self.expect_channels else []
+
         async def _connect():
             stack = AsyncExitStack()
             read, write = await stack.enter_async_context(stdio_client(params))
-            session = await stack.enter_async_context(ClientSession(read, write))
+            kwargs = {"notification_bindings": bindings} if bindings else {}
+            session = await stack.enter_async_context(ClientSession(read, write, **kwargs))
             info = await session.initialize()
             caps = getattr(info, "capabilities", None)
             experimental = dict(getattr(caps, "experimental", None) or {})
@@ -252,7 +264,85 @@ class McpToolSource:
             raise McpUnavailable(f"could not start {self.command}: {exc}") from exc
 
         _, self._issues = convert_tools(self._tools)
+        self._check_channel_negotiation()
         return self
+
+    # -- inbound channel ---------------------------------------------------- #
+
+    def _build_bindings(self) -> list[Any]:
+        """Subscribe to the channel notifications this source expects.
+
+        ⚠️ BINDINGS ARE FIXED AT SESSION CONSTRUCTION, BEFORE THE HANDSHAKE, so
+        capabilities cannot drive registration within one session. The obvious
+        fix - connect, read capabilities, reconnect with bindings - IS ACTIVELY
+        HARMFUL HERE: MEASUREMENTS.md §7.1 measured that an authenticated
+        connection DISPATCHES AND ACKS THE UNDELIVERED BACKLOG, so a client that
+        connects without a binding registered CONSUMES AND DESTROYS ITS OWN MAIL.
+        A "harmless" discovery connection loses messages.
+
+        So this binds up front and VERIFIES afterwards (`_check_channel_negotiation`)
+        rather than discovering first. Negotiation becomes a check, not a probe.
+        """
+        from pydantic import BaseModel, ConfigDict
+        from mcp.client.extension import NotificationBinding
+
+        class ChannelParams(BaseModel):
+            model_config = ConfigDict(extra="allow")
+            content: str = ""
+            meta: dict = {}
+
+        def make(method: str):
+            async def handler(params: ChannelParams) -> None:
+                self._inbox.put({"method": method,
+                                 "content": params.content,
+                                 "meta": dict(params.meta or {})})
+            return handler
+
+        return [NotificationBinding(method="notifications/" + key,
+                                    params_type=ChannelParams, handler=make("notifications/" + key))
+                for key in self.expect_channels]
+
+    def _check_channel_negotiation(self) -> None:
+        """Compare what we SUBSCRIBED to against what the server ADVERTISED.
+
+        ⚠️ Both directions are worth a warning and they mean different things:
+        a key we bound but the server does not advertise means we will wait
+        forever; a key it advertises that we did not bind means messages arrive
+        and are DROPPED SILENTLY - the Python SDK discards unbound notifications
+        at `logger.debug` (§1), so nothing anywhere reports the loss.
+        """
+        advertised = set(self._experimental)
+        bound = set(self.expect_channels)
+        for key in bound - advertised:
+            self._channel_warnings.append(
+                f"subscribed to {key!r} but the server advertises {sorted(advertised) or 'nothing'}"
+                f" - nothing will arrive on it")
+        for key in advertised - bound:
+            self._channel_warnings.append(
+                f"server advertises {key!r} and nothing is subscribed to it"
+                f" - notifications on it are dropped silently")
+
+    @property
+    def channel_warnings(self) -> list[str]:
+        return list(self._channel_warnings)
+
+    def receive(self, timeout: float | None = None) -> dict[str, Any] | None:
+        """Take one inbound channel notification, or None if none arrives."""
+        if self._inbox is None:
+            return None
+        import queue
+        try:
+            return self._inbox.get(timeout=timeout) if timeout else self._inbox.get_nowait()
+        except queue.Empty:
+            return None
+
+    def drain(self) -> list[dict[str, Any]]:
+        out = []
+        while True:
+            item = self.receive()
+            if item is None:
+                return out
+            out.append(item)
 
     def close(self) -> None:
         if self._stack is not None and self._loop is not None:

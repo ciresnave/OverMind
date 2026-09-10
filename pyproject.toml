@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=80"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "overmind"
+version = "0.1.0"
+description = "A multi-agent orchestrating harness for running agent work on non-Claude providers"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+# The core (gate, providers, agent) is STDLIB-ONLY and stays that way: it must
+# be runnable anywhere without resolving a dependency tree.
+dependencies = []
+
+[project.optional-dependencies]
+# Only the MCP tool source needs this, and it is imported lazily.
+mcp = ["mcp>=2.2.0"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-dir]
+"" = "src"

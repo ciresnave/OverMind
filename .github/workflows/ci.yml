@@ -1,0 +1,80 @@
+name: CI
+
+# ⚠️ WHY THIS EXISTS: every merge to this repo so far was gated by a person
+# remembering to run the tests. That is habit, not enforcement - the exact
+# defect this project was built to remove, sitting in the project that removes
+# it. The gate refuses tool calls deterministically; until now nothing refused
+# a red merge.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: tests (${{ matrix.os }}, py${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # windows-latest is not decoration: `read_secret` has a winreg branch
+        # that executes ONLY there, and the deployment platform is Windows.
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Show interpreter
+        # ⚠️ Print which interpreter actually ran. A matrix that silently falls
+        # back to a different version reports green about something else.
+        run: python -c "import sys; print(sys.version); print(sys.executable)"
+
+      - name: Run tests
+        # The suite is stdlib-only and hits no network: `mcp` is imported
+        # lazily and MCP invocation is tested through a fake session.
+        run: python -m unittest discover -s tests -v
+
+      - name: Assert the suite is not empty
+        # ⚠️ A green run over ZERO tests is the same colour as a green run over
+        # all of them. `unittest discover` exits 0 when it finds nothing, so the
+        # count is checked rather than the exit code.
+        shell: bash
+        run: |
+          set -o pipefail
+          count=$(python -m unittest discover -s tests 2>&1 | grep -oE '^Ran [0-9]+' | grep -oE '[0-9]+')
+          echo "collected ${count} tests"
+          if [ -z "${count}" ] || [ "${count}" -lt 70 ]; then
+            echo "::error::expected at least 70 tests, collected '${count}'"
+            exit 1
+          fi
+
+  gate-boundary:
+    name: gate boundary is intact
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: gate.py must not learn about transports
+        # ⚠️ The property that makes this harness safe is WHERE the gate sits.
+        # A refactor that moves the decision point to something a model can
+        # write to would pass every functional test. This check is cheap and
+        # the failure it prevents is not.
+        run: python -m unittest tests.test_mcp_tools.TestGateBoundaryDidNotMove -v
+        env:
+          PYTHONPATH: src

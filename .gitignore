@@ -7,3 +7,10 @@ probe/*.txt
 probe/*.jsonl
 probe/package-lock.json
 supertool
+*.egg-info/
+build/
+dist/
+.venv/
+# uv.lock: the core declares NO dependencies and CireSnave's standing rule is
+# that projects track latest versions, so a pinned lock here would fight it.
+uv.lock

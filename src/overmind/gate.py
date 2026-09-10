@@ -40,7 +40,7 @@ from typing import Any, Callable, Iterable, Mapping, Protocol, Sequence
 
 __all__ = [
     "ToolCall", "Decision", "Policy", "FactSource", "Ledger", "LedgerEntry",
-    "Gate", "GatedExecutor", "GateDenied", "ToolOutcome",
+    "Gate", "GatedExecutor", "GateDenied", "ToolOutcome", "AllowSenders",
     "irreversible", "detect_smuggled_tool_call",
 ]
 
@@ -228,6 +228,34 @@ class ForbidTools:
         return Decision.deny(f"{call.name}: {self.reason}", self.name)
 
 
+@dataclass
+class AllowSenders:
+    """Permit named tools, but only when a named sender asked for them.
+
+    ⚠️ THIS IS THE DANGEROUS KIND OF POLICY AND IT SAYS SO IN ITS OWN TYPE.
+    `requires_vouched_sender = True` makes the gate refuse every call it covers
+    until `sender_vouched` is genuinely True — so this class is safe to write
+    today and simply cannot be USED today. That is deliberate: a capability that
+    exists but refuses is auditable, while one that does not exist gets
+    reinvented under deadline by someone who has not read the measurement.
+    """
+    tools: frozenset[str]
+    senders: frozenset[str]
+    name: str = "allow-senders"
+    #: Read by `Gate.decide`, once, for every policy.
+    requires_vouched_sender: bool = True
+
+    def applies_to(self, call: ToolCall) -> bool:
+        return call.name in self.tools
+
+    def decide(self, call: ToolCall, facts: FactSource) -> Decision:
+        # Only reachable once the gate has confirmed a vouched sender.
+        sender = facts.fact("dispatch_sender")
+        if sender in self.senders:
+            return Decision.allow(f"{sender!r} is permitted to call {call.name}", self.name)
+        return Decision.deny(f"{sender!r} is not permitted to call {call.name}", self.name)
+
+
 def irreversible(*names: str) -> frozenset[str]:
     """Readability helper: the complement of what you pass to DenyUnlessDeclared."""
     return frozenset(names)
@@ -332,6 +360,28 @@ class Gate:
             )
         allows: list[Decision] = []
         for policy in applicable:
+            # ⚠️ A POLICY THAT DECIDES BY *WHO ASKED* NEEDS AN IDENTITY THE
+            # TRANSPORT ACTUALLY VOUCHED FOR, AND THE GATE CANNOT RESOLVE A FACT
+            # THE TRANSPORT DID NOT CARRY. Measured: every dispatch received so
+            # far reports `sender_vouched: false` - the relay's word, not an
+            # account-vouched key. Today's safety is structural (the gate never
+            # reads the message, so a sender CLAIMING authority changes nothing)
+            # and that holds only while every write is forbidden by BLANKET
+            # policy. The moment a policy is per-sender, identity stops being
+            # metadata and becomes the authorisation input.
+            # This is enforced HERE, once, rather than left to each policy to
+            # remember - and it is a refusal rather than a note, because a
+            # constraint that lives in a design document is one restart away
+            # from being forgotten.
+            if getattr(policy, "requires_vouched_sender", False):
+                if self.facts.fact("sender_vouched") is not True:
+                    return Decision.deny(
+                        f"{getattr(policy, 'name', type(policy).__name__)} decides by sender "
+                        f"identity, and the sender is not vouched "
+                        f"(sender_vouched={self.facts.fact('sender_vouched')!r}). A per-sender "
+                        f"policy is refused until the transport carries a vouched identity.",
+                        "unvouched-sender",
+                    )
             decision = policy.decide(call, self.facts)
             if not decision.allowed:
                 return decision          # any denial wins, immediately

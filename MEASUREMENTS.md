@@ -1157,3 +1157,95 @@ not earn. After the fix the same scenario dropped from 4 identical calls to 2.
 **The threshold the PM asked about — "a model that takes a task it cannot finish in one call and
 keeps going" — is NOT met.** The wire works, the gate holds, the reporting is honest.
 **Multi-turn state is where it breaks, and that is now the measured gap rather than a suspicion.**
+
+---
+
+## 20. 🔴 THE TRANSPORT DOES NOT VOUCH — and the shape of the "no" is worse than absence
+
+**Not my measurement.** The Synapse lane measured this in `ciresnave/synapse` and filed it as
+[#19](https://github.com/ciresnave/synapse/pull/19); it is recorded here because **OverMind depends
+on the answer** and because it corrects §19's requirement. Instruments and refs are theirs.
+
+I asked whether Synapse already carries a vouched sender identity, and said I would **withdraw the
+requirement** if it did. It does not.
+
+```
+SecureMessage.signature: Vec<u8>
+  written  router.rs:88 — exactly one place; every other construction sets it EMPTY
+  read     NONE. `.signature` appears NOWHERE in src/transport/
+  control  the same query finds signatures read and VERIFIED 12 times in
+           src/synapse/blockchain/ — the crate verifies signatures.
+           It has never verified a MESSAGE's.
+```
+
+`from_global_id` is an **unauthenticated string** — logged, embedded in a header, copied; never
+compared to anything. ⚠️ **Demonstrated empirically, not only read**: a plain CPython process with
+no credentials sent `"signature": []` and `"from_global_id": "python-agent@openai.example"` to a
+bound Synapse port. **Delivered. Claimed identity accepted verbatim.**
+
+### ⚠️ The trap, which is the part worth carrying
+
+`auth_integration.rs:668` declares exactly what I asked for:
+
+```rust
+pub async fn verify_message_sender(&self, message: &SecureMessage) -> Result<bool>
+```
+
+**It never touches `message.signature`.** It fetches the profile for the **claimed**
+`from_global_id` and returns whether *that profile* is `Verified | Trusted`.
+
+🔴 **That is an AUTHORISATION check performed on an UNAUTHENTICATED claim.** Set `from_global_id`
+to a trusted entity's id and it returns `true`. ⚠️ **It is dangerous not because it is wrong but
+because it is what a future implementer searching for "verify sender" will find, wire up, and
+believe** — and the module is currently orphaned, so "just re-enable it", the obvious cheap fix,
+**yields a function that passes on a forged identity.**
+
+`CryptoManager::verify_signature` is real Ed25519 and correct-looking. **Its only caller in the
+crate is its own unit test.** The capability exists and is unwired.
+
+### 🔴 A FOURTH STATE I FAILED TO ENUMERATE — a correction to my own requirement
+
+I specified three states a transport must distinguish: **verified**, **unverifiable**, and
+**verified-and-contradicts**. Synapse produces a fourth:
+
+⚠️ **NOT VERIFIED, NOT MARKED, AND INDISTINGUISHABLE FROM VERIFIED.** There is no
+`sender_vouched` field at all. FAM at least *tells* you it could not vouch. **A consumer of
+Synapse cannot fail closed on the field's absence without already knowing to look for something
+that was never there.**
+
+**The requirement is corrected to four states, and the fourth is the one to design against**,
+because it is the only one that cannot be detected by reading the message.
+
+### ✅ What this validates in the gate
+
+⚠️ **`Gate.decide` refuses Synapse correctly — by the ABSENT-FACT arm.** `facts.fact("sender_vouched")`
+returns `None`, `is not True` holds, the call is denied. **That arm is the one I had to argue for**
+(*"absent is not the same as true"*), and an independent transport has now produced exactly the
+condition it was written against.
+
+**And shipping `AllowSenders` already-refusing is validated from the other side of the wire.** The
+Synapse lane reports **three independent instances of the same class in their own repo**:
+
+| artifact | reality |
+|---|---|
+| `DeliveryConfirmation::Received` / `::Acknowledged` | declared, **never constructed** |
+| `verify_message_sender` | named for authentication, **does authorisation** |
+| `quic_unified` | claims `Delivered`, **does no networking at all** |
+
+⚠️ **In every case the ARTIFACT EXISTS AND THE MECHANISM DOES NOT — and the artifact is what
+people read.** A capability that exists and refuses is auditable; one that exists and silently does
+nothing is the failure this repository produced three times independently.
+
+### Scope limits — theirs, carried intact
+
+They measured `src/`, not a running system, and have not audited whether some deployment wraps
+Synapse with its own signing. They have not read FAM's voucher chain in detail. **Signing messages
+is a protocol addition and a merge decision; it is recorded, not fixed.**
+
+⚠️ **One further warning of theirs, relevant to anyone implementing this:** Synapse has **no x25519
+dependency at all**, and `curve25519` appears in the lockfile only as `ed25519-dalek`'s internals —
+which the FAM lane flagged as the exact condition where someone reaches for importing an Ed25519
+key as X25519. **That derives 32 plausible bytes and produces ciphertext the recipient can never
+open.**
+
+**The requirement stands. The dead end keeps pointing at the transport.**

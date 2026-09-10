@@ -186,10 +186,15 @@ class TestLoopControl(unittest.TestCase):
         self.assertIn("provider on fire", run.error)
 
     def test_max_steps_is_respected(self):
+        """⚠️ Arguments VARY here. An earlier version scripted identical calls,
+        which now stops on NO_PROGRESS instead - so it was asserting the old,
+        wasteful behaviour rather than the step limit. A model making genuine
+        progress must still be bounded."""
         spy = Spy()
         gate, ex = build_gate([DenyUnlessDeclared(reversible=frozenset({"list_entities"}))],
                               tools={"list_entities": spy})
-        client = ScriptedClient([tool_turn("list_entities") for _ in range(20)])
+        client = ScriptedClient([tool_turn("list_entities", '{"page":%d}' % i)
+                                 for i in range(20)])
         run = run_agent(client, ex, TOOLS, "loop", max_steps=3)
         self.assertEqual(run.stop_reason, StopReason.MAX_STEPS)
         self.assertEqual(len(spy.calls), 3)
@@ -213,3 +218,51 @@ class TestLoopControl(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestNoProgressDetection(unittest.TestCase):
+    """⚠️ MEASURED on two providers: on a two-step task, models called the FIRST
+    tool four and seven times, never reached step two, and produced no final
+    text. Running that to max_steps burns tokens for nothing - the exact cost
+    this project exists to remove."""
+
+    def setUp(self):
+        self.spy = Spy("channel created")
+        self.gate, self.ex = build_gate(
+            [DenyUnlessDeclared(reversible=frozenset({"list_entities"}))],
+            tools={"list_entities": self.spy})
+
+    def test_an_identical_repeat_is_not_executed_again(self):
+        """⚠️ Re-running it would be an EFFECT the model did not earn - and for a
+        non-idempotent tool that is a second channel, a second message."""
+        client = ScriptedClient([tool_turn("list_entities", '{"a":1}'),
+                                 tool_turn("list_entities", '{"a":1}'),
+                                 {"role": "assistant", "content": "done"}])
+        run = run_agent(client, self.ex, TOOLS, "go")
+        self.assertEqual(len(self.spy.calls), 1, "the repeat was executed again")
+        self.assertEqual(run.stop_reason, StopReason.COMPLETED)
+
+    def test_the_repeat_is_told_what_it_already_got(self):
+        client = ScriptedClient([tool_turn("list_entities", '{"a":1}'),
+                                 tool_turn("list_entities", '{"a":1}'),
+                                 {"role": "assistant", "content": "done"}])
+        run_agent(client, self.ex, TOOLS, "go")
+        tool_msgs = [m for m in client.seen[-1] if m.get("role") == "tool"]
+        self.assertIn("ALREADY CALLED", tool_msgs[-1]["content"])
+        self.assertIn("channel created", tool_msgs[-1]["content"])
+
+    def test_a_third_identical_call_stops_the_loop(self):
+        client = ScriptedClient([tool_turn("list_entities", '{"a":1}')] * 5)
+        run = run_agent(client, self.ex, TOOLS, "go", max_steps=8)
+        self.assertEqual(run.stop_reason, StopReason.NO_PROGRESS)
+        self.assertEqual(len(self.spy.calls), 1)
+        self.assertIn("repeated an identical call", run.error)
+
+    def test_different_arguments_are_not_a_repeat(self):
+        """The control - varying arguments IS progress and must not be blocked."""
+        client = ScriptedClient([tool_turn("list_entities", '{"a":1}'),
+                                 tool_turn("list_entities", '{"a":2}'),
+                                 {"role": "assistant", "content": "done"}])
+        run = run_agent(client, self.ex, TOOLS, "go")
+        self.assertEqual(len(self.spy.calls), 2)
+        self.assertEqual(run.stop_reason, StopReason.COMPLETED)

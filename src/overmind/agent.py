@@ -19,6 +19,14 @@ TWO FAILURE MODES THE LOOP HANDLES BECAUSE THEY WERE MEASURED, NOT IMAGINED:
   · A REFUSAL IS A RESULT, NOT AN ERROR. When the gate denies a call, the denial
     is fed back as the tool's result so the model can take the permitted route.
     A loop that raised here would turn every policy into an outage.
+
+  · REPEATING THE SAME CALL IS NOT PROGRESS. ⚠️ MEASURED: on a two-step task,
+    models on two different providers called the FIRST tool four and seven times
+    respectively, never reached step two, and produced no final text. A loop
+    that lets that run to `max_steps` burns tokens for nothing - which is the
+    exact cost this project exists to remove. The identical call is nudged ONCE
+    with what it already returned, and stopped on the second repeat, because a
+    model that has not moved after being told will not move.
 """
 
 from __future__ import annotations
@@ -38,6 +46,7 @@ class StopReason:
     MAX_STEPS = "max-steps"
     PROTOCOL_FAILURE = "protocol-failure"   # smuggled tool calls, twice
     PROVIDER_ERROR = "provider-error"
+    NO_PROGRESS = "no-progress"             # same call repeated, twice over
 
 
 @dataclass
@@ -101,6 +110,8 @@ def run_agent(client: ProviderClient, executor: GatedExecutor,
     tool_names = [n for n in tool_names if n]
     smuggle_strikes = 0
     result: ChatResult | None = None
+    seen_calls: dict[tuple[str, str], int] = {}
+    last_results: dict[tuple[str, str], str] = {}
 
     for step in range(max_steps):
         try:
@@ -140,14 +151,48 @@ def run_agent(client: ProviderClient, executor: GatedExecutor,
                             steps=step + 1, ledger=executor.gate.ledger, messages=messages,
                             model=result.model, provider=result.provider)
 
+        repeated_twice = False
         for call in calls:
             fn = call.get("function") or {}
             name = fn.get("name") or ""
             args = _parse_arguments(fn.get("arguments"))
+            signature = (name, json.dumps(args, sort_keys=True, default=str))
+            count = seen_calls.get(signature, 0)
+
+            if count >= 2:
+                # ⚠️ Told once and repeated anyway. Stop rather than spend.
+                repeated_twice = True
+                messages.append(_tool_result_message(
+                    call.get("id", ""), name,
+                    "STOPPED: this identical call has already been made twice. "
+                    "Nothing new will come of it."))
+                continue
+
+            if count == 1:
+                # ⚠️ NOT re-executed. Re-running it would be an EFFECT the model
+                # did not earn - and for a non-idempotent tool that is a second
+                # channel, a second message, a second merge.
+                seen_calls[signature] = count + 1
+                messages.append(_tool_result_message(
+                    call.get("id", ""), name,
+                    f"ALREADY CALLED with these exact arguments. It was not run again. "
+                    f"Its previous result was: {last_results.get(signature, '(unknown)')[:400]} "
+                    f"Move on to the next step, or say what is blocking you."))
+                continue
+
+            seen_calls[signature] = 1
             # THE ONLY PATH TO AN EFFECT.
             outcome = executor.execute(name, args, actor=f"{result.provider}:{result.model}")
-            messages.append(_tool_result_message(call.get("id", ""), name,
-                                                 outcome.as_tool_content()))
+            content = outcome.as_tool_content()
+            last_results[signature] = content
+            messages.append(_tool_result_message(call.get("id", ""), name, content))
+
+        if repeated_twice:
+            return AgentRun(final_text=result.content, stop_reason=StopReason.NO_PROGRESS,
+                            steps=step + 1, ledger=executor.gate.ledger, messages=messages,
+                            model=result.model, provider=result.provider,
+                            error="the model repeated an identical call after being told it had "
+                                  "already been made")
 
     return AgentRun(final_text=result.content if result else "",
                     stop_reason=StopReason.MAX_STEPS, steps=max_steps,

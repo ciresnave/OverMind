@@ -1662,10 +1662,21 @@ changed shape and not outcome, so the phrasing is not the limit.**
 
 ### What survives, and is real
 
-    transcript      20/20 stopped voluntarily      2 steps
-    ledger           0/20 stopped voluntarily      6 steps (the cap)
+    llama3.2:3b   transcript   20/20 stopped voluntarily   2 steps
+    llama3.2:3b   ledger         0/20 stopped voluntarily   6 steps (the cap)
 
-**The ledger arm never terminates.** It loops `list → send → list → send` to the step cap. ⚠️ **The
+> 🔴 **AND THIS IS MODEL-SPECIFIC, WHICH I DID NOT SAY WHEN I FIRST WROTE IT.**
+> On `qwen3:8b` — the first model measured here that actually completes the task
+> — **the ledger arm DID the task AND stopped voluntarily**, 650.9 s against
+> transcript's 329.6 s and 256.2 s. **n=1 on that arm at the time of writing;
+> the full run is in progress and the figure will be restated with its n.**
+>
+> ⚠️ **"THE LEDGER ARM NEVER TERMINATES" WAS A STATEMENT ABOUT `llama3.2:3b`
+> WEARING THE GRAMMAR OF A STATEMENT ABOUT THE MECHANISM.** The looping is what
+> a model does when it cannot do the task and is handed a prompt that re-states
+> it every step — **not what the ledger does to a model that can.**
+
+**On `llama3.2:3b` the ledger arm never terminates.** It loops `list → send → list → send` to the step cap. ⚠️ **The
 no-progress guard does not catch it**, because the filter arguments differ slightly each call — it
 is **A,B,A,B, not A,A,A**, and the guard was deliberately narrowed to consecutive-identical after it
 once blocked a legitimate re-read.

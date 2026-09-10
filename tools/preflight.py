@@ -124,13 +124,46 @@ def _git(repo: pathlib.Path, *args: str) -> tuple[int, str]:
     return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
 
 
+#: ⚠️ EXCLUSIONS, NOT AN INCLUSION LIST. Check 1 used to run over SOURCE_GLOBS,
+#: and the portfolio's original prescribed detector was narrower still -
+#: `git grep -l -i copyright -- '*.rs'`. That pathspec is precisely what hid
+#: `Copyright (c) 2024 Apple Inc.` in three of `fuel`'s `.metal` kernels, in a
+#: repo booked at "833/833, 100%" - which is 833 of 833 `.rs`, with 16 `.metal`
+#: files that were never in the denominator.
+#:
+#: ⚠️ AN INCLUSION LIST CAN ONLY FIND WHAT ITS AUTHOR THOUGHT OF, AND WHAT IT
+#: MISSES READS AS A CLEANER RESULT RATHER THAN A SMALLER ONE. So this asks
+#: about EVERY tracked file and subtracts only what is known to be noise.
+COPYRIGHT_EXCLUSIONS = (":!*.md", ":!*LICEN[SC]E*", ":!*.txt", ":!*.lock",
+                        ":!*.svg", ":!*.json", ":!*.min.js", ":!.git-blame-ignore-revs", ":!*.snap")
+
+
 def check_copyright(repo: pathlib.Path) -> dict:
-    """Check 1: source files carrying a copyright notice."""
-    code, out = _git(repo, "grep", "-l", "-i", "copyright", "--", *SOURCE_GLOBS)
+    """Check 1: files carrying a copyright notice, over EVERY tracked file.
+
+    ⚠️ RETURNS ITS OWN POSITIVE CONTROL. "I searched and found nothing" is not a
+    finding until the query is shown capable of finding something IN THE SAME
+    RUN - a control taken at a different time answers a different question.
+    Here the control is the same query with the licence exclusion dropped, which
+    must find the LICENSE files every repo here has.
+    """
+    code, out = _git(repo, "grep", "-l", "-i", "copyright", "--", *COPYRIGHT_EXCLUSIONS)
     if code not in (0, 1):
-        return {"status": "UNKNOWN", "detail": out.strip()[:160], "hits": []}
+        return {"status": "UNKNOWN", "detail": out.strip()[:160], "hits": [],
+                "control": 0}
     hits = [line for line in out.splitlines() if line.strip()]
-    return {"status": "HITS" if hits else "clean", "hits": hits, "detail": ""}
+
+    ctl_code, ctl_out = _git(repo, "grep", "-l", "-i", "copyright", "--",
+                             *[e for e in COPYRIGHT_EXCLUSIONS
+                               if "LICEN" not in e])
+    control = len([x for x in ctl_out.splitlines() if x.strip()]) if ctl_code in (0, 1) else 0
+    if not hits and control == 0:
+        # ⚠️ A null with a DEAD control is not a null. Both mean "no output".
+        return {"status": "UNKNOWN", "hits": [], "control": 0,
+                "detail": "the query found nothing AND its control found "
+                          "nothing - this is an unproven query, not a clean repo"}
+    return {"status": "HITS" if hits else "clean", "hits": hits,
+            "control": control, "detail": ""}
 
 
 def check_existing_spdx(repo: pathlib.Path) -> dict:
@@ -398,6 +431,8 @@ def main(argv: list[str] | None = None) -> int:
         one, two, three = r["1"], r["2"], r["3"]
         print(f"  1 copyright notices : {one['status']}"
               + (f"  ({len(one['hits'])} files)" if one["hits"] else "")
+              + f"   [control: {one.get('control', 0)} licence files found "
+                f"by the same query]"
               + (f"  {one['detail']}" if one["detail"] else ""))
         for hit in one["hits"][:12]:
             print(f"      {hit}")

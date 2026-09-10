@@ -1670,10 +1670,19 @@ no-progress guard does not catch it**, because the filter arguments differ sligh
 is **A,B,A,B, not A,A,A**, and the guard was deliberately narrowed to consecutive-identical after it
 once blocked a legitimate re-read.
 
-**The obvious fix did not work.** `ledger+closure` adds one sentence telling the model it may stop:
-**0/8, still `max-steps` 8/8.** It ships as a **separate mode** rather than folded into `ledger`,
-because ⚠️ **a treatment silently applied to its own control reports no difference, and that report
-is indistinguishable from a real null result.**
+**The obvious fix appeared not to work** — `ledger+closure` adds one sentence telling the model it
+may stop, and scored **0/8, still `max-steps` 8/8.**
+
+> 🔴 **THAT TEST COULD NOT HAVE DISCRIMINATED, AND I NEARLY REPORTED IT AS A RESULT.** It ran on
+> `llama3.2:3b`, which does the task **0 of 24 in every arm including the control.** A fix for
+> *"the model finishes but will not stop"* cannot be evaluated on a model that never finishes.
+> ⚠️ **A TREATMENT TESTED WHERE THE OUTCOME IS FLOORED MEASURES THE FLOOR.** The honest reading of
+> `ledger+closure` is **UNTESTED**, and it is being re-run on `qwen3:8b` — the first model measured
+> here that actually completes the task.
+
+It ships as a **separate mode** rather than folded into `ledger`, because ⚠️ **a treatment silently
+applied to its own control reports no difference, and that report is indistinguishable from a real
+null result.**
 
 ### 🔴 The pre-registration was wrong on 3 of 4, which is the argument for writing it down
 

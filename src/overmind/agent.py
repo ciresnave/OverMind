@@ -114,6 +114,12 @@ def _parse_arguments(raw: Any) -> dict[str, Any]:
 #: then ran to `max-steps` - 0 of 20 stopped on their own, against 20 of 20 in
 #: transcript mode.
 #:
+#: 🔴 AND WHETHER THIS SENTENCE HELPS IS UNTESTED. It scored 0/8 on llama3.2:3b
+#: - but that model does the task 0 of 24 in EVERY arm including the control, so
+#: the run measured the floor rather than the treatment. ⚠️ A FIX FOR "FINISHES
+#: BUT WILL NOT STOP" CANNOT BE EVALUATED ON A MODEL THAT NEVER FINISHES.
+#: Re-running on qwen3:8b, which does complete the task.
+#:
 #: ⚠️ THE LEDGER CARRIED THE STATE AND NOT THE CLOSURE. "Here is the task, here
 #: is what you did" reads as an instruction to do the task, every step, forever.
 #: A transcript ends in a tool result and the next turn naturally concludes; a

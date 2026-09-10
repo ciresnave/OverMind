@@ -14,7 +14,7 @@ import urllib.error
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from overmind.providers import (  # noqa: E402
-    NoUsableModel, Provider, ProviderClient, RateLimited, normalise_for_echo,
+    NoUsableModel, Provider, ProviderClient, RateLimited, Usage, normalise_for_echo,
     select_models,
 )
 
@@ -191,6 +191,73 @@ class TestAccountScopedBase(unittest.TestCase):
         with self.assertRaises(Exception) as ctx:
             client.chat([{"role": "user", "content": "hi"}])
         self.assertIn("account id", str(ctx.exception).lower())
+
+
+class TestUsageAccounting(unittest.TestCase):
+    """⚠️ The whole project exists to reduce a number nobody had recorded."""
+
+    def setUp(self):
+        self.prov = Provider(key="p", base_url="http://x", secret_name="NOPE",
+                             fallback_models=("m",), models_path=None)
+
+    def body_with_usage(self, prompt=100, completion=20):
+        b = chat_body("hi")
+        b["usage"] = {"prompt_tokens": prompt, "completion_tokens": completion,
+                      "total_tokens": prompt + completion}
+        return b
+
+    def test_usage_is_read_from_the_response(self):
+        t = FakeTransport({"m": self.body_with_usage()})
+        result = ProviderClient(self.prov, opener=t).chat([{"role": "user", "content": "hi"}])
+        self.assertTrue(result.usage.reported)
+        self.assertEqual(result.usage.total_tokens, 120)
+        self.assertEqual(result.usage.prompt_tokens, 100)
+
+    def test_a_provider_reporting_nothing_is_UNKNOWN_not_zero(self):
+        """⚠️ Zero is a number; 'it did not say' is not. Recording silence as
+        zero would make a quiet provider look free."""
+        t = FakeTransport({"m": chat_body("hi")})
+        result = ProviderClient(self.prov, opener=t).chat([{"role": "user", "content": "hi"}])
+        self.assertFalse(result.usage.reported)
+        self.assertIn("INCOMPLETE", str(result.usage))
+
+    def test_totals_are_derived_when_only_the_parts_are_given(self):
+        b = chat_body("hi")
+        b["usage"] = {"prompt_tokens": 7, "completion_tokens": 3}
+        t = FakeTransport({"m": b})
+        result = ProviderClient(self.prov, opener=t).chat([{"role": "user", "content": "hi"}])
+        self.assertEqual(result.usage.total_tokens, 10)
+
+    def test_a_sum_containing_an_unreported_call_is_marked_incomplete(self):
+        """⚠️ One silent call makes the total a FLOOR, not a figure - and a
+        floor presented as a figure is how a cost estimate becomes flattering."""
+        reported = Usage(10, 5, 15, reported=True)
+        silent = Usage(reported=False)
+        total = reported + silent
+        self.assertEqual(total.total_tokens, 15)
+        self.assertFalse(total.reported)
+        self.assertIn("INCOMPLETE", str(total))
+
+
+class TestUsageIdentityElement(unittest.TestCase):
+    """⚠️ An all-zero Usage has TWO possible meanings and the default was the
+    wrong one for summing: `Usage()` means "a call happened and reported
+    nothing", while an accumulator's starting value means "nothing summed yet".
+    Using the former as the latter marked every total INCOMPLETE, including
+    totals where every call had reported."""
+
+    def test_zero_is_reported_and_the_default_is_not(self):
+        self.assertTrue(Usage.zero().reported)
+        self.assertFalse(Usage().reported)
+
+    def test_summing_from_zero_preserves_reported(self):
+        total = Usage.zero() + Usage(10, 5, 15, reported=True)
+        self.assertTrue(total.reported)
+        self.assertEqual(total.total_tokens, 15)
+
+    def test_summing_from_the_default_would_not_have(self):
+        """The control that shows the distinction is load-bearing."""
+        self.assertFalse((Usage() + Usage(10, 5, 15, reported=True)).reported)
 
 
 if __name__ == "__main__":

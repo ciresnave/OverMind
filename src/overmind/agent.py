@@ -43,7 +43,7 @@ from dataclasses import dataclass, field
 from typing import Any, Mapping, Sequence
 
 from .gate import GatedExecutor, Ledger, detect_smuggled_tool_call
-from .providers import ChatResult, ProviderClient, normalise_for_echo
+from .providers import ChatResult, ProviderClient, Usage, normalise_for_echo
 
 __all__ = ["AgentRun", "StopReason", "run_agent"]
 
@@ -67,6 +67,13 @@ class AgentRun:
     model: str | None = None
     provider: str | None = None
     error: str | None = None
+    #: ⚠️ What this run actually COST, summed across every call the loop made -
+    #: not the last one. The whole project exists to reduce this number, and it
+    #: had never been recorded.
+    usage: Usage = field(default_factory=Usage)
+    #: Tools offered to the model that the gate would always refuse. ⚠️ Paid for
+    #: on every turn and never usable.
+    offered_but_refused: list[str] = field(default_factory=list)
 
     @property
     def executed_tools(self) -> tuple[str, ...]:
@@ -113,10 +120,22 @@ def run_agent(client: ProviderClient, executor: GatedExecutor,
         messages.append({"role": "system", "content": system})
     messages.append({"role": "user", "content": task})
 
+    offered_but_refused: list[str] = []
     tool_names = [t.get("function", {}).get("name") for t in tools]
     tool_names = [n for n in tool_names if n]
+
+    # ⚠️ COST, MEASURED: schemas are re-sent on EVERY turn, so a tool the gate
+    # will always refuse is paid for repeatedly and never usable. Offering 20
+    # instead of the permitted 5 cost 6,255 tokens against 2,595 for the same
+    # task and the same result. Reported rather than silently dropped - the
+    # caller chose the offer, and a harness that quietly edits the tool list is
+    # a harness whose behaviour cannot be predicted from its inputs.
+    wasted = executor.gate.certainly_denied(tool_names)
+    if wasted:
+        offered_but_refused.extend(wasted)
     smuggle_strikes = 0
     result: ChatResult | None = None
+    spent = Usage.zero()
     # ⚠️ CONSECUTIVE repetition, not session-wide. The first version counted any
     # repeat in the run, which blocked a legitimate RE-READ: `list -> send ->
     # list` suppressed the second list and handed the model a STALE cached
@@ -132,8 +151,10 @@ def run_agent(client: ProviderClient, executor: GatedExecutor,
         except Exception as exc:                       # noqa: BLE001 - reported, not hidden
             return AgentRun(final_text="", stop_reason=StopReason.PROVIDER_ERROR,
                             steps=step, ledger=executor.gate.ledger, messages=messages,
+                            usage=spent, offered_but_refused=offered_but_refused,
                             error=f"{type(exc).__name__}: {exc}")
 
+        spent = spent + result.usage
         messages.append(normalise_for_echo(result.message))
         calls = result.tool_calls
 
@@ -147,7 +168,8 @@ def run_agent(client: ProviderClient, executor: GatedExecutor,
                     return AgentRun(
                         final_text=result.content, stop_reason=StopReason.PROTOCOL_FAILURE,
                         steps=step + 1, ledger=executor.gate.ledger, messages=messages,
-                        model=result.model, provider=result.provider,
+                        model=result.model, provider=result.provider, usage=spent,
+                        offered_but_refused=offered_but_refused,
                         error=f"model wrote tool-call JSON into its message twice "
                               f"({', '.join(smuggled)}) instead of emitting a tool call",
                     )
@@ -162,7 +184,8 @@ def run_agent(client: ProviderClient, executor: GatedExecutor,
                 continue
             return AgentRun(final_text=result.content, stop_reason=StopReason.COMPLETED,
                             steps=step + 1, ledger=executor.gate.ledger, messages=messages,
-                            model=result.model, provider=result.provider)
+                            model=result.model, provider=result.provider, usage=spent,
+                            offered_but_refused=offered_but_refused)
 
         repeated_twice = False
         for call in calls:
@@ -205,7 +228,8 @@ def run_agent(client: ProviderClient, executor: GatedExecutor,
         if repeated_twice:
             return AgentRun(final_text=result.content, stop_reason=StopReason.NO_PROGRESS,
                             steps=step + 1, ledger=executor.gate.ledger, messages=messages,
-                            model=result.model, provider=result.provider,
+                            model=result.model, provider=result.provider, usage=spent,
+                            offered_but_refused=offered_but_refused,
                             error="the model repeated an identical call after being told it had "
                                   "already been made")
 
@@ -213,4 +237,5 @@ def run_agent(client: ProviderClient, executor: GatedExecutor,
                     stop_reason=StopReason.MAX_STEPS, steps=max_steps,
                     ledger=executor.gate.ledger, messages=messages,
                     model=result.model if result else None,
-                    provider=result.provider if result else None)
+                    provider=result.provider if result else None, usage=spent,
+                    offered_but_refused=offered_but_refused)

@@ -50,7 +50,7 @@ from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping, Sequence
 
 __all__ = [
-    "Provider", "PROVIDERS", "ProviderClient", "ChatResult", "ProviderError",
+    "Provider", "PROVIDERS", "ProviderClient", "ChatResult", "Usage", "ProviderError",
     "RateLimited", "NoUsableModel", "read_secret", "normalise_for_echo",
     "select_models",
 ]
@@ -246,11 +246,64 @@ def normalise_for_echo(message: Mapping[str, Any]) -> dict[str, Any]:
 # --------------------------------------------------------------------------- #
 
 @dataclass
+class Usage:
+    """Tokens a call consumed, as the PROVIDER reports them.
+
+    ⚠️ Read from the response, never estimated from the text. Every provider
+    measured returns an OpenAI-shaped `usage` block; a provider that does not is
+    recorded as UNKNOWN rather than as zero, because zero is a number and
+    "it did not say" is not.
+    """
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    reported: bool = False
+
+    @classmethod
+    def zero(cls) -> "Usage":
+        """The identity for summing. ⚠️ `reported=True` deliberately: it means
+        "everything summed so far WAS reported", which is vacuously true of
+        nothing. The default `Usage()` has `reported=False` - meaning "a call
+        happened and said nothing" - and using that as an accumulator poisoned
+        every total to INCOMPLETE, including totals where every call had in fact
+        reported. Two different meanings for an all-zero value, and the wrong
+        one was the default.
+        """
+        return cls(reported=True)
+
+    @classmethod
+    def from_response(cls, body: Mapping[str, Any]) -> "Usage":
+        raw = body.get("usage")
+        if not isinstance(raw, Mapping):
+            return cls(reported=False)
+        prompt = int(raw.get("prompt_tokens") or 0)
+        completion = int(raw.get("completion_tokens") or 0)
+        return cls(prompt_tokens=prompt, completion_tokens=completion,
+                   total_tokens=int(raw.get("total_tokens") or (prompt + completion)),
+                   reported=True)
+
+    def __add__(self, other: "Usage") -> "Usage":
+        return Usage(self.prompt_tokens + other.prompt_tokens,
+                     self.completion_tokens + other.completion_tokens,
+                     self.total_tokens + other.total_tokens,
+                     # ⚠️ A sum is only fully reported if EVERY part was. One
+                     # silent provider makes the total a floor, not a figure.
+                     self.reported and other.reported)
+
+    def __str__(self) -> str:
+        if not self.reported:
+            return f"{self.total_tokens} tokens (INCOMPLETE - a call reported none)"
+        return (f"{self.total_tokens} tokens "
+                f"(in {self.prompt_tokens}, out {self.completion_tokens})")
+
+
+@dataclass
 class ChatResult:
     message: dict[str, Any]
     model: str
     provider: str
     latency_s: float
+    usage: Usage = field(default_factory=Usage)
     raw: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -398,7 +451,8 @@ class ProviderClient:
                 return ChatResult(
                     message=dict(choices[0].get("message") or {}),
                     model=model, provider=self.provider.key,
-                    latency_s=time.time() - started, raw=body,
+                    latency_s=time.time() - started,
+                    usage=Usage.from_response(body), raw=body,
                 )
         raise NoUsableModel(self.provider.key, attempts)
 

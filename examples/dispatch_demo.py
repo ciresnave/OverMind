@@ -138,6 +138,7 @@ def main() -> int:
         print(f"tools EXECUTED : {list(r.executed_tools)}")
         print(f"tools DENIED   : {r.denied}")
         print(f"answer         : {r.run.final_text[:220]!r}")
+        print(f"tokens spent   : {r.run.usage}")
         print(f"replied        : {r.replied}" + (f"  ({r.reply_error})" if r.reply_error else ""))
         # ⚠️ Read the round trip off the SENDER's inbox, not off our own claim
         # to have replied. `replied=True` only says the ledger recorded a send;

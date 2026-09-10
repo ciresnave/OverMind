@@ -145,6 +145,15 @@ class DenyUnlessDeclared:
     def applies_to(self, call: ToolCall) -> bool:
         return True
 
+    def definitely_denies(self, tool: str) -> bool:
+        """True when this policy refuses `tool` WHATEVER the arguments.
+
+        ⚠️ Deliberately conservative: a policy that might allow some calls
+        answers False. Used only to spot tools offered to a model that can never
+        succeed - never to grant anything.
+        """
+        return tool not in self.reversible
+
     def decide(self, call: ToolCall, facts: FactSource) -> Decision:
         if call.name in self.reversible:
             return Decision.allow(f"{call.name} is declared reversible", self.name)
@@ -223,6 +232,9 @@ class ForbidTools:
 
     def applies_to(self, call: ToolCall) -> bool:
         return call.name in self.tools
+
+    def definitely_denies(self, tool: str) -> bool:
+        return tool in self.tools
 
     def decide(self, call: ToolCall, facts: FactSource) -> Decision:
         return Decision.deny(f"{call.name}: {self.reason}", self.name)
@@ -368,6 +380,28 @@ class Gate:
         # failed open on the same bug.
         self.facts = StaticFacts() if facts is None else facts
         self.ledger = Ledger() if ledger is None else ledger
+
+    def certainly_denied(self, tools: Iterable[str]) -> list[str]:
+        """Which of `tools` will be refused no matter how they are called.
+
+        ⚠️ MEASURED, and this is a COST control rather than a safety one: the
+        tool schemas are re-sent on every turn, and offering a model the 20
+        tools a server exposes instead of the 5 a gate permits cost 6,255 tokens
+        against 2,595 for the identical task and the identical result - 59% of
+        the bill spent describing tools that would have been refused. Offering
+        one tool the task actually needed cost 1,100.
+
+        The gate stays authoritative about what may RUN; this only reports what
+        should never have been OFFERED.
+        """
+        out = []
+        for tool in tools:
+            for policy in self.policies:
+                check = getattr(policy, "definitely_denies", None)
+                if check is not None and check(tool):
+                    out.append(tool)
+                    break
+        return out
 
     def decide(self, call: ToolCall) -> Decision:
         applicable = [p for p in self.policies if p.applies_to(call)]

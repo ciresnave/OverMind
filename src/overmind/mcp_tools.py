@@ -386,8 +386,17 @@ class McpToolSource:
         schemas, _ = convert_tools(tools)
         return schemas
 
-    def call(self, name: str, **arguments: Any) -> str:
+    def call(self, name: str, /, **arguments: Any) -> str:
         """Invoke one MCP tool and flatten the result to text.
+
+        ⚠️ `name` IS POSITIONAL-ONLY, and that is a bug fix rather than style.
+        A tool whose own argument is called `name` - `fam_create_channel(name=)`
+        is exactly one - collided with this parameter and raised
+        "got multiple values for argument 'name'" on EVERY call. The failure was
+        invisible in the loop because the exception was caught, recorded, and
+        handed back to the model as the tool's result, so the model saw a broken
+        tool and retried. MEASUREMENTS.md §19 attributed that retrying to a
+        multi-turn limitation of the MODEL. It was mine.
 
         ⚠️ An `isError` result is returned as TEXT, not raised. The gate already
         distinguishes refusal from failure, and the model needs to read either.

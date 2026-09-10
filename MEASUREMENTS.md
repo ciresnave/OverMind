@@ -967,3 +967,58 @@ condition.
 ⚠️ **AND THE RETRACTION HAS TO TRAVEL.** The 7/8 figure is in PR #1's body, in its commit message
 and in the README, all merged, none carrying the condition. Those are corrected here and in the
 follow-up PR rather than only in conversation. **A retraction must reach as far as the claim did.**
+
+---
+
+## 17. ✅ A non-Claude AGENT in the FAM fabric — the loop wired to MCP
+
+**Observed running 2026-09-10 ~16:12Z**, against the FAM lane's live server on
+`127.0.0.1:7910` (health 200), adapter at `origin/main 79785881`.
+
+Until now the agent loop executed **local Python callables**. It never opened an MCP connection, so
+an OverMind agent was a gated script that talked to a model — **not a participant in the fabric.**
+`src/overmind/mcp_tools.py` makes the tool source an MCP session.
+
+### ⚠️ The gate did not move, and that is the point
+
+`GatedExecutor` still takes a mapping of callables and still decides **at execution**. What changed
+is only what those callables *do*. **`gate.py` is untouched by the MCP work** — a test asserts it
+contains no occurrence of `mcp`, `clientsession`, `stdio` or `jsonrpc`, because the property that
+makes the harness safe is *where* the gate sits, and a refactor that quietly relocated it to
+somewhere a model can write to would lose exactly that.
+
+Two further tests pin the boundary: a **denied** MCP tool never reaches the server (the fake
+session records zero calls), and — the control — an **allowed** one does.
+
+### The demonstration
+
+| | scenario | result |
+|---|---|---|
+| **A** | model asked to message another entity | ✅ `fam_send_message` **executed over MCP**; message id **7** received by a separate client at 16:12:42 |
+| **B** | model asked to remove a channel member | ✅ `fam_kick_member` **DENIED** by `forbid-tools`; never reached the server |
+
+Model: `qwen/qwen3.6-27b` on Groq — non-Claude, hosted, free tier. It chose the tool, the gate
+decided, MCP carried the effect, and FAM sealed and queued the message.
+
+⚠️ **Scenario B exists because A cannot show the gate works.** Every model tested so far complied
+unaided, and §14.2 says a component that never fires cannot be told apart from a broken one.
+**B is the first live run in which the gate actually refused something.** The model's own words
+afterwards: *"The kick was refused by the harness… I won't try to work around that."*
+
+### ⚠️ FAM's 20 schemas converted CLEANLY — the expected breakage did not occur
+
+The prediction was that at least one of the first tool set I had not authored would convert badly.
+It did not: **20 offered, 20 converted, 0 repairs.** Checked for missing schema, non-object type,
+`required` naming absent properties, and missing or over-long descriptions.
+
+⚠️ **But one real gap is not a conversion failure and would not be caught by one.**
+`fam_send_message` declares `required: ["text"]` with `to_entity` and `channel_id` both optional —
+so **the schema cannot express "exactly one of these two"**. A model may legally call it with
+neither recipient, and only the server will object. **A schema can be perfectly well-formed and
+still under-specify the thing a model most needs to get right.**
+
+### Scope limit
+
+**This is one message and one refusal — not a lane's work.** It is the first thing here that is a
+non-Claude **agent** rather than a non-Claude **client**, and that is all it is.
+**Everything measured is capability; none of it is yet capacity.**

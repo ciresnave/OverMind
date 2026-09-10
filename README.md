@@ -9,8 +9,15 @@ imply.
 
 ## What is built
 
-`src/overmind/gate.py` — **the mechanical gate.** Every tool invocation passes through it; it
-refuses rather than warns, and it cannot be satisfied by anything the model writes.
+- **`src/overmind/gate.py`** — the mechanical gate. Every tool invocation passes through it; it
+  refuses rather than warns, and cannot be satisfied by anything the model writes.
+- **`src/overmind/providers.py`** — one OpenAI-shaped client over six backends (five hosted free
+  tiers + Ollama), with model failover, rate-limit handling and message normalisation.
+- **`src/overmind/agent.py`** — the loop. Every effect goes through the gate; the ledger is the
+  only record consulted afterwards.
+- **`src/overmind/mcp_tools.py`** — MCP as the tool source, so an agent is a participant in the
+  fabric rather than a gated script. ⚠️ The gate stays at tool execution; `gate.py` is untouched
+  by it.
 
 Why it exists, in one measured sentence: **a model that states a prohibition perfectly violates it
 4 to 7 times out of 8 when its reasoning is disabled** (`MEASUREMENTS.md` §11, §16) — and

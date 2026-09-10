@@ -11,6 +11,7 @@ import os
 import pathlib
 import sys
 import tempfile
+import shutil
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "tools"))
@@ -232,6 +233,122 @@ class TestTheCheckerDoesNotCountItself(unittest.TestCase):
         self.assertIn(spdx.MARKER, source, "precondition: the marker IS in this file")
         self.assertIsNone(spdx.existing_identifier(source),
                           "the checker counted its own string constant as a header")
+
+
+class TestOrderInsensitiveLicenceComparison(unittest.TestCase):
+    """⚠️ MEASURED across 2,100 real files: 850 say `MIT OR Apache-2.0`, ONE says
+    `Apache-2.0 OR MIT` (lightbulb's Hugging Face derivation), and ONE says
+    `Apache-2.0` alone - a vendored third-party file whose author never granted
+    an MIT option, which fuel's blanket sweep wrongly stamped and had to correct.
+
+    A naive string compare calls BOTH of those conflicts. ⚠️ A FALSE POSITIVE
+    STANDING NEXT TO A TRUE ONE TRAINS THE READER TO DISMISS BOTH - so removing
+    the spurious one is what makes the real one visible.
+    """
+
+    def test_order_swapped_is_the_same_grant(self):
+        self.assertTrue(spdx.same_licence("MIT OR Apache-2.0", "Apache-2.0 OR MIT"))
+
+    def test_the_real_conflict_is_still_a_conflict(self):
+        """The control, and the one that matters: Apache-2.0 ALONE is a
+        different grant from MIT OR Apache-2.0."""
+        self.assertFalse(spdx.same_licence("Apache-2.0", "MIT OR Apache-2.0"))
+
+    def test_an_order_swapped_file_is_skipped_not_rewritten(self):
+        original = "//! Copyright (c) 2023 Hugging Face\n//! SPDX-License-Identifier: Apache-2.0 OR MIT\n"
+        out, skip = spdx.apply_to_text(original, ".rs", MIT)
+        self.assertEqual(out, original)
+        self.assertEqual(skip, "already-present")
+
+    def test_an_apache_only_file_is_reported_and_left_alone(self):
+        """🔴 The fuel hazard: a vendored Apache-2.0-only work. Stamping it
+        asserts a licence grant nobody made."""
+        original = "// SPDX-License-Identifier: Apache-2.0\nfn main() {}\n"
+        out, skip = spdx.apply_to_text(original, ".rs", MIT)
+        self.assertEqual(out, original, "a third-party licence was rewritten")
+        self.assertEqual(skip, "different-licence")
+
+    def test_unrelated_licences_are_not_conflated(self):
+        self.assertFalse(spdx.same_licence("GPL-3.0-only", "MIT OR Apache-2.0"))
+        self.assertFalse(spdx.same_licence("MIT", "MIT OR Apache-2.0"))
+
+
+class TestHoldout(unittest.TestCase):
+    """🔴 THE FUEL HAZARD, made mechanical. fuel swept 795 files and had to
+    correct one: `fuel-examples/src/bs1770.rs` is a verbatim Apache-2.0-ONLY
+    third-party work, and the blanket sweep asserted a grant nobody made.
+
+    ⚠️ The holdout list's OWN failure mode is the interesting one: unreadable,
+    missing and empty all produce an empty set, which is indistinguishable at
+    the call site from "nothing needs holding out" - and the permissive reading
+    is the one that stamps a licence onto somebody else's copyright.
+    """
+
+    def setUp(self):
+        self.root = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
+
+    def _write(self, rel, text):
+        p = self.root / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(text, encoding="utf-8")
+        return p
+
+    def test_a_held_out_file_is_not_stamped(self):
+        third_party = self._write("vendor_ex/bs1770.rs", "// Copyright (c) 2020 Someone\nfn main() {}\n")
+        ours = self._write("src/lib.rs", "fn main() {}\n")
+        holdout = self._write("HOLDOUT.txt", "vendor_ex/bs1770.rs  # Apache-2.0 only\n")
+        report = spdx.scan(self.root, {".rs"}, MIT, apply=True, exclude=(),
+                           holdout=spdx.load_holdout(holdout))
+        self.assertNotIn("SPDX", third_party.read_text(encoding="utf-8"),
+                         "a third-party file was stamped despite being held out")
+        self.assertIn("SPDX", ours.read_text(encoding="utf-8"),
+                      "the holdout suppressed a file it did not name")
+        self.assertEqual(report.held_out, ["vendor_ex/bs1770.rs"])
+
+    def test_a_missing_holdout_file_raises_rather_than_returning_empty(self):
+        """⚠️ THE WHOLE POINT. Returning an empty set here would sweep every
+        file the list existed to protect, and look like a clean run."""
+        with self.assertRaises(spdx.HoldoutError):
+            spdx.load_holdout(self.root / "does-not-exist.txt")
+
+    def test_an_empty_holdout_file_raises(self):
+        empty = self._write("HOLDOUT.txt", "# only a comment\n\n")
+        with self.assertRaises(spdx.HoldoutError):
+            spdx.load_holdout(empty)
+
+    def test_an_unusable_holdout_refuses_the_whole_run(self):
+        self._write("src/lib.rs", "fn main() {}\n")
+        code = spdx.main(["apply", str(self.root), "--license", MIT,
+                          "--ext", ".rs", "--holdout", str(self.root / "nope.txt")])
+        self.assertEqual(code, 2, "the run continued without its holdout list")
+        self.assertNotIn("SPDX", (self.root / "src/lib.rs").read_text(encoding="utf-8"))
+
+    def test_an_entry_matching_no_file_is_reported_not_silent(self):
+        """⚠️ THE POSITIVE CONTROL FOR THE HOLDOUT ITSELF. Rename the protected
+        file and the list still parses, still loads, and protects nothing."""
+        self._write("src/lib.rs", "fn main() {}\n")
+        holdout = self._write("HOLDOUT.txt", "vendor_ex/renamed-away.rs\n")
+        report = spdx.scan(self.root, {".rs"}, MIT, apply=False, exclude=(),
+                           holdout=spdx.load_holdout(holdout))
+        self.assertEqual(report.holdout_unmatched, {"vendor_ex/renamed-away.rs"})
+
+    def test_unmatched_holdout_outranks_a_conflict_in_the_exit_code(self):
+        """A conflict announces itself in the report; an unmatched holdout entry
+        announces nothing, so it takes the exit code."""
+        self._write("src/other.rs", "// SPDX-License-Identifier: GPL-3.0-only\n")
+        holdout = self._write("HOLDOUT.txt", "gone.rs\n")
+        code = spdx.main(["check", str(self.root), "--license", MIT,
+                          "--ext", ".rs", "--holdout", str(holdout)])
+        self.assertEqual(code, 4)
+
+    def test_holdout_entries_accept_backslashes_because_windows(self):
+        self._write("vendor_ex/bs1770.rs", "fn main() {}\n")
+        holdout = self._write("HOLDOUT.txt", "vendor_ex" + chr(92) + "bs1770.rs" + chr(10))
+        report = spdx.scan(self.root, {".rs"}, MIT, apply=False, exclude=(),
+                           holdout=spdx.load_holdout(holdout))
+        self.assertEqual(report.held_out, ["vendor_ex/bs1770.rs"])
+        self.assertEqual(report.holdout_unmatched, set())
 
 
 if __name__ == "__main__":

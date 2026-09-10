@@ -35,6 +35,21 @@ WHAT IS ACTUALLY HARD HERE, and it is not the header:
 ⚠️ `--license` HAS NO DEFAULT. Stamping a licence into source files is a legal
 declaration, and inferring it from what most sibling crates happen to contain is
 an observation, not a ruling. The tool refuses to run without one.
+
+⚠️ AND SOME FILES ARE NOT OURS TO STAMP AT ALL. `fuel` swept 795 files and had
+to correct one: `fuel-examples/src/bs1770.rs` is a verbatim Apache-2.0-ONLY
+third-party work, and the blanket sweep stamped `MIT OR Apache-2.0` on it —
+asserting a grant nobody made. `--holdout <file>` names the paths a sweep must
+leave alone. ⚠️ An unreadable, missing or empty holdout list REFUSES THE RUN,
+and an entry matching no file exits 4, because a list that protects nothing
+reads exactly like a list with nothing to protect.
+
+Exit codes:
+    0  every file in scope carries the identifier
+    1  files are missing it
+    2  refused — unsupported extension, no --license, or an unusable holdout
+    3  a file declares a DIFFERENT licence (reported, never rewritten)
+    4  a holdout entry matched no file — it protected NOTHING
 """
 
 from __future__ import annotations
@@ -92,6 +107,14 @@ class FileReport:
 @dataclass
 class Report:
     files: list[FileReport] = field(default_factory=list)
+    #: Paths deliberately not touched, because their licence is CireSnave's
+    #: decision. ⚠️ Counted apart from both compliant and missing: a file
+    #: awaiting a human ruling is neither.
+    held_out: list[str] = field(default_factory=list)
+    #: Holdout entries that matched no file on disk. ⚠️ These protected NOTHING,
+    #: and a stale list reads exactly like a working one until the file it names
+    #: is renamed and then stamped.
+    holdout_unmatched: set = field(default_factory=set)
 
     @property
     def total(self) -> int:
@@ -147,6 +170,31 @@ def existing_identifier(text: str) -> str | None:
     return None
 
 
+def _normalise(identifier: str) -> str:
+    """Canonical form for COMPARISON only. Never for writing.
+
+    ⚠️ "MIT OR Apache-2.0" and "Apache-2.0 OR MIT" are the same grant. Measured
+    across 2,100 real files: 850 use the first spelling, ONE uses the second -
+    lightbulb's Hugging Face derivation - and a naive string compare calls it a
+    licence CONFLICT.
+
+    That matters more than tidiness. The same scan finds ONE genuine conflict:
+    `Apache-2.0` alone, on a vendored third-party file whose author never
+    granted an MIT option. ⚠️ A FALSE POSITIVE STANDING NEXT TO A TRUE ONE
+    TRAINS THE READER TO DISMISS BOTH - so removing the spurious conflict is
+    what makes the real one visible.
+    """
+    text = identifier.strip()
+    for joiner in (" OR ", " or "):
+        if joiner in text:
+            return " OR ".join(sorted(part.strip() for part in text.split(joiner)))
+    return text
+
+
+def same_licence(a: str, b: str) -> bool:
+    return _normalise(a) == _normalise(b)
+
+
 def header_line(ext: str, identifier: str) -> str:
     if ext not in COMMENT_STYLES:
         raise Unsupported(ext)
@@ -182,7 +230,10 @@ def apply_to_text(text: str, ext: str, identifier: str) -> tuple[str, str | None
     different licence — that is a legal change, not a formatting one."""
     found = existing_identifier(text)
     if found is not None:
-        if found == identifier:
+        # ⚠️ AN EXISTING SPDX LINE MEANS SKIP, NEVER APPEND. That is the
+        # truncating-parser failure mode, whose consequence was 2,200 duplicates
+        # on pass two with pass one looking flawless.
+        if same_licence(found, identifier):
             return text, "already-present"
         return text, "different-licence"
 
@@ -196,13 +247,62 @@ def apply_to_text(text: str, ext: str, identifier: str) -> tuple[str, str | None
     return (BOM + out if had_bom else out), None
 
 
+class HoldoutError(Exception):
+    """The holdout list could not be established. ⚠️ NOT the same as an empty one."""
+
+
+def load_holdout(path: pathlib.Path) -> set[str]:
+    """Paths a sweep must not touch, because they need a HUMAN LICENCE DECISION.
+
+    ⚠️ THIS RAISES RATHER THAN RETURNING EMPTY. A holdout file that is missing,
+    unreadable or misspelt would otherwise produce an empty set - and an empty
+    holdout is indistinguishable, at the call site, from "nothing needs holding
+    out". That is the fail-toward-NONE shape: the unreadable answer and the
+    permissive answer are the same value, and the permissive one is the one that
+    stamps a licence onto somebody else's copyright.
+
+    Blank lines and `#` comments are ignored so the list can say WHY.
+    """
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise HoldoutError(f"cannot read holdout list {path}: {exc}") from exc
+    entries = set()
+    for line in raw.splitlines():
+        line = line.split("#", 1)[0].strip()
+        if line:
+            entries.add(line.replace("\\", "/"))
+    if not entries:
+        raise HoldoutError(
+            f"holdout list {path} names no files. An EMPTY list and an "
+            f"UNREAD one are the same value here; say so explicitly instead.")
+    return entries
+
+
+def _relative(path: pathlib.Path, root: pathlib.Path) -> str:
+    try:
+        return path.relative_to(root).as_posix()
+    except ValueError:
+        return path.as_posix()
+
+
 def scan(root: pathlib.Path, extensions: set[str], identifier: str | None,
-         apply: bool, exclude: tuple[str, ...]) -> Report:
+         apply: bool, exclude: tuple[str, ...],
+         holdout: set[str] | None = None) -> Report:
     report = Report()
+    holdout = set(holdout or ())
+    report.holdout_unmatched = set(holdout)
     for path in sorted(root.rglob("*")):
         if not path.is_file() or path.suffix.lower() not in extensions:
             continue
         if any(part in exclude for part in path.parts):
+            continue
+        rel = _relative(path, root)
+        if rel in holdout:
+            # ⚠️ Held out, NOT skipped-as-done. Counted apart from both, because
+            # a file awaiting a human ruling is neither compliant nor a failure.
+            report.holdout_unmatched.discard(rel)
+            report.held_out.append(rel)
             continue
         try:
             text = path.read_text(encoding="utf-8")
@@ -232,6 +332,10 @@ def main(argv: list[str] | None = None) -> int:
                              "REQUIRED for apply; there is deliberately no default.")
     parser.add_argument("--ext", nargs="*", default=[".py"],
                         help="extensions to consider (default: .py)")
+    parser.add_argument("--holdout", type=pathlib.Path,
+                        help="file listing repo-relative paths to LEAVE ALONE - "
+                             "files whose licence is a human decision, not a stamp. "
+                             "An unreadable or empty list REFUSES the run.")
     parser.add_argument("--exclude", nargs="*",
                         default=[".git", "node_modules", "__pycache__", "build", "dist",
                                  ".venv", "venv", ".tox", ".mypy_cache", ".pytest_cache",
@@ -252,8 +356,19 @@ def main(argv: list[str] | None = None) -> int:
               "not a ruling.", file=sys.stderr)
         return 2
 
+    holdout = None
+    if args.holdout:
+        try:
+            holdout = load_holdout(args.holdout)
+        except HoldoutError as exc:
+            # ⚠️ Refuse the RUN. Continuing without the list is the one outcome
+            # the list exists to prevent.
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+
     report = scan(args.path, extensions, args.identifier,
-                  apply=args.mode == "apply", exclude=tuple(args.exclude))
+                  apply=args.mode == "apply", exclude=tuple(args.exclude),
+                  holdout=holdout)
 
     pct = (100.0 * report.with_header / report.total) if report.total else 0.0
     print(f"{report.path_label if hasattr(report, 'path_label') else args.path}: "
@@ -261,6 +376,19 @@ def main(argv: list[str] | None = None) -> int:
     for entry in report.conflicting:
         # ⚠️ Reported, never rewritten.
         print(f"  CONFLICT {entry.path}: declares {entry.existing!r}, not {args.identifier!r}")
+    if report.held_out:
+        print(f"  held out (awaiting a human licence decision): {len(report.held_out)}")
+        for rel in report.held_out:
+            print(f"    HELD {rel}")
+    if report.holdout_unmatched:
+        # ⚠️ THE POSITIVE CONTROL FOR THE HOLDOUT ITSELF. An entry matching no
+        # file protects nothing, and a stale list reads exactly like a working
+        # one - silently, and only until the file it names gets stamped.
+        print(f"  🔴 HOLDOUT ENTRIES THAT MATCHED NO FILE: "
+              f"{len(report.holdout_unmatched)} - these protected NOTHING",
+              file=sys.stderr)
+        for rel in sorted(report.holdout_unmatched):
+            print(f"    UNMATCHED {rel}", file=sys.stderr)
     if args.mode == "apply":
         print(f"  changed: {len(report.changed)}")
     else:
@@ -269,6 +397,11 @@ def main(argv: list[str] | None = None) -> int:
         if len(report.missing) > 20:
             print(f"  ... and {len(report.missing) - 20} more")
 
+    if report.holdout_unmatched:
+        # ⚠️ Ranked ABOVE a conflict, because it is the failure that is silent.
+        # A conflict announces itself in the report; an unmatched holdout entry
+        # announces nothing and leaves a file it was written to protect exposed.
+        return 4
     if report.conflicting:
         return 3
     return 0 if not report.missing else 1

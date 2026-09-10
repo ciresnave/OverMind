@@ -304,7 +304,24 @@ class ChatResult:
     provider: str
     latency_s: float
     usage: Usage = field(default_factory=Usage)
+    #: Why generation stopped, as the provider reports it. ⚠️ "length" means the
+    #: reply was CUT OFF, which is a different fact from having nothing to say.
+    finish_reason: str | None = None
     raw: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def truncated(self) -> bool:
+        """⚠️ MEASURED THREE TIMES, on three different models, each time read as
+        model incapacity: an output budget too small for a THINKING model is
+        spent reasoning, and the reply arrives empty.
+
+        gemini-3.6-flash returned 2-8 visible characters at max_tokens=160 and
+        every rule scored VOID (§13). qwen3:8b at max_tokens=600 executed
+        nothing and scored SILENT; at 2000, same schemas and same task, it
+        completed. A budget problem and a refusal are indistinguishable in the
+        content - and only `finish_reason` tells them apart.
+        """
+        return (self.finish_reason or "").lower() in ("length", "max_tokens", "max_output_tokens")
 
     @property
     def tool_calls(self) -> list[dict[str, Any]]:
@@ -452,7 +469,9 @@ class ProviderClient:
                     message=dict(choices[0].get("message") or {}),
                     model=model, provider=self.provider.key,
                     latency_s=time.time() - started,
-                    usage=Usage.from_response(body), raw=body,
+                    usage=Usage.from_response(body),
+                    finish_reason=choices[0].get("finish_reason"),
+                    raw=body,
                 )
         raise NoUsableModel(self.provider.key, attempts)
 

@@ -54,6 +54,10 @@ class StopReason:
     PROTOCOL_FAILURE = "protocol-failure"   # smuggled tool calls, twice
     PROVIDER_ERROR = "provider-error"
     NO_PROGRESS = "no-progress"             # same call repeated, twice over
+    #: 🔴 The reply was CUT OFF by the output budget, not finished. Measured
+    #: three times on three models, each time read as the model being unable or
+    #: unwilling. It is neither - it is a setting.
+    TRUNCATED = "truncated"
 
 
 @dataclass
@@ -157,6 +161,20 @@ def run_agent(client: ProviderClient, executor: GatedExecutor,
         spent = spent + result.usage
         messages.append(normalise_for_echo(result.message))
         calls = result.tool_calls
+
+        if not calls and result.truncated:
+            # ⚠️ CHECKED BEFORE "it is finished" AND BEFORE the smuggle check.
+            # A truncated reply has no tool calls and often no text, which is
+            # indistinguishable from a model that had nothing to say - and I
+            # misread exactly that three times before the harness could tell me.
+            return AgentRun(
+                final_text=result.content, stop_reason=StopReason.TRUNCATED,
+                steps=step + 1, ledger=executor.gate.ledger, messages=messages,
+                model=result.model, provider=result.provider, usage=spent,
+                offered_but_refused=offered_but_refused,
+                error=(f"the reply was cut off by the output budget "
+                       f"(finish_reason={result.finish_reason!r}); raise max_tokens. "
+                       f"A thinking model spends this budget BEFORE it answers."))
 
         if not calls:
             # ⚠️ Before believing "it is finished", check whether it TRIED to call

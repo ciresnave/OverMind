@@ -216,10 +216,6 @@ class TestLoopControl(unittest.TestCase):
         self.assertEqual(client.seen[0][0], {"role": "system", "content": "RULES HERE"})
 
 
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
-
-
 class TestNoProgressDetection(unittest.TestCase):
     """⚠️ MEASURED on two providers: on a two-step task, models called the FIRST
     tool four and seven times, never reached step two, and produced no final
@@ -368,3 +364,44 @@ class TestWastedToolOffersAreReported(unittest.TestCase):
         run = run_agent(ScriptedClient([{"role": "assistant", "content": "ok"}]),
                         ex, TOOLS, "idle")
         self.assertEqual(run.offered_but_refused, [])
+
+
+class TestTruncationStopsTheLoopWithTheRightReason(unittest.TestCase):
+    """⚠️ A truncated reply has no tool calls and often no text - identical, in
+    the content, to a model that had nothing to say. Checked BEFORE the
+    completion and smuggle branches so a setting of ours cannot be recorded as
+    the model's behaviour."""
+
+    def truncated_turn(self):
+        from overmind.providers import Usage
+        return ChatResult(message={"role": "assistant", "content": ""}, model="m",
+                          provider="p", latency_s=0.0, usage=Usage.zero(),
+                          finish_reason="length")
+
+    def test_a_truncated_reply_is_reported_as_truncation(self):
+        class C:
+            def __init__(self, r): self.r = r
+            def chat(self, *a, **k): return self.r
+        gate, ex = build_gate([DenyUnlessDeclared(reversible=frozenset())])
+        run = run_agent(C(self.truncated_turn()), ex, TOOLS, "go")
+        self.assertEqual(run.stop_reason, StopReason.TRUNCATED)
+        self.assertIn("max_tokens", run.error)
+
+    def test_it_is_not_mistaken_for_completion(self):
+        class C:
+            def __init__(self, r): self.r = r
+            def chat(self, *a, **k): return self.r
+        gate, ex = build_gate([DenyUnlessDeclared(reversible=frozenset())])
+        run = run_agent(C(self.truncated_turn()), ex, TOOLS, "go")
+        self.assertNotEqual(run.stop_reason, StopReason.COMPLETED)
+
+    def test_a_normal_empty_reply_is_still_completion(self):
+        """The control - only a TRUNCATED reply takes the new branch."""
+        client = ScriptedClient([{"role": "assistant", "content": "nothing to do"}])
+        gate, ex = build_gate([DenyUnlessDeclared(reversible=frozenset())])
+        run = run_agent(client, ex, TOOLS, "go")
+        self.assertEqual(run.stop_reason, StopReason.COMPLETED)
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

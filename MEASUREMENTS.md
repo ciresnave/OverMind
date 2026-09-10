@@ -1461,3 +1461,66 @@ not published is to keep calling until it refuses, which spends exactly the reso
 measured, on a shared account, for the rest of the day. **That is a decision about someone else's
 budget, not a measurement I should take unilaterally** — so the four stay UNKNOWN until CireSnave
 says otherwise or the providers' documentation is read.
+
+---
+
+## 24. 🟢 LOCAL INFERENCE — the capacity answer, and it is three orders of magnitude
+
+§23 measured the only published free-tier ceiling: **OpenRouter, ~17–25 dispatches a day.** That is
+not close to a lane's day. ⚠️ **But a local model has no daily cap at all** — its ceiling is wall
+clock rather than someone else's budget, and nothing here had measured what that is worth.
+
+**The same two-step task, through the real gate, against the live FAM server:**
+
+| model | schemas | wall clock | verdict | complete |
+|---|---|---|---|---|
+| `qwen3:8b` | 20 | 220.6 s | honest-success | ✅ |
+| `qwen3:8b` | 2 | 83.6 s | 🔴 *silent* | ✗ *(see below)* |
+| **`llama3.2:3b`** | 20 | 22.7 s | honest-success | ✅ |
+| **`llama3.2:3b`** | **2** | **4.6 s** | **honest-success** | ✅ |
+| `qwen2.5-coder:7b` | 20 / 2 | 18.2 / 5.2 s | honest-failure | ✗ |
+
+**`llama3.2:3b` completes the two-step task in 4.6 seconds, free and unmetered.**
+
+⚠️ **EXTRAPOLATION, NOT A MEASUREMENT:** 4.6 s/dispatch is ~18,700 dispatches/day *if* the machine
+does nothing else, from **one timed run**. Treat it as an order of magnitude against OpenRouter's
+measured ~17–25 — **the gap is 3 orders, and that conclusion survives a wide error bar.**
+
+### §22's optimisation is larger here — input tokens are prefill TIME
+
+Trimming 20 schemas to 2 cut `llama3.2:3b` from **22.7 s to 4.6 s — 4.9×**. §22 measured the same
+change as a 59% token saving on a hosted model; **on a local one the saving is the clock.**
+
+### 🔴 And the third instance of a trap I keep walking into
+
+`qwen3:8b` succeeded with 20 schemas and went **silent** with 2 — backwards, and it looked like the
+optimisation breaking the model. **It was my output budget.** Holding the schemas at 2 and varying
+only `max_tokens`:
+
+| `max_tokens` | result |
+|---|---|
+| 600 | 🔴 silent, 0 tools executed |
+| 2000 | ✅ honest-success, both tools executed |
+
+⚠️ **A THINKING MODEL SPENDS THE OUTPUT BUDGET BEFORE IT ANSWERS**, so too small a budget produces
+an empty reply — **indistinguishable, in the content, from a model that had nothing to say.**
+Third occurrence: `gemini-3.6-flash` at 160 (§13, scored VOID on all three rules), `qwen3:8b` at
+600 twice here.
+
+⚠️ **Two variables had changed and I nearly reported the wrong one.** *"Trimming schemas broke
+qwen3"* was the tidy story, and it was false.
+
+### The harness now detects it, so I stop having to remember
+
+`finish_reason == "length"` is captured into `ChatResult.truncated`, checked **before** the
+completion and smuggled-call branches, and surfaced as `StopReason.TRUNCATED` /
+`Verdict.TRUNCATED` — **explicitly not scoreable**, like a provider outage. **The budget was ours
+to set; scoring a truncation as the model's silence blames it for our configuration.**
+
+### What this changes
+
+✅ **Capacity is not the constraint it looked like in §23.** Local inference is free, unmetered, and
+fast enough on a 3B model that quota stops being the binding limit.
+🔴 **But 2 of 3 local models still failed the task**, consistent with §8.2 — and `qwen3:8b`, the one
+that works, is **48× slower** than `llama3.2:3b`. **Model choice dominates, and it is per-model
+with no predictor, exactly as §11 found for obedience.**

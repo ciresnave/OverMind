@@ -12,6 +12,7 @@ import pathlib
 import sys
 import tempfile
 import shutil
+import subprocess
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "tools"))
@@ -349,6 +350,149 @@ class TestHoldout(unittest.TestCase):
                            holdout=spdx.load_holdout(holdout))
         self.assertEqual(report.held_out, ["vendor_ex/bs1770.rs"])
         self.assertEqual(report.holdout_unmatched, set())
+
+class TestGpuAndCudaExtensions(unittest.TestCase):
+    """⚠️ AN EXTENSION THE SWEEP NEVER NAMES IS A POPULATION THE REPORT NEVER
+    COUNTED. `Unpopped` holds 87 .rs files and 32 .cu files; a sweep invoked as
+    `--ext .rs` reports 87/87 and 100%, and the 32 CUDA kernels are not in the
+    denominator at all. The refusal was correct - the tool will not guess a
+    comment syntax - but the REPORT read as complete."""
+
+    def test_cuda_and_shader_sources_use_c_style_comments(self):
+        for ext in (".cu", ".cuh", ".comp", ".vert", ".wgsl", ".hlsl", ".metal", ".cl"):
+            with self.subTest(ext=ext):
+                self.assertEqual(spdx.header_line(ext, MIT),
+                                 "// SPDX-License-Identifier: " + MIT)
+
+    def test_a_cuda_file_is_stamped_above_its_leading_comment(self):
+        text = "// a kernel" + chr(10) + "__global__ void k() {}" + chr(10)
+        out, skip = spdx.apply_to_text(text, ".cu", MIT)
+        self.assertTrue(out.startswith("// SPDX-License-Identifier: " + MIT))
+        self.assertIsNone(skip)
+
+    def test_an_extension_with_no_known_syntax_is_still_refused(self):
+        """The control. Adding extensions must not turn the refusal into a guess."""
+        with self.assertRaises(spdx.Unsupported):
+            spdx.header_line(".sbatch", MIT)
+
+class TestEmptyFilesAreSkipped(unittest.TestCase):
+    """⚠️ FOUND BY THE SYNAPSE LANE SIMULATING MY SWEEP BEFORE I RAN IT. Five of
+    their 153 `.rs` files are a single newline. Prepending a header yields
+    `// SPDX...` followed by a blank line, which `cargo fmt --check` wants
+    trimmed - and trimming makes those files +1/-1.
+
+    ⚠️ THE FORMATTER IS THE SMALLER HALF. The whole change is reviewable
+    BECAUSE every file is exactly +1/-0: `git diff --numstat | awk '$1!=1'`
+    either prints nothing or prints the files worth looking at. Four legitimate
+    exceptions destroy that, and a reviewer who learns the invariant has
+    exceptions stops using it.
+    """
+
+    def setUp(self):
+        self.root = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
+
+    def _write(self, rel, text):
+        p = self.root / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(text, encoding="utf-8")
+        return p
+
+    def test_an_empty_file_is_not_stamped(self):
+        blank = self._write("tests/empty_test.rs", chr(10))
+        spdx.scan(self.root, {".rs"}, MIT, apply=True, exclude=())
+        self.assertEqual(blank.read_text(encoding="utf-8"), chr(10),
+                         "an empty file was stamped")
+
+    def test_an_empty_file_is_not_counted_as_missing(self):
+        """⚠️ Counted as missing it could never be satisfied - the sweep would
+        report 1/2 forever and a ratchet built on it could never go green."""
+        self._write("tests/empty_test.rs", chr(10))
+        self._write("src/real.rs", "fn main() {}" + chr(10))
+        report = spdx.scan(self.root, {".rs"}, MIT, apply=True, exclude=())
+        self.assertEqual(report.missing, [])
+        self.assertEqual(report.total, 1, "the empty file stayed in the denominator")
+        self.assertEqual(len(report.empty), 1)
+
+    def test_whitespace_only_counts_as_empty(self):
+        blank = self._write("src/ws.rs", chr(10) + "   " + chr(10) + chr(9) + chr(10))
+        before = blank.read_text(encoding="utf-8")
+        spdx.scan(self.root, {".rs"}, MIT, apply=True, exclude=())
+        self.assertEqual(blank.read_text(encoding="utf-8"), before)
+
+    def test_a_file_with_one_real_line_is_still_stamped(self):
+        """The control. 'Empty' must mean empty, not 'short'."""
+        small = self._write("src/tiny.rs", "fn x() {}" + chr(10))
+        spdx.scan(self.root, {".rs"}, MIT, apply=True, exclude=())
+        self.assertTrue(small.read_text(encoding="utf-8").startswith("// SPDX"))
+
+class TestNestedWorktreesAreNotSwept(unittest.TestCase):
+    """🔴 THE MOST DANGEROUS BUG IN THIS TOOL, because unlike every other one it
+    would have WRITTEN.
+
+    `baracuda/.claude/` holds 3,588 `.rs` files: OTHER LANES' WORKTREES of the
+    same repository, checked out at other commits, with other agents' work in
+    progress in them. Measured:
+
+        git ls-files     1,207 files
+        filesystem walk  4,870 files
+        under .claude    3,588        <- would have been stamped
+
+    ⚠️ AND THE FIX IS NOT TO ADD `.claude` TO THE EXCLUSION LIST. A hand-written
+    set of names can only exclude what its author thought of, and what it misses
+    is SILENT. `git ls-files` cannot see another worktree by construction: a
+    nested checkout is a different repository with a different index.
+    """
+
+    def setUp(self):
+        self.root = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
+        subprocess.run(["git", "init", "-q", str(self.root)], check=True)
+
+    def _write(self, rel, text):
+        p = self.root / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(text, encoding="utf-8")
+        return p
+
+    def test_a_nested_repository_is_not_swept(self):
+        ours = self._write("src/ours.rs", "fn a() {}" + chr(10))
+        subprocess.run(["git", "-C", str(self.root), "add", "src/ours.rs"], check=True)
+
+        # a SEPARATE repository living inside ours, as a worktree does
+        nested = self.root / ".claude" / "worktrees" / "other-lane"
+        nested.mkdir(parents=True)
+        subprocess.run(["git", "init", "-q", str(nested)], check=True)
+        theirs = nested / "src.rs"
+        theirs.write_text("fn theirs() {}" + chr(10), encoding="utf-8")
+
+        report = spdx.scan(self.root, {".rs"}, MIT, apply=True, exclude=())
+
+        self.assertEqual(report.enumerated_by, "git ls-files")
+        self.assertTrue(ours.read_text(encoding="utf-8").startswith("// SPDX"))
+        self.assertEqual(theirs.read_text(encoding="utf-8"), "fn theirs() {}" + chr(10),
+                         "ANOTHER LANE'S WORKTREE WAS MODIFIED")
+
+    def test_an_untracked_file_in_our_own_repo_is_not_swept_either(self):
+        """⚠️ The cost of the fix, stated rather than discovered. An untracked
+        file is invisible to `git ls-files` - and that is the RIGHT call, because
+        the CI ratchet reads the same list, so sweeper and checker agree. A file
+        nobody has added is not yet part of the repo."""
+        self._write("src/tracked.rs", "fn a() {}" + chr(10))
+        subprocess.run(["git", "-C", str(self.root), "add", "src/tracked.rs"], check=True)
+        loose = self._write("src/untracked.rs", "fn b() {}" + chr(10))
+        spdx.scan(self.root, {".rs"}, MIT, apply=True, exclude=())
+        self.assertEqual(loose.read_text(encoding="utf-8"), "fn b() {}" + chr(10))
+
+    def test_a_non_repository_falls_back_and_SAYS_SO(self):
+        """⚠️ Reported, not silent. The two enumerations answer different
+        questions and the difference was 3,588 files."""
+        plain = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, plain, ignore_errors=True)
+        (plain / "a.rs").write_text("fn a() {}" + chr(10), encoding="utf-8")
+        report = spdx.scan(plain, {".rs"}, MIT, apply=False, exclude=())
+        self.assertEqual(report.enumerated_by, "filesystem walk")
+        self.assertEqual(report.total, 1)
 
 
 if __name__ == "__main__":

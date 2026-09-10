@@ -312,6 +312,43 @@ class Ledger:
     def entries(self) -> tuple[LedgerEntry, ...]:
         return tuple(self._entries)
 
+    def digest(self, limit: int = 12) -> str:
+        """A compact record of what has already happened, for the model to read.
+
+        ⚠️ THIS IS THE LEDGER POINTED THE OTHER WAY. Everywhere else it is
+        evidence FOR the reconciler - the surface a claim gets checked against.
+        Here it is context FOR the model: "what have I already done" is exactly
+        the state a stateless agent lacks, and the harness gives a Claude session
+        that state for free by keeping its transcript.
+
+        ⚠️ SAME MOVE AS THE GATE, ONE LAYER OVER. The gate refuses instead of
+        trusting the model to refuse. This remembers instead of trusting the
+        model to remember. In both cases the property is held OUTSIDE the model
+        and handed back, rather than asked for.
+
+        ⚠️ AND A DENIED CALL IS IN HERE TOO. A model that cannot see its own
+        refusals will re-attempt them - which costs a round trip and, on a
+        metered provider, a request from a daily budget.
+        """
+        if not self._entries:
+            return "Nothing has been done yet."
+        lines = []
+        for entry in self._entries[-limit:]:
+            args = ", ".join(f"{k}={v!r}" for k, v in sorted(entry.call.arguments.items()))
+            head = f"{entry.seq}. {entry.call.name}({args[:160]})"
+            if not entry.decision.allowed:
+                lines.append(f"{head} -> REFUSED: {entry.decision.reason}")
+            elif entry.error is not None:
+                lines.append(f"{head} -> FAILED: {entry.error[:160]}")
+            elif entry.executed:
+                lines.append(f"{head} -> OK: {(entry.result_repr or '')[:300]}")
+            else:
+                lines.append(f"{head} -> not executed")
+        omitted = len(self._entries) - len(self._entries[-limit:])
+        nl = chr(10)
+        prefix = f"({omitted} earlier calls omitted){nl}" if omitted else ""
+        return prefix + nl.join(lines)
+
     def executed_tools(self) -> tuple[str, ...]:
         """Tools that ran AND RETURNED. ⚠️ A call that raised is NOT here.
 

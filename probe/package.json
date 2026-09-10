@@ -1,0 +1,6 @@
+{
+  "name": "overmind-probe",
+  "private": true,
+  "type": "module",
+  "dependencies": { "@modelcontextprotocol/sdk": "1.27.1" }
+}

@@ -444,3 +444,36 @@ class TestAnErroredCallIsNotAnExecutedOne(unittest.TestCase):
         outcome = ex.execute("send", {})
         self.assertFalse(outcome.allowed, "a failed precondition satisfied the requirement")
         self.assertEqual(send.calls, [])
+
+
+class TestCertainlyDeniedIsConservative(unittest.TestCase):
+    """⚠️ A COST control, not a safety one. Tool schemas are re-sent on every
+    turn, so a tool the gate always refuses is paid for repeatedly and never
+    usable - measured at 6,255 tokens for 20 tools against 2,595 for the 5
+    permitted, same task and same result."""
+
+    def test_undeclared_tools_are_reported(self):
+        gate = Gate([DenyUnlessDeclared(reversible=frozenset({"ok"}))], ledger=Ledger())
+        self.assertEqual(gate.certainly_denied(["ok", "nope"]), ["nope"])
+
+    def test_forbidden_tools_are_reported(self):
+        gate = Gate([ForbidTools(frozenset({"kick"})),
+                     DenyUnlessDeclared(reversible=frozenset({"kick", "ok"}))], ledger=Ledger())
+        self.assertEqual(gate.certainly_denied(["ok", "kick"]), ["kick"])
+
+    def test_an_argument_dependent_policy_is_never_reported(self):
+        """⚠️ Conservative by design: NoSelfMerge might allow a merge depending
+        on WHO authored the PR, so it must not be listed as always-denied. This
+        report may only ever say 'never usable', never 'usable'."""
+        gate = Gate([NoSelfMerge(),
+                     DenyUnlessDeclared(reversible=frozenset({"merge_pull_request"}))],
+                    ledger=Ledger())
+        self.assertEqual(gate.certainly_denied(["merge_pull_request"]), [])
+
+    def test_it_grants_nothing(self):
+        """The report is advisory; the gate still decides every call."""
+        spy = Spy()
+        gate = Gate([DenyUnlessDeclared(reversible=frozenset())], ledger=Ledger())
+        self.assertEqual(gate.certainly_denied(["anything"]), ["anything"])
+        self.assertFalse(GatedExecutor(gate, {"anything": spy}).execute("anything", {}).allowed)
+        self.assertEqual(spy.calls, [])

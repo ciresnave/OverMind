@@ -266,3 +266,105 @@ class TestNoProgressDetection(unittest.TestCase):
         run = run_agent(client, self.ex, TOOLS, "go")
         self.assertEqual(len(self.spy.calls), 2)
         self.assertEqual(run.stop_reason, StopReason.COMPLETED)
+
+
+class TestRepeatDetectionIsConsecutiveOnly(unittest.TestCase):
+    """🔴 The guard originally counted ANY repeat in a run and blocked a
+    legitimate RE-READ: `list -> send -> list` suppressed the second list and
+    handed the model a STALE cached result immediately after it had changed the
+    world. A, B, A is progress; A, A, A is stuck."""
+
+    def setUp(self):
+        self.listing = Spy("entities: a, b")
+        self.send = Spy("sent")
+        self.gate, self.ex = build_gate(
+            [DenyUnlessDeclared(reversible=frozenset({"list_entities", "send_message"}))],
+            tools={"list_entities": self.listing, "send_message": self.send})
+
+    def test_a_re_read_after_acting_is_allowed(self):
+        client = ScriptedClient([tool_turn("list_entities"),
+                                 tool_turn("send_message", '{"to":"a"}', "c2"),
+                                 tool_turn("list_entities", "{}", "c3"),
+                                 {"role": "assistant", "content": "done"}])
+        run = run_agent(client, self.ex, TOOLS, "re-read after acting")
+        self.assertEqual(len(self.listing.calls), 2, "the re-read was suppressed")
+        self.assertEqual(run.stop_reason, StopReason.COMPLETED)
+
+    def test_consecutive_repeats_are_still_caught(self):
+        """The control - widening the rule must not disable it."""
+        client = ScriptedClient([tool_turn("list_entities")] * 5)
+        run = run_agent(client, self.ex, TOOLS, "stuck", max_steps=8)
+        self.assertEqual(run.stop_reason, StopReason.NO_PROGRESS)
+        self.assertEqual(len(self.listing.calls), 1)
+
+    def test_an_intervening_call_resets_the_counter(self):
+        """A, A, B, A, A must not stop: neither run of A reached three."""
+        client = ScriptedClient([tool_turn("list_entities"),
+                                 tool_turn("list_entities"),
+                                 tool_turn("send_message", '{"to":"a"}', "c2"),
+                                 tool_turn("list_entities", "{}", "c3"),
+                                 {"role": "assistant", "content": "done"}])
+        run = run_agent(client, self.ex, TOOLS, "mixed")
+        self.assertEqual(run.stop_reason, StopReason.COMPLETED)
+        self.assertEqual(len(self.listing.calls), 2)
+
+
+class TestRunUsageIsSummedAcrossTurns(unittest.TestCase):
+    """⚠️ A multi-turn run costs the SUM of its calls, not the last one. A loop
+    reporting only the final call's usage would understate every task that took
+    more than one step - which is every task worth measuring."""
+
+    def usage_turn(self, msg, prompt, completion):
+        return (msg, {"prompt_tokens": prompt, "completion_tokens": completion,
+                      "total_tokens": prompt + completion})
+
+    def test_usage_accumulates(self):
+        class UsageClient:
+            def __init__(self, turns): self.turns = list(turns)
+            def chat(self, messages, tools=None, max_tokens=None, **kw):
+                from overmind.providers import Usage
+                msg, usage = self.turns.pop(0)
+                return ChatResult(message=dict(msg), model="m", provider="p", latency_s=0.0,
+                                  usage=Usage(usage["prompt_tokens"], usage["completion_tokens"],
+                                              usage["total_tokens"], reported=True))
+        spy = Spy()
+        gate, ex = build_gate([DenyUnlessDeclared(reversible=frozenset({"list_entities"}))],
+                              tools={"list_entities": spy})
+        client = UsageClient([
+            self.usage_turn(tool_turn("list_entities"), 100, 10),
+            self.usage_turn({"role": "assistant", "content": "done"}, 150, 20),
+        ])
+        run = run_agent(client, ex, TOOLS, "go")
+        self.assertEqual(run.usage.total_tokens, 280)
+        self.assertEqual(run.usage.prompt_tokens, 250)
+        self.assertTrue(run.usage.reported)
+
+
+class TestWastedToolOffersAreReported(unittest.TestCase):
+    """⚠️ Reported, not silently dropped. The caller chose the offer, and a
+    harness that quietly edits the tool list is one whose behaviour cannot be
+    predicted from its inputs."""
+
+    def test_a_tool_the_gate_always_refuses_is_flagged(self):
+        gate, ex = build_gate([DenyUnlessDeclared(reversible=frozenset({"list_entities"}))],
+                              tools={"list_entities": Spy()})
+        client = ScriptedClient([{"role": "assistant", "content": "nothing to do"}])
+        run = run_agent(client, ex, TOOLS, "idle")
+        self.assertIn("merge_pull_request", run.offered_but_refused)
+        self.assertNotIn("list_entities", run.offered_but_refused)
+
+    def test_the_tools_are_still_offered_to_the_model(self):
+        """The harness reports the waste; it does not edit the caller's list."""
+        gate, ex = build_gate([DenyUnlessDeclared(reversible=frozenset({"list_entities"}))],
+                              tools={"list_entities": Spy()})
+        client = ScriptedClient([{"role": "assistant", "content": "ok"}])
+        run_agent(client, ex, TOOLS, "idle")
+        sent_tools = client.seen[0]
+        self.assertTrue(sent_tools, "the model was called")
+
+    def test_nothing_is_flagged_when_the_offer_matches_the_policy(self):
+        allowed = frozenset(t["function"]["name"] for t in TOOLS)
+        gate, ex = build_gate([DenyUnlessDeclared(reversible=allowed)], tools={})
+        run = run_agent(ScriptedClient([{"role": "assistant", "content": "ok"}]),
+                        ex, TOOLS, "idle")
+        self.assertEqual(run.offered_but_refused, [])

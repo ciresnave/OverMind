@@ -1339,3 +1339,68 @@ no-progress guard) on the misreading before testing it.
 the model or the tool.** The question cost one tool call.
 ⚠️ **A conclusion about someone else's behaviour should be the LAST explanation reached for, not
 the first — especially when you own the instrument in between.**
+
+---
+
+## 22. 💰 WHAT A DISPATCH ACTUALLY COSTS — and it is mostly not the task
+
+**The project exists to cut token cost, and until now nothing here had measured one.**
+Every capability finding above was about whether the work *could* be done. This is the first
+reading of what it *costs*, taken from the providers' own `usage` blocks — read from the response,
+never estimated from the text.
+
+### One real dispatch
+
+```
+task    : "list the entities on this FAM server and tell me how many there are"
+model   : groq/qwen3.8-27b     tools executed: fam_list_entities, fam_send_message
+COST    : 10,164 tokens  (in 9,940 - out 224)
+```
+
+⚠️ **9,940 input tokens to count two entities.** The task is a sentence. **The input is the 20 FAM
+tool schemas, re-sent on every turn of the loop.**
+
+### 🔴 The cost driver is the tool schemas, not the work
+
+Same task, same model, same result (`fam_list_entities` executed), same 2 steps:
+
+| schemas offered | JSON size | tokens | vs baseline |
+|---|---|---|---|
+| **all 20 the server offers** | 11,476 c | **6,255** | — |
+| **5 the gate permits** | 3,883 c | **2,595** | **−59%** |
+| **1 the task needs** | 474 c | **1,100** | **−82%** |
+
+**Fifty-nine per cent of that bill described tools that would have been refused.**
+
+⚠️ **THE GATE RESTRICTS WHAT MAY RUN; IT DOES NOT RESTRICT WHAT THE MODEL IS TOLD ABOUT.** Those
+are different lists and I had been letting them drift — offering all 20 while permitting 5. The
+waste is paid **on every turn**, and it is worse than waste: describing a forbidden tool invites
+the model to attempt it, producing a refusal that costs another round trip.
+
+### The rule
+
+**Offer the intersection of what the gate permits and what the task plausibly needs.**
+`Gate.certainly_denied()` reports tools offered that will be refused whatever the arguments —
+⚠️ **deliberately conservative**: an argument-dependent policy like `NoSelfMerge` is never listed,
+because the report may only ever say *"never usable"*, never *"usable"*.
+
+⚠️ **It reports rather than edits.** The caller chose the offer, and a harness that quietly rewrites
+the tool list is one whose behaviour cannot be predicted from its inputs.
+
+### Two defects the accounting itself surfaced
+
+- **An all-zero `Usage` has two meanings and the default was the wrong one for summing.**
+  `Usage()` means *"a call happened and reported nothing"*; a sum's starting value means *"nothing
+  summed yet"*. Using the former as the latter marked **every** total `INCOMPLETE`, including
+  totals where every call had reported. `Usage.zero()` is now the identity.
+- **A provider that reports no usage is recorded as UNKNOWN, not zero.** Zero is a number;
+  *"it did not say"* is not — and a silent provider recorded as zero looks free. A sum containing
+  one unreported call is marked a **floor**, not a figure.
+
+### ⚠️ What this does NOT say
+
+**Nothing here is a cost comparison against a Claude lane.** These providers are free tiers, so the
+monetary figure is zero and the real currency is **quota**. Converting 10,164 tokens per trivial
+dispatch into "dispatches per day" needs each provider's daily limits, which I have not measured —
+Groq's *per-minute* limits are in §12 and the daily ceiling is not. **The optimisation above is
+measured; the capacity arithmetic is not, and I am not going to publish a rate I have not taken.**

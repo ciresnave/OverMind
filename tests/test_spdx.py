@@ -350,6 +350,30 @@ class TestHoldout(unittest.TestCase):
         self.assertEqual(report.held_out, ["vendor_ex/bs1770.rs"])
         self.assertEqual(report.holdout_unmatched, set())
 
+class TestGpuAndCudaExtensions(unittest.TestCase):
+    """⚠️ AN EXTENSION THE SWEEP NEVER NAMES IS A POPULATION THE REPORT NEVER
+    COUNTED. `Unpopped` holds 87 .rs files and 32 .cu files; a sweep invoked as
+    `--ext .rs` reports 87/87 and 100%, and the 32 CUDA kernels are not in the
+    denominator at all. The refusal was correct - the tool will not guess a
+    comment syntax - but the REPORT read as complete."""
+
+    def test_cuda_and_shader_sources_use_c_style_comments(self):
+        for ext in (".cu", ".cuh", ".comp", ".vert", ".wgsl", ".hlsl", ".metal", ".cl"):
+            with self.subTest(ext=ext):
+                self.assertEqual(spdx.header_line(ext, MIT),
+                                 "// SPDX-License-Identifier: " + MIT)
+
+    def test_a_cuda_file_is_stamped_above_its_leading_comment(self):
+        text = "// a kernel" + chr(10) + "__global__ void k() {}" + chr(10)
+        out, skip = spdx.apply_to_text(text, ".cu", MIT)
+        self.assertTrue(out.startswith("// SPDX-License-Identifier: " + MIT))
+        self.assertIsNone(skip)
+
+    def test_an_extension_with_no_known_syntax_is_still_refused(self):
+        """The control. Adding extensions must not turn the refusal into a guess."""
+        with self.assertRaises(spdx.Unsupported):
+            spdx.header_line(".sbatch", MIT)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

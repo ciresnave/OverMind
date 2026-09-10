@@ -64,7 +64,15 @@ MARKER = "SPDX-License-Identifier:"
 #: extension -> (prefix, suffix). A suffix means a block comment.
 COMMENT_STYLES: dict[str, tuple[str, str]] = {}
 for _ext in (".rs", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".go", ".java",
-             ".c", ".h", ".cc", ".cpp", ".hpp", ".cs", ".swift", ".kt", ".scala", ".php"):
+             ".c", ".h", ".cc", ".cpp", ".hpp", ".cs", ".swift", ".kt", ".scala", ".php",
+             # ⚠️ CUDA, and the GPU shading languages that share C's syntax.
+             # `Unpopped` holds 32 `.cu` files and `baracuda` holds CUDA headers;
+             # without these the tool REFUSES those files, which is the correct
+             # failure but leaves a third of a repo unstamped and looking clean
+             # if the caller only ever passes `--ext .rs`. ⚠️ AN EXTENSION THE
+             # SWEEP NEVER NAMES IS A POPULATION THE REPORT NEVER COUNTED.
+             ".cu", ".cuh", ".cl", ".comp", ".vert", ".frag", ".geom", ".glsl",
+             ".wgsl", ".hlsl", ".metal", ".zig", ".dart", ".d", ".v"):
     COMMENT_STYLES[_ext] = ("// ", "")
 for _ext in (".py", ".sh", ".bash", ".rb", ".pl", ".toml", ".yml", ".yaml",
              ".ps1", ".r", ".jl", ".nix", ".dockerfile", ".mk"):

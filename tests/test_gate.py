@@ -15,9 +15,9 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from overmind.gate import (  # noqa: E402
-    Decision, ForbidTools, Gate, GateDenied, GatedExecutor, Ledger, NoSelfMerge,
-    Policy, RequirePrecondition, StaticFacts, ToolCall, DenyUnlessDeclared,
-    detect_smuggled_tool_call,
+    AllowSenders, Decision, ForbidTools, Gate, GateDenied, GatedExecutor, Ledger,
+    NoSelfMerge, Policy, RequirePrecondition, StaticFacts, ToolCall,
+    DenyUnlessDeclared, detect_smuggled_tool_call,
 )
 
 
@@ -319,3 +319,70 @@ class TestFalsyDefaultsRegression(unittest.TestCase):
         mine = StaticFacts()
         gate = Gate([DenyUnlessDeclared(reversible=frozenset())], facts=mine)
         self.assertIs(gate.facts, mine)
+
+
+class TestPerSenderPoliciesRefuseUntilIdentityIsVouched(unittest.TestCase):
+    """⚠️ MEASURED: every dispatch received so far reports `sender_vouched:
+    false` - the relay's word, not an account-vouched key.
+
+    Today's safety is STRUCTURAL: the gate never reads the message, so a sender
+    claiming authority changes nothing. That holds only while every write is
+    forbidden by BLANKET policy. The moment a policy decides by WHO ASKED,
+    identity becomes the authorisation input - and the gate cannot resolve a
+    fact the transport did not carry.
+
+    Enforced in the gate, once, as a REFUSAL rather than a note: a constraint
+    that lives in a design document is one restart away from being forgotten.
+    """
+
+    def setUp(self):
+        self.spy = Spy("SENT")
+        self.policy = AllowSenders(tools=frozenset({"send"}), senders=frozenset({"pm@local"}))
+
+    def build(self, facts):
+        gate = Gate([self.policy], facts=facts, ledger=Ledger())
+        return gate, GatedExecutor(gate, {"send": self.spy})
+
+    def test_unvouched_sender_is_refused_even_when_on_the_allow_list(self):
+        gate, ex = self.build(StaticFacts({"dispatch_sender": "pm@local",
+                                           "sender_vouched": False}))
+        outcome = ex.execute("send", {"text": "hi"})
+        self.assertFalse(outcome.allowed)
+        self.assertEqual(outcome.decision.policy, "unvouched-sender")
+        self.assertEqual(self.spy.calls, [])
+
+    def test_missing_vouch_fact_is_refused_not_assumed(self):
+        """⚠️ Absent is not the same as True. A gate that opens when it cannot
+        check opens exactly when something is wrong."""
+        gate, ex = self.build(StaticFacts({"dispatch_sender": "pm@local"}))
+        self.assertFalse(ex.execute("send", {}).allowed)
+
+    def test_a_truthy_non_true_value_does_not_satisfy_it(self):
+        """⚠️ `is not True`, not falsiness. A transport reporting the STRING
+        'false' would otherwise pass."""
+        gate, ex = self.build(StaticFacts({"dispatch_sender": "pm@local",
+                                           "sender_vouched": "false"}))
+        self.assertFalse(ex.execute("send", {}).allowed)
+
+    def test_vouched_and_permitted_is_allowed(self):
+        """The control - the refusal must be about the VOUCH, not a blanket no."""
+        gate, ex = self.build(StaticFacts({"dispatch_sender": "pm@local",
+                                           "sender_vouched": True}))
+        outcome = ex.execute("send", {"text": "hi"})
+        self.assertTrue(outcome.allowed, outcome.decision.reason)
+        self.assertEqual(len(self.spy.calls), 1)
+
+    def test_vouched_but_unlisted_sender_is_still_refused(self):
+        gate, ex = self.build(StaticFacts({"dispatch_sender": "stranger@local",
+                                           "sender_vouched": True}))
+        outcome = ex.execute("send", {})
+        self.assertFalse(outcome.allowed)
+        self.assertEqual(outcome.decision.policy, "allow-senders")
+        self.assertEqual(self.spy.calls, [])
+
+    def test_ordinary_policies_are_unaffected(self):
+        """⚠️ The check must not become a tax on every policy in the system."""
+        gate = Gate([DenyUnlessDeclared(reversible=frozenset({"send"}))],
+                    facts=StaticFacts(), ledger=Ledger())
+        ex = GatedExecutor(gate, {"send": self.spy})
+        self.assertTrue(ex.execute("send", {}).allowed)

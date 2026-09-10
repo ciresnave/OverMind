@@ -12,6 +12,7 @@ import pathlib
 import sys
 import tempfile
 import shutil
+import subprocess
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "tools"))
@@ -424,6 +425,74 @@ class TestEmptyFilesAreSkipped(unittest.TestCase):
         small = self._write("src/tiny.rs", "fn x() {}" + chr(10))
         spdx.scan(self.root, {".rs"}, MIT, apply=True, exclude=())
         self.assertTrue(small.read_text(encoding="utf-8").startswith("// SPDX"))
+
+class TestNestedWorktreesAreNotSwept(unittest.TestCase):
+    """🔴 THE MOST DANGEROUS BUG IN THIS TOOL, because unlike every other one it
+    would have WRITTEN.
+
+    `baracuda/.claude/` holds 3,588 `.rs` files: OTHER LANES' WORKTREES of the
+    same repository, checked out at other commits, with other agents' work in
+    progress in them. Measured:
+
+        git ls-files     1,207 files
+        filesystem walk  4,870 files
+        under .claude    3,588        <- would have been stamped
+
+    ⚠️ AND THE FIX IS NOT TO ADD `.claude` TO THE EXCLUSION LIST. A hand-written
+    set of names can only exclude what its author thought of, and what it misses
+    is SILENT. `git ls-files` cannot see another worktree by construction: a
+    nested checkout is a different repository with a different index.
+    """
+
+    def setUp(self):
+        self.root = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
+        subprocess.run(["git", "init", "-q", str(self.root)], check=True)
+
+    def _write(self, rel, text):
+        p = self.root / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(text, encoding="utf-8")
+        return p
+
+    def test_a_nested_repository_is_not_swept(self):
+        ours = self._write("src/ours.rs", "fn a() {}" + chr(10))
+        subprocess.run(["git", "-C", str(self.root), "add", "src/ours.rs"], check=True)
+
+        # a SEPARATE repository living inside ours, as a worktree does
+        nested = self.root / ".claude" / "worktrees" / "other-lane"
+        nested.mkdir(parents=True)
+        subprocess.run(["git", "init", "-q", str(nested)], check=True)
+        theirs = nested / "src.rs"
+        theirs.write_text("fn theirs() {}" + chr(10), encoding="utf-8")
+
+        report = spdx.scan(self.root, {".rs"}, MIT, apply=True, exclude=())
+
+        self.assertEqual(report.enumerated_by, "git ls-files")
+        self.assertTrue(ours.read_text(encoding="utf-8").startswith("// SPDX"))
+        self.assertEqual(theirs.read_text(encoding="utf-8"), "fn theirs() {}" + chr(10),
+                         "ANOTHER LANE'S WORKTREE WAS MODIFIED")
+
+    def test_an_untracked_file_in_our_own_repo_is_not_swept_either(self):
+        """⚠️ The cost of the fix, stated rather than discovered. An untracked
+        file is invisible to `git ls-files` - and that is the RIGHT call, because
+        the CI ratchet reads the same list, so sweeper and checker agree. A file
+        nobody has added is not yet part of the repo."""
+        self._write("src/tracked.rs", "fn a() {}" + chr(10))
+        subprocess.run(["git", "-C", str(self.root), "add", "src/tracked.rs"], check=True)
+        loose = self._write("src/untracked.rs", "fn b() {}" + chr(10))
+        spdx.scan(self.root, {".rs"}, MIT, apply=True, exclude=())
+        self.assertEqual(loose.read_text(encoding="utf-8"), "fn b() {}" + chr(10))
+
+    def test_a_non_repository_falls_back_and_SAYS_SO(self):
+        """⚠️ Reported, not silent. The two enumerations answer different
+        questions and the difference was 3,588 files."""
+        plain = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, plain, ignore_errors=True)
+        (plain / "a.rs").write_text("fn a() {}" + chr(10), encoding="utf-8")
+        report = spdx.scan(plain, {".rs"}, MIT, apply=False, exclude=())
+        self.assertEqual(report.enumerated_by, "filesystem walk")
+        self.assertEqual(report.total, 1)
 
 
 if __name__ == "__main__":

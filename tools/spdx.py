@@ -56,6 +56,7 @@ from __future__ import annotations
 
 import argparse
 import pathlib
+import subprocess
 import sys
 from dataclasses import dataclass, field
 
@@ -123,6 +124,10 @@ class Report:
     #: and a stale list reads exactly like a working one until the file it names
     #: is renamed and then stamped.
     holdout_unmatched: set = field(default_factory=set)
+    #: How the candidate files were found. ⚠️ REPORTED, because the two answer
+    #: different questions and the difference once meant 3,588 files in other
+    #: lanes' worktrees.
+    enumerated_by: str = "git ls-files"
 
     @property
     def total(self) -> int:
@@ -305,13 +310,53 @@ def _relative(path: pathlib.Path, root: pathlib.Path) -> str:
         return path.as_posix()
 
 
+def tracked_files(root: pathlib.Path) -> list[pathlib.Path] | None:
+    """Every file git tracks under `root`, or None if this is not a work tree.
+
+    🔴 THE SWEEPER WALKED THE FILESYSTEM AND THAT WAS THE MOST DANGEROUS BUG IN
+    THIS TOOL, because unlike every other one it would have WRITTEN.
+
+    `baracuda/.claude/` holds 3,588 tracked-looking `.rs` files: OTHER LANES'
+    WORKTREES of the same repository, checked out at other commits, with other
+    agents' work in progress in them. `.claude` was not in the exclusion list,
+    so `spdx.py apply` on that repo would have stamped headers into all of them.
+
+    ⚠️ AND THE FIX IS NOT TO ADD `.claude` TO THE LIST. That is the same
+    inclusion-list reasoning that has now failed four times tonight - a
+    hand-written set of names can only exclude what its author thought of, and
+    what it misses is silent. `git ls-files` CANNOT see another worktree by
+    construction: a nested checkout is a different repository with a different
+    index, and nothing in it is tracked by this one.
+
+    ⚠️ IT ALSO MAKES THE SWEEPER AND THE CI RATCHET READ THE SAME POPULATION.
+    They disagreed before, and a checker that sees a different set from the
+    sweeper is its own bug class whichever of the two is right.
+
+    Returns None rather than an empty list when git cannot answer, because
+    "not a repository" and "a repository with no files" must not be the same
+    value - the second is a legitimate no-op and the first is a caller error.
+    """
+    proc = subprocess.run(
+        ["git", "-C", str(root), "ls-files", "-z"],
+        capture_output=True, encoding=None, check=False)
+    if proc.returncode != 0:
+        return None
+    names = [n for n in proc.stdout.decode("utf-8", "replace").split("\0") if n]
+    return [root / n for n in names]
+
+
 def scan(root: pathlib.Path, extensions: set[str], identifier: str | None,
          apply: bool, exclude: tuple[str, ...],
          holdout: set[str] | None = None) -> Report:
     report = Report()
     holdout = set(holdout or ())
     report.holdout_unmatched = set(holdout)
-    for path in sorted(root.rglob("*")):
+
+    tracked = tracked_files(root)
+    report.enumerated_by = "git ls-files" if tracked is not None else "filesystem walk"
+    candidates = sorted(tracked) if tracked is not None else sorted(root.rglob("*"))
+
+    for path in candidates:
         if not path.is_file() or path.suffix.lower() not in extensions:
             continue
         if any(part in exclude for part in path.parts):
@@ -404,6 +449,12 @@ def main(argv: list[str] | None = None) -> int:
                   apply=args.mode == "apply", exclude=tuple(args.exclude),
                   holdout=holdout)
 
+    if report.enumerated_by != "git ls-files":
+        # ⚠️ SAID OUT LOUD. A filesystem walk cannot avoid a nested worktree,
+        # and on `baracuda` that difference is 3,588 files belonging to other
+        # lanes. If this line appears over a real repository, something is wrong.
+        print(f"  ⚠️  enumerated by {report.enumerated_by} - NOT a git work tree. "
+              f"A nested checkout would be swept.", file=sys.stderr)
     pct = (100.0 * report.with_header / report.total) if report.total else 0.0
     print(f"{report.path_label if hasattr(report, 'path_label') else args.path}: "
           f"{report.with_header}/{report.total} files carry {MARKER} ({pct:.0f}%)")

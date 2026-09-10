@@ -374,6 +374,57 @@ class TestGpuAndCudaExtensions(unittest.TestCase):
         with self.assertRaises(spdx.Unsupported):
             spdx.header_line(".sbatch", MIT)
 
+class TestEmptyFilesAreSkipped(unittest.TestCase):
+    """⚠️ FOUND BY THE SYNAPSE LANE SIMULATING MY SWEEP BEFORE I RAN IT. Five of
+    their 153 `.rs` files are a single newline. Prepending a header yields
+    `// SPDX...` followed by a blank line, which `cargo fmt --check` wants
+    trimmed - and trimming makes those files +1/-1.
+
+    ⚠️ THE FORMATTER IS THE SMALLER HALF. The whole change is reviewable
+    BECAUSE every file is exactly +1/-0: `git diff --numstat | awk '$1!=1'`
+    either prints nothing or prints the files worth looking at. Four legitimate
+    exceptions destroy that, and a reviewer who learns the invariant has
+    exceptions stops using it.
+    """
+
+    def setUp(self):
+        self.root = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
+
+    def _write(self, rel, text):
+        p = self.root / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(text, encoding="utf-8")
+        return p
+
+    def test_an_empty_file_is_not_stamped(self):
+        blank = self._write("tests/empty_test.rs", chr(10))
+        spdx.scan(self.root, {".rs"}, MIT, apply=True, exclude=())
+        self.assertEqual(blank.read_text(encoding="utf-8"), chr(10),
+                         "an empty file was stamped")
+
+    def test_an_empty_file_is_not_counted_as_missing(self):
+        """⚠️ Counted as missing it could never be satisfied - the sweep would
+        report 1/2 forever and a ratchet built on it could never go green."""
+        self._write("tests/empty_test.rs", chr(10))
+        self._write("src/real.rs", "fn main() {}" + chr(10))
+        report = spdx.scan(self.root, {".rs"}, MIT, apply=True, exclude=())
+        self.assertEqual(report.missing, [])
+        self.assertEqual(report.total, 1, "the empty file stayed in the denominator")
+        self.assertEqual(len(report.empty), 1)
+
+    def test_whitespace_only_counts_as_empty(self):
+        blank = self._write("src/ws.rs", chr(10) + "   " + chr(10) + chr(9) + chr(10))
+        before = blank.read_text(encoding="utf-8")
+        spdx.scan(self.root, {".rs"}, MIT, apply=True, exclude=())
+        self.assertEqual(blank.read_text(encoding="utf-8"), before)
+
+    def test_a_file_with_one_real_line_is_still_stamped(self):
+        """The control. 'Empty' must mean empty, not 'short'."""
+        small = self._write("src/tiny.rs", "fn x() {}" + chr(10))
+        spdx.scan(self.root, {".rs"}, MIT, apply=True, exclude=())
+        self.assertTrue(small.read_text(encoding="utf-8").startswith("// SPDX"))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

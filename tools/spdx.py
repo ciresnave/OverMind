@@ -126,7 +126,17 @@ class Report:
 
     @property
     def total(self) -> int:
-        return len(self.files)
+        """⚠️ EXCLUDES EMPTY FILES. See `empty` - counted in, the sweep could
+        never reach 100% and a ratchet built on it could never go green."""
+        return len(self.files) - len(self.empty)
+
+    @property
+    def empty(self) -> list[FileReport]:
+        """Files with nothing in them. ⚠️ NOT missing a header - there is
+        nothing here to license. Left out of the DENOMINATOR too: counted as
+        missing they could never be satisfied, so the sweep would report
+        "148/153" forever and a ratchet built on it could never go green."""
+        return [f for f in self.files if f.skipped == "empty"]
 
     @property
     def with_header(self) -> int:
@@ -134,7 +144,8 @@ class Report:
 
     @property
     def missing(self) -> list[FileReport]:
-        return [f for f in self.files if not f.has_header]
+        return [f for f in self.files
+                if not f.has_header and f.skipped != "empty"]
 
     @property
     def conflicting(self) -> list[FileReport]:
@@ -317,6 +328,21 @@ def scan(root: pathlib.Path, extensions: set[str], identifier: str | None,
         except (UnicodeDecodeError, OSError):
             report.files.append(FileReport(path, False, skipped="unreadable"))
             continue
+        if not text.strip():
+            # ⚠️ AN EMPTY FILE HAS NO CODE TO LICENSE, and stamping one is not
+            # merely pointless - it BREAKS THE SHAPE INVARIANT the whole sweep
+            # is verified by. The synapse lane simulated this before I ran it:
+            # five of their `.rs` files are a single newline, and prepending a
+            # header yields a header line followed by a BLANK line, which
+            # `cargo fmt --check` wants trimmed.
+            # trimmed. Trimming it makes those files +1/-1 in a change whose
+            # entire reviewability rests on EVERY file being +1/-0.
+            #
+            # ⚠️ SO THE SKIP PROTECTS THE AUDIT, NOT JUST THE FORMATTER. Four
+            # legitimate files would have failed a reviewer's shape check, and
+            # a reviewer who learns the invariant has exceptions stops using it.
+            report.files.append(FileReport(path, False, skipped="empty"))
+            continue
         found = existing_identifier(text)
         entry = FileReport(path, has_header=found is not None, existing=found)
         if apply and identifier:
@@ -397,6 +423,8 @@ def main(argv: list[str] | None = None) -> int:
               file=sys.stderr)
         for rel in sorted(report.holdout_unmatched):
             print(f"    UNMATCHED {rel}", file=sys.stderr)
+    if report.empty:
+        print(f"  empty, nothing to license: {len(report.empty)}")
     if args.mode == "apply":
         print(f"  changed: {len(report.changed)}")
     else:

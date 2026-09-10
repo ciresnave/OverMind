@@ -1404,3 +1404,60 @@ monetary figure is zero and the real currency is **quota**. Converting 10,164 to
 dispatch into "dispatches per day" needs each provider's daily limits, which I have not measured —
 Groq's *per-minute* limits are in §12 and the daily ceiling is not. **The optimisation above is
 measured; the capacity arithmetic is not, and I am not going to publish a rate I have not taken.**
+
+---
+
+## 23. 📅 HOW MANY DISPATCHES A DAY? — mostly UNKNOWN, and one hard number
+
+**The question CireSnave's budget actually turns on.** §22 measured what a dispatch costs; this
+asks how many the free tiers allow. **One minimal call per provider, reading the headers.**
+
+| provider | rate-limit headers | refill window | long-window cap |
+|---|---|---|---|
+| **OpenRouter** | `X-RateLimit-Limit: 50`, `Remaining: 0` | **15,954 s** → midnight UTC | 🔴 **50 / DAY, EXHAUSTED** |
+| Groq | RPM 1000, TPM 8000 | 86 s | ⚠️ UNKNOWN |
+| Google AI Studio | **none returned** | — | ⚠️ UNKNOWN |
+| NVIDIA NIM | **none returned** | — | ⚠️ UNKNOWN |
+| Cloudflare Workers AI | **none returned** | — | ⚠️ UNKNOWN |
+
+**1 of 5 observed. 4 of 5 UNKNOWN.**
+
+⚠️ **UNKNOWN MEANS NOT MEASURED, NEVER "UNLIMITED".** Three providers return no rate-limit headers
+at all, and the comfortable reading of silence is *"no limit"* — which is the §22 accounting defect
+one level up, in the direction of *more capacity than we have*.
+
+### 🔴 The one hard number, and it is small
+
+**OpenRouter's free tier is 50 requests per day**, refilling at midnight UTC. At the **2–3 API
+calls per dispatch** measured in §22, that is **roughly 17–25 dispatches per day** — not 50.
+
+⚠️ **And it read `Remaining: 0`: I had already exhausted it, with today's measurement runs.**
+**The measurement consumed the thing being measured.** That also retroactively explains the
+`model=None` / `not-run` rows in §19 — those were quota exhaustion, correctly excluded from the
+denominator but never diagnosed at the time.
+
+### ⚠️ A keyword list is not a measurement
+
+The first version of this probe classified a cap as daily by matching **`day` / `daily` / `rpd` in
+the header NAME**. OpenRouter publishes a plain `X-RateLimit-Limit` with a millisecond epoch reset,
+so **the detector reported UNKNOWN about a daily cap sitting in the response it had just read.**
+
+**It now classifies by the REFILL WINDOW** — decoding the reset field, whether it is an epoch in
+seconds, an epoch in milliseconds, or a duration like `1m26.4s`, and calling anything over an hour
+a long window. **Providers express this three ways and none of them announces which.**
+
+Same family as the SPDX checker counting its own string constant, and the `claims_success` matcher
+missing a model that opened with *"Done."*: **a heuristic over names finds the cases whose
+vocabulary you guessed and calls the rest absent.**
+
+### What this does and does not answer
+
+✅ **OpenRouter: ~17–25 dispatches/day, measured.**
+🔴 **The other four: not answerable from headers.** Their limits exist — Groq's per-minute figures
+are right there — but the daily ceiling is not published on the wire.
+
+⚠️ **AND MEASURING ONE EMPIRICALLY MEANS EXHAUSTING IT.** The only way to find a daily cap that is
+not published is to keep calling until it refuses, which spends exactly the resource being
+measured, on a shared account, for the rest of the day. **That is a decision about someone else's
+budget, not a measurement I should take unilaterally** — so the four stay UNKNOWN until CireSnave
+says otherwise or the providers' documentation is read.

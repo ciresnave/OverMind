@@ -56,6 +56,7 @@ from __future__ import annotations
 
 import argparse
 import pathlib
+import subprocess
 import sys
 from dataclasses import dataclass, field
 
@@ -64,7 +65,15 @@ MARKER = "SPDX-License-Identifier:"
 #: extension -> (prefix, suffix). A suffix means a block comment.
 COMMENT_STYLES: dict[str, tuple[str, str]] = {}
 for _ext in (".rs", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".go", ".java",
-             ".c", ".h", ".cc", ".cpp", ".hpp", ".cs", ".swift", ".kt", ".scala", ".php"):
+             ".c", ".h", ".cc", ".cpp", ".hpp", ".cs", ".swift", ".kt", ".scala", ".php",
+             # ⚠️ CUDA, and the GPU shading languages that share C's syntax.
+             # `Unpopped` holds 32 `.cu` files and `baracuda` holds CUDA headers;
+             # without these the tool REFUSES those files, which is the correct
+             # failure but leaves a third of a repo unstamped and looking clean
+             # if the caller only ever passes `--ext .rs`. ⚠️ AN EXTENSION THE
+             # SWEEP NEVER NAMES IS A POPULATION THE REPORT NEVER COUNTED.
+             ".cu", ".cuh", ".cl", ".comp", ".vert", ".frag", ".geom", ".glsl",
+             ".wgsl", ".hlsl", ".metal", ".zig", ".dart", ".d", ".v"):
     COMMENT_STYLES[_ext] = ("// ", "")
 for _ext in (".py", ".sh", ".bash", ".rb", ".pl", ".toml", ".yml", ".yaml",
              ".ps1", ".r", ".jl", ".nix", ".dockerfile", ".mk"):
@@ -115,10 +124,24 @@ class Report:
     #: and a stale list reads exactly like a working one until the file it names
     #: is renamed and then stamped.
     holdout_unmatched: set = field(default_factory=set)
+    #: How the candidate files were found. ⚠️ REPORTED, because the two answer
+    #: different questions and the difference once meant 3,588 files in other
+    #: lanes' worktrees.
+    enumerated_by: str = "git ls-files"
 
     @property
     def total(self) -> int:
-        return len(self.files)
+        """⚠️ EXCLUDES EMPTY FILES. See `empty` - counted in, the sweep could
+        never reach 100% and a ratchet built on it could never go green."""
+        return len(self.files) - len(self.empty)
+
+    @property
+    def empty(self) -> list[FileReport]:
+        """Files with nothing in them. ⚠️ NOT missing a header - there is
+        nothing here to license. Left out of the DENOMINATOR too: counted as
+        missing they could never be satisfied, so the sweep would report
+        "148/153" forever and a ratchet built on it could never go green."""
+        return [f for f in self.files if f.skipped == "empty"]
 
     @property
     def with_header(self) -> int:
@@ -126,7 +149,8 @@ class Report:
 
     @property
     def missing(self) -> list[FileReport]:
-        return [f for f in self.files if not f.has_header]
+        return [f for f in self.files
+                if not f.has_header and f.skipped != "empty"]
 
     @property
     def conflicting(self) -> list[FileReport]:
@@ -286,13 +310,53 @@ def _relative(path: pathlib.Path, root: pathlib.Path) -> str:
         return path.as_posix()
 
 
+def tracked_files(root: pathlib.Path) -> list[pathlib.Path] | None:
+    """Every file git tracks under `root`, or None if this is not a work tree.
+
+    🔴 THE SWEEPER WALKED THE FILESYSTEM AND THAT WAS THE MOST DANGEROUS BUG IN
+    THIS TOOL, because unlike every other one it would have WRITTEN.
+
+    `baracuda/.claude/` holds 3,588 tracked-looking `.rs` files: OTHER LANES'
+    WORKTREES of the same repository, checked out at other commits, with other
+    agents' work in progress in them. `.claude` was not in the exclusion list,
+    so `spdx.py apply` on that repo would have stamped headers into all of them.
+
+    ⚠️ AND THE FIX IS NOT TO ADD `.claude` TO THE LIST. That is the same
+    inclusion-list reasoning that has now failed four times tonight - a
+    hand-written set of names can only exclude what its author thought of, and
+    what it misses is silent. `git ls-files` CANNOT see another worktree by
+    construction: a nested checkout is a different repository with a different
+    index, and nothing in it is tracked by this one.
+
+    ⚠️ IT ALSO MAKES THE SWEEPER AND THE CI RATCHET READ THE SAME POPULATION.
+    They disagreed before, and a checker that sees a different set from the
+    sweeper is its own bug class whichever of the two is right.
+
+    Returns None rather than an empty list when git cannot answer, because
+    "not a repository" and "a repository with no files" must not be the same
+    value - the second is a legitimate no-op and the first is a caller error.
+    """
+    proc = subprocess.run(
+        ["git", "-C", str(root), "ls-files", "-z"],
+        capture_output=True, encoding=None, check=False)
+    if proc.returncode != 0:
+        return None
+    names = [n for n in proc.stdout.decode("utf-8", "replace").split("\0") if n]
+    return [root / n for n in names]
+
+
 def scan(root: pathlib.Path, extensions: set[str], identifier: str | None,
          apply: bool, exclude: tuple[str, ...],
          holdout: set[str] | None = None) -> Report:
     report = Report()
     holdout = set(holdout or ())
     report.holdout_unmatched = set(holdout)
-    for path in sorted(root.rglob("*")):
+
+    tracked = tracked_files(root)
+    report.enumerated_by = "git ls-files" if tracked is not None else "filesystem walk"
+    candidates = sorted(tracked) if tracked is not None else sorted(root.rglob("*"))
+
+    for path in candidates:
         if not path.is_file() or path.suffix.lower() not in extensions:
             continue
         if any(part in exclude for part in path.parts):
@@ -308,6 +372,21 @@ def scan(root: pathlib.Path, extensions: set[str], identifier: str | None,
             text = path.read_text(encoding="utf-8")
         except (UnicodeDecodeError, OSError):
             report.files.append(FileReport(path, False, skipped="unreadable"))
+            continue
+        if not text.strip():
+            # ⚠️ AN EMPTY FILE HAS NO CODE TO LICENSE, and stamping one is not
+            # merely pointless - it BREAKS THE SHAPE INVARIANT the whole sweep
+            # is verified by. The synapse lane simulated this before I ran it:
+            # five of their `.rs` files are a single newline, and prepending a
+            # header yields a header line followed by a BLANK line, which
+            # `cargo fmt --check` wants trimmed.
+            # trimmed. Trimming it makes those files +1/-1 in a change whose
+            # entire reviewability rests on EVERY file being +1/-0.
+            #
+            # ⚠️ SO THE SKIP PROTECTS THE AUDIT, NOT JUST THE FORMATTER. Four
+            # legitimate files would have failed a reviewer's shape check, and
+            # a reviewer who learns the invariant has exceptions stops using it.
+            report.files.append(FileReport(path, False, skipped="empty"))
             continue
         found = existing_identifier(text)
         entry = FileReport(path, has_header=found is not None, existing=found)
@@ -370,6 +449,12 @@ def main(argv: list[str] | None = None) -> int:
                   apply=args.mode == "apply", exclude=tuple(args.exclude),
                   holdout=holdout)
 
+    if report.enumerated_by != "git ls-files":
+        # ⚠️ SAID OUT LOUD. A filesystem walk cannot avoid a nested worktree,
+        # and on `baracuda` that difference is 3,588 files belonging to other
+        # lanes. If this line appears over a real repository, something is wrong.
+        print(f"  ⚠️  enumerated by {report.enumerated_by} - NOT a git work tree. "
+              f"A nested checkout would be swept.", file=sys.stderr)
     pct = (100.0 * report.with_header / report.total) if report.total else 0.0
     print(f"{report.path_label if hasattr(report, 'path_label') else args.path}: "
           f"{report.with_header}/{report.total} files carry {MARKER} ({pct:.0f}%)")
@@ -389,6 +474,8 @@ def main(argv: list[str] | None = None) -> int:
               file=sys.stderr)
         for rel in sorted(report.holdout_unmatched):
             print(f"    UNMATCHED {rel}", file=sys.stderr)
+    if report.empty:
+        print(f"  empty, nothing to license: {len(report.empty)}")
     if args.mode == "apply":
         print(f"  changed: {len(report.changed)}")
     else:

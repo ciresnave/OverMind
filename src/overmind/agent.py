@@ -109,16 +109,68 @@ def _parse_arguments(raw: Any) -> dict[str, Any]:
     return {}
 
 
+#: ⚠️ ONE SENTENCE, ADDED BECAUSE OF A MEASUREMENT, NOT A HUNCH. With the plain
+#: ledger prompt, 20 of 20 runs on llama3.2:3b executed BOTH required tools and
+#: then ran to `max-steps` - 0 of 20 stopped on their own, against 20 of 20 in
+#: transcript mode.
+#:
+#: 🔴 AND WHETHER THIS SENTENCE HELPS IS UNTESTED. It scored 0/8 on llama3.2:3b
+#: - but that model does the task 0 of 24 in EVERY arm including the control, so
+#: the run measured the floor rather than the treatment. ⚠️ A FIX FOR "FINISHES
+#: BUT WILL NOT STOP" CANNOT BE EVALUATED ON A MODEL THAT NEVER FINISHES.
+#: Re-running on qwen3:8b, which does complete the task.
+#:
+#: ⚠️ THE LEDGER CARRIED THE STATE AND NOT THE CLOSURE. "Here is the task, here
+#: is what you did" reads as an instruction to do the task, every step, forever.
+#: A transcript ends in a tool result and the next turn naturally concludes; a
+#: rebuilt prompt has no such shape, so the cue has to be explicit.
+CLOSURE = ("If the ledger above already shows this task finished, reply in plain "
+           "text saying what was done and call no tool.")
+
+
 def run_agent(client: ProviderClient, executor: GatedExecutor,
               tools: Sequence[Mapping[str, Any]], task: str, *,
               system: str = "", max_steps: int = 8,
-              max_tokens: int | None = None) -> AgentRun:
+              max_tokens: int | None = None,
+              context_mode: str = "transcript") -> AgentRun:
     """Drive one task to completion through the gate.
 
     `tools` are OpenAI-shaped schemas; `executor` holds the callables. The two
     are deliberately separate: a schema the model can see is not permission to
     run anything, and the gate is what decides.
+
+    `context_mode` selects what the model is shown of its own past:
+
+      "transcript"  the accumulated message history - every assistant turn and
+                    every tool result, growing each step. What a Claude session
+                    gets, and what every provider assumes.
+
+      "ledger"      the brief plus a compact digest of what the LEDGER records,
+                    rebuilt from scratch each step. The transcript is discarded.
+
+      "ledger+closure"
+                    the same, plus one sentence telling the model it may stop.
+                    ⚠️ A SEPARATE MODE RATHER THAN A FIX FOLDED INTO "ledger",
+                    because the plain arm is the control it has to be measured
+                    against - and a treatment silently applied to the control
+                    reports no difference.
+
+    ⚠️ THE SECOND IS THE ARCHITECTURE THIS PROJECT ACTUALLY IMPLIES, AND IT IS
+    UNMEASURED. "What have I already done" is exactly the state a stateless
+    agent lacks, and a Claude session gets it for free by keeping its
+    transcript. Holding it in the ledger and handing it back is the same move as
+    the gate, one layer over: the gate refuses instead of trusting the model to
+    refuse, and this remembers instead of trusting the model to remember.
+
+    ⚠️ IT IS ALSO NOT OBVIOUSLY BETTER, WHICH IS WHY IT IS A FLAG AND NOT A
+    CHANGE. A digest is lossy: it records that a tool returned, and an excerpt
+    of what, but not the model's own reasoning between steps. Whether that
+    reasoning was load-bearing is the question, and it is measurable rather than
+    arguable - `probe/ledger_context.py` runs both arms over the same task.
     """
+    if context_mode not in ("transcript", "ledger", "ledger+closure"):
+        raise ValueError(f"context_mode must be 'transcript', 'ledger' or "
+                         f"'ledger+closure', not {context_mode!r}")
     messages: list[dict[str, Any]] = []
     if system:
         messages.append({"role": "system", "content": system})
@@ -149,7 +201,28 @@ def run_agent(client: ProviderClient, executor: GatedExecutor,
     repeat_count = 0
     last_results: dict[tuple[str, str], str] = {}
 
+    #: In ledger mode, guidance the harness produced this step (a repeat
+    #: warning, a smuggled-call correction). ⚠️ These must survive the rebuild:
+    #: they are the harness TALKING TO the model, not a record of tool calls,
+    #: so the ledger does not contain them and dropping them would repeat the
+    #: correction forever.
+    notes: list[str] = []
+
     for step in range(max_steps):
+        if context_mode.startswith("ledger"):
+            # ⚠️ REBUILT, NOT APPENDED. The transcript is deliberately thrown
+            # away each step; the ledger is the only memory.
+            messages = []
+            if system:
+                messages.append({"role": "system", "content": system})
+            body = [task, "", "What you have already done, from the execution ledger:",
+                    executor.gate.ledger.digest()]
+            if notes:
+                body += ["", "Notes from the harness:"] + [f"- {n}" for n in notes]
+            if context_mode == "ledger+closure":
+                body += ["", CLOSURE]
+            messages.append({"role": "user",
+                             "content": chr(10).join(body)})
         try:
             result = client.chat(messages, tools=tools, max_tokens=max_tokens)
         except Exception as exc:                       # noqa: BLE001 - reported, not hidden
@@ -191,14 +264,17 @@ def run_agent(client: ProviderClient, executor: GatedExecutor,
                         error=f"model wrote tool-call JSON into its message twice "
                               f"({', '.join(smuggled)}) instead of emitting a tool call",
                     )
-                messages.append({
-                    "role": "user",
-                    "content": (
-                        f"You wrote what looks like a call to {smuggled[0]} inside your "
-                        f"message. That does nothing - it was not executed. Emit it as a "
-                        f"real tool call, or answer without one."
-                    ),
-                })
+                correction = (
+                    f"You wrote what looks like a call to {smuggled[0]} inside your "
+                    f"message. That does nothing - it was not executed. Emit it as a "
+                    f"real tool call, or answer without one.")
+                messages.append({"role": "user", "content": correction})
+                # ⚠️ ALSO kept as a note. In ledger mode the transcript is
+                # rebuilt next step, and a correction that lives only in the
+                # transcript would vanish - leaving the model to make the same
+                # protocol error forever, with the harness re-issuing the same
+                # correction and neither side able to see the loop.
+                notes.append(correction)
                 continue
             return AgentRun(final_text=result.content, stop_reason=StopReason.COMPLETED,
                             steps=step + 1, ledger=executor.gate.ledger, messages=messages,

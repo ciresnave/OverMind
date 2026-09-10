@@ -1,6 +1,6 @@
-"""Three pre-flight checks a repo must pass before an SPDX sweep touches it.
+"""Six pre-flight checks to run before an SPDX sweep touches a repo.
 
-    python tools/preflight.py <repo> [<repo> ...]
+    python tools/preflight.py <repo> [<repo> ...] [--offline]
 
 ⚠️ EACH CHECK CATCHES A DIFFERENT CLASS, AND EACH WAS LEARNED FROM A REAL MISS.
 
@@ -22,6 +22,44 @@
      asserts MIT-or-Apache over text in a repo whose LICENSE dedicates to the
      public domain. Nothing in any source file signals this.
 
+  4  A PUBLISHED MEMBER ON A SERVED VERSION -> a sequencing problem, and
+     CHECKS 1-3 CANNOT SEE IT BECAUSE IT IS NOT ABOUT LICENCES AT ALL. A sweep
+     is a content change to every file with NO version change: a consumer
+     resolving `foo 0.1.1` gets the registry's tarball while the repo's own CI
+     tests different bytes, and both are green about different objects.
+
+     ⚠️ THE HAZARD IS NOT THAT A REPO HAS A GATE THAT NOTICES. The sweep moves
+     content that is ALREADY PUBLISHED; a repo with no such gate takes the same
+     collision and merely cannot see it. `vulkane` is not unusual - it is the
+     only one on this list with eyes.
+
+     🔴 RETRACTED, WITHIN THE HOUR, BY THE MEASUREMENT BELOW. This file said
+     that "every publishing repo will hit this" was the plausible
+     generalisation AND WAS WRONG, on the strength of vulkane's 1-of-4. Then:
+
+         vulkane      1 of 4 members served    <- the accident
+         Unpopped     4 of 4
+         synapse      1 of 1
+         baracuda    69 of 70
+         mlmf, lightbulb   0 of 1 - both on unpublished versions
+
+     vulkane's three clean rows were an ACCIDENT OF TIMING: that lane ran a
+     post-publish bump pass the day before. ⚠️ I GENERALISED FROM THE ONE REPO
+     I HAD MEASURED, WHICH HAPPENED TO BE THE LEAST AFFECTED, AND THE
+     GENERALISATION POINTED THE COMFORTABLE WAY.
+
+     ⚠️ NOR IS IT DEFERRABLE. The collision exists FROM THE MERGE: main's own
+     armed gate finds the diverged member and MAIN GOES RED, blocking every
+     subsequent PR in that repo. The bump belongs IN the sweep PR.
+
+     ⚠️ CHECK 4 STILL DOES NOT BLOCK A SWEEP. The sweep is correct either way;
+     what it changes is what must land ALONGSIDE.
+
+  5  CI TYING A VERSION TO A CHANGELOG ENTRY -> check 4's remedy costs TWO
+     edits, not one. On `vulkane` a bump alone turns the divergence gate green
+     and trips the changelog gate. ⚠️ A REMEDY THAT TRADES ONE RED FOR ANOTHER
+     IS WHAT YOU SHIP WHEN YOU STOP AT THE FIRST GREEN.
+
 ⚠️ A DISAGREEMENT IS NOT A FINDING OF DRIFT. A repo can be deliberately split -
 CC0 for a standard's text, MIT/Apache for its implementation, which is normal
 and correct for a standards project. Split and drift produce OPPOSITE actions,
@@ -29,7 +67,9 @@ and only the owner can say which this is. This script reports; it never rules.
 
 ⚠️ AND EVERY CHECK REPORTS UNKNOWN RATHER THAN CLEAN WHEN IT CANNOT SEE. A repo
 with no LICENSE file has not passed check 3 - it has failed to be measured, and
-"no conflict found" is what both look like from here.
+"no conflict found" is what both look like from here. Check 4 does the same when
+the registry is unreachable: offline and "nothing published" are the same empty
+answer, and the empty answer is the one that says go ahead.
 """
 
 from __future__ import annotations
@@ -38,6 +78,8 @@ import pathlib
 import re
 import subprocess
 import sys
+import urllib.error
+import urllib.request
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
@@ -48,8 +90,16 @@ try:
 except (AttributeError, ValueError):
     pass
 
+# ⚠️ AN EXTENSION THIS LIST OMITS IS A POPULATION THE REPORT NEVER COUNTED, and
+# the omission shows up as a CLEANER result, not a smaller one. `Unpopped` holds
+# 32 `.cu` files and the first version of this list had no `.cu`: check 1 said
+# "clean" over a population that excluded a third of the repo's source. Re-run
+# with `.cu` included it is still clean - but that is now a measurement rather
+# than an artefact of what I happened to type.
 SOURCE_GLOBS = ("*.rs", "*.py", "*.ts", "*.tsx", "*.js", "*.jsx", "*.go",
-                "*.c", "*.h", "*.cpp", "*.hpp", "*.java", "*.rb", "*.sh")
+                "*.c", "*.h", "*.cpp", "*.hpp", "*.java", "*.rb", "*.sh",
+                "*.cu", "*.cuh", "*.cl", "*.comp", "*.vert", "*.frag", "*.glsl",
+                "*.wgsl", "*.hlsl", "*.metal", "*.zig", "*.kt", "*.swift", "*.cs")
 MANIFESTS = ("Cargo.toml", "package.json", "pyproject.toml")
 
 #: ⚠️ Recognised for REPORTING ONLY. A licence not on this list is UNRECOGNISED,
@@ -74,13 +124,46 @@ def _git(repo: pathlib.Path, *args: str) -> tuple[int, str]:
     return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
 
 
+#: ⚠️ EXCLUSIONS, NOT AN INCLUSION LIST. Check 1 used to run over SOURCE_GLOBS,
+#: and the portfolio's original prescribed detector was narrower still -
+#: `git grep -l -i copyright -- '*.rs'`. That pathspec is precisely what hid
+#: `Copyright (c) 2024 Apple Inc.` in three of `fuel`'s `.metal` kernels, in a
+#: repo booked at "833/833, 100%" - which is 833 of 833 `.rs`, with 16 `.metal`
+#: files that were never in the denominator.
+#:
+#: ⚠️ AN INCLUSION LIST CAN ONLY FIND WHAT ITS AUTHOR THOUGHT OF, AND WHAT IT
+#: MISSES READS AS A CLEANER RESULT RATHER THAN A SMALLER ONE. So this asks
+#: about EVERY tracked file and subtracts only what is known to be noise.
+COPYRIGHT_EXCLUSIONS = (":!*.md", ":!*LICEN[SC]E*", ":!*.txt", ":!*.lock",
+                        ":!*.svg", ":!*.json", ":!*.min.js", ":!.git-blame-ignore-revs", ":!*.snap")
+
+
 def check_copyright(repo: pathlib.Path) -> dict:
-    """Check 1: source files carrying a copyright notice."""
-    code, out = _git(repo, "grep", "-l", "-i", "copyright", "--", *SOURCE_GLOBS)
+    """Check 1: files carrying a copyright notice, over EVERY tracked file.
+
+    ⚠️ RETURNS ITS OWN POSITIVE CONTROL. "I searched and found nothing" is not a
+    finding until the query is shown capable of finding something IN THE SAME
+    RUN - a control taken at a different time answers a different question.
+    Here the control is the same query with the licence exclusion dropped, which
+    must find the LICENSE files every repo here has.
+    """
+    code, out = _git(repo, "grep", "-l", "-i", "copyright", "--", *COPYRIGHT_EXCLUSIONS)
     if code not in (0, 1):
-        return {"status": "UNKNOWN", "detail": out.strip()[:160], "hits": []}
+        return {"status": "UNKNOWN", "detail": out.strip()[:160], "hits": [],
+                "control": 0}
     hits = [line for line in out.splitlines() if line.strip()]
-    return {"status": "HITS" if hits else "clean", "hits": hits, "detail": ""}
+
+    ctl_code, ctl_out = _git(repo, "grep", "-l", "-i", "copyright", "--",
+                             *[e for e in COPYRIGHT_EXCLUSIONS
+                               if "LICEN" not in e])
+    control = len([x for x in ctl_out.splitlines() if x.strip()]) if ctl_code in (0, 1) else 0
+    if not hits and control == 0:
+        # ⚠️ A null with a DEAD control is not a null. Both mean "no output".
+        return {"status": "UNKNOWN", "hits": [], "control": 0,
+                "detail": "the query found nothing AND its control found "
+                          "nothing - this is an unproven query, not a clean repo"}
+    return {"status": "HITS" if hits else "clean", "hits": hits,
+            "control": control, "detail": ""}
 
 
 def check_existing_spdx(repo: pathlib.Path) -> dict:
@@ -188,19 +271,243 @@ def check_root_vs_manifests(repo: pathlib.Path) -> dict:
             "grants": {k: sorted(v) for k, v in grants.items()}, "detail": detail}
 
 
+def check_served_versions(repo: pathlib.Path, offline: bool = False) -> dict:
+    """Check 4: does this repo publish a crate sitting on a SERVED version?
+
+    ⚠️ A SWEEP IS A CONTENT CHANGE TO EVERY FILE WITH NO VERSION CHANGE, and
+    that is precisely the condition a published-divergence gate exists to catch:
+    a consumer resolving `foo 0.1.1` gets the registry's tarball while the
+    repo's own CI tests different bytes, and both are green about different
+    objects.
+
+    ⚠️ I WROTE HERE THAT "EVERY PUBLISHING REPO WILL HIT THIS" WAS THE PLAUSIBLE
+    GENERALISATION AND WAS WRONG. That was itself wrong, and measuring the rest
+    of the portfolio falsified it within the hour:
+
+        vulkane      1 of 4 members served
+        Unpopped     4 of 4
+        synapse      1 of 1
+        baracuda    71 of 72
+        mlmf, lightbulb   0 - both on unpublished versions
+
+    vulkane's three clean rows were an ACCIDENT OF TIMING: that lane had run a
+    post-publish bump pass the day before. ⚠️ I GENERALISED FROM THE ONE REPO I
+    HAD MEASURED, WHICH HAPPENED TO BE THE LEAST AFFECTED ONE, AND THE
+    GENERALISATION POINTED THE COMFORTABLE WAY.
+
+    ⚠️ AND THE HAZARD IS NOT THAT A REPO HAS A GATE THAT NOTICES. The sweep moves
+    content that is already published; a repo without such a gate takes the same
+    collision and merely cannot see it. vulkane is not unusual - it is the only
+    one with eyes.
+
+    ⚠️ NOR IS IT DEFERRABLE. The collision exists FROM THE MERGE: main's own
+    armed gate finds the diverged crate and main goes red, blocking every
+    subsequent PR in that repo. The bump belongs in the sweep PR.
+
+    ⚠️ OFFLINE REPORTS UNKNOWN, NEVER CLEAN. The registry being unreachable and
+    the registry having nothing are the same empty answer here, and the empty
+    answer is the one that says "go ahead".
+    """
+    # ⚠️ FROM GIT'S INDEX, NOT THE FILESYSTEM. `rglob` found 219 Cargo.toml
+    # files under `baracuda/.claude` - OTHER LANES' WORKTREES of the same repo,
+    # sitting at two different versions - and reported their crates as this
+    # repo's, listing `baracuda-core` three times at alpha.78 and again at
+    # alpha.79. A tracked-file listing cannot see another worktree's copy.
+    code, out = _git(repo, "ls-files", "--", "Cargo.toml", "*/Cargo.toml", "**/Cargo.toml")
+    if code != 0:
+        return {"status": "UNKNOWN", "served": [], "unpublished": [],
+                "detail": f"git ls-files failed: {out.strip()[:120]}"}
+    crates: list[tuple[str, str]] = []
+    for rel in out.splitlines():
+        rel = rel.strip()
+        if not rel:
+            continue
+        path = repo / rel
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if re.search(r"^\s*publish\s*=\s*false", text, re.M):
+            continue
+        name = re.search(r'^\s*name\s*=\s*"([^"]+)"', text, re.M)
+        version = re.search(r'^\s*version\s*=\s*"([^"]+)"', text, re.M)
+        if name and version:
+            crates.append((name.group(1), version.group(1)))
+    crates = sorted(set(crates))
+
+    if not crates:
+        return {"status": "n/a", "served": [], "unpublished": [], "detail":
+                "no publishable Cargo.toml found"}
+    if offline:
+        return {"status": "UNKNOWN", "served": [], "unpublished": [],
+                "detail": "--offline: the registry was not asked"}
+
+    served, unpublished, unknown = [], [], []
+    for name, version in crates:
+        url = f"https://crates.io/api/v1/crates/{name}/{version}"
+        req = urllib.request.Request(url, headers={
+            "User-Agent": "ciresnave-spdx-preflight (github.com/ciresnave)"})
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                served.append((name, version)) if resp.status == 200 else None
+        except urllib.error.HTTPError as exc:
+            (unpublished if exc.code == 404 else unknown).append((name, version))
+        except Exception:                                    # noqa: BLE001
+            unknown.append((name, version))
+
+    if unknown:
+        # ⚠️ A crate we could not ask about is not a crate that is safe.
+        return {"status": "UNKNOWN", "served": served, "unpublished": unpublished,
+                "detail": f"could not reach the registry for {unknown}"}
+    return {"status": "SERVED" if served else "clear", "served": served,
+            "unpublished": unpublished, "detail": ""}
+
+
+def check_changelog_coupling(repo: pathlib.Path) -> dict:
+    """Check 5: does CI tie every declared version to a CHANGELOG entry?
+
+    ⚠️ THIS EXISTS BECAUSE A REMEDY THAT TRADES ONE RED FOR ANOTHER IS WHAT YOU
+    SHIP WHEN YOU STOP AT THE FIRST GREEN. Check 4's fix is a version bump. On
+    `vulkane` the bump alone turns the divergence gate green and trips a SECOND
+    gate - the one asserting that every version being shipped has a changelog
+    heading - so the naive fix swaps one failure for another.
+
+    Where this fires, EACH BUMP IS TWO EDITS: the manifest and the changelog.
+
+    ⚠️ A REPO WITH NO CHANGELOG GATE IS NOT THEREBY SAFE, it is merely unwatched
+    - the same relationship check 4 has to repos with no divergence gate.
+    """
+    workflows = sorted((repo / ".github" / "workflows").glob("*.y*ml"))
+    if not workflows:
+        return {"status": "UNKNOWN", "hits": [],
+                "detail": "no .github/workflows - check 5 could not run"}
+    hits = []
+    for path in workflows:
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for i, line in enumerate(text.splitlines(), 1):
+            if "CHANGELOG" in line and not line.lstrip().startswith("#"):
+                hits.append(f"{path.name}:{i}")
+    has_file = (repo / "CHANGELOG.md").is_file()
+    return {"status": "COUPLED" if hits else "none", "hits": hits[:6],
+            "detail": "" if has_file else "no CHANGELOG.md at the root"}
+
+
+#: Analysers that score a PR by looking at its CHANGED FILES.
+CHANGED_FILE_ANALYSERS = ("codacy", "sonar", "codeclimate", "sourcery",
+                          "codecov", "deepsource", "qlty")
+
+
+def check_changed_file_analysis(repo: pathlib.Path) -> dict:
+    """Check 6: does static analysis here score the CHANGED FILES?
+
+    🔴 A SWEEP THAT TOUCHES EVERY FILE CONVERTS EVERY PRE-EXISTING PER-FILE
+    VIOLATION IN THE REPO INTO A PR FINDING. Measured on `vulkane#94`: 22
+    Codacy findings, and 18 were `File X has N non-comment lines of code` on
+    files whose only change was ONE ADDED COMMENT LINE - which cannot move a
+    non-comment line count.
+
+    ⚠️ THE COUNT IS A FUNCTION OF THE REPO'S ACCUMULATED DEBT, NOT OF THE
+    CHANGE, so it looks worst exactly where the change is most mechanical.
+    Budget a DISPOSITION, not a fix - and the disposition has to carry its own
+    discriminator, because "we dispositioned 18 file-size findings" is
+    indistinguishable from "we ignored 18 findings" a week later:
+
+        N findings of class X dispositioned as PRE-EXISTING
+        DISCRIMINATOR: the only change to these files is a COMMENT line, and X
+                       counts non-comment lines
+        CONTROL:       the same files at <ref>, before the PR
+        NOT FIXED HERE, NOT DENIED: <where the debt is tracked, or "untracked">
+
+    ⚠️ THE LAST LINE IS THE LOAD-BEARING ONE. A blanket disposition that does
+    not say where the debt LIVES converts a visible problem into an invisible
+    one - and "untracked" is a finding, not a failure.
+
+    ⚠️ AND THE DISCRIMINATOR SHOULD BE THE DIFF, NOT THE COUNT. On vulkane my
+    line count matched Codacy exactly for one file (2660) and disagreed by 72
+    for another (1082 vs 1154) - different counting conventions, so the numbers
+    are not two measurements of one thing. `git diff --numstat` showing every
+    file at +1/-0 is not a convention question.
+    """
+    found = []
+    for name in (".codacy.yml", ".codacy.yaml", "sonar-project.properties",
+                 ".codeclimate.yml", ".sourcery.yaml", ".deepsource.toml",
+                 "codecov.yml", ".codecov.yml", ".qlty/qlty.toml"):
+        if (repo / name).is_file():
+            found.append(name)
+    # ⚠️ Config-file absence proves nothing: these tools are commonly enabled as
+    # GitHub Apps with no file in the repo at all - which is how vulkane runs
+    # Codacy. So the workflow files and the recent check history are read too.
+    workflows = sorted((repo / ".github" / "workflows").glob("*.y*ml"))
+    for path in workflows:
+        try:
+            low = path.read_text(encoding="utf-8", errors="replace").lower()
+        except OSError:
+            continue
+        for tool in CHANGED_FILE_ANALYSERS:
+            if tool in low and f"{path.name}:{tool}" not in found:
+                found.append(f"{path.name}:{tool}")
+    # ⚠️ THE HEAD OF A RECENT PULL REQUEST, NOT THE TIP OF `main`.
+    # Querying `main`'s last commit found NOTHING on `vulkane` - 15 check-runs,
+    # all of them the CI workflow's own jobs, no Codacy and no Sourcery - while
+    # Codacy was demonstrably running and had just posted 22 findings on #94.
+    #
+    # 🔴 THESE ANALYSERS ATTACH TO PULL REQUESTS AND NOT TO PUSHES, so the tool
+    # is INVISIBLE FROM THE ONE PLACE A PRE-FLIGHT NATURALLY LOOKS - and it is
+    # invisible in the direction that says "nothing to worry about". Same shape
+    # as branch protection's `isRequired`, which needs an open PR to answer and
+    # so cannot run on a quiet repo, which is where missing protection hides.
+    apps = []
+    prs = subprocess.run(
+        ["gh", "pr", "list", "--state", "all", "--limit", "3",
+         "--json", "headRefOid", "--jq", ".[].headRefOid"],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        cwd=str(repo))
+    for sha in (prs.stdout or "").splitlines()[:3]:
+        sha = sha.strip()
+        if not sha:
+            continue
+        api = subprocess.run(
+            ["gh", "api", f"repos/{{owner}}/{{repo}}/commits/{sha}/check-runs",
+             "--jq", ".check_runs[].name"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            cwd=str(repo))
+        for line in (api.stdout or "").splitlines():
+            for tool in CHANGED_FILE_ANALYSERS:
+                if tool in line.lower() and line.strip() not in apps:
+                    apps.append(line.strip())
+    if not found and not apps:
+        # ⚠️ Not "clean" - no evidence either way is not evidence of absence.
+        return {"status": "UNKNOWN", "found": [], "apps": [],
+                "detail": "no analyser config, workflow reference or check-run "
+                          "seen - absence of evidence, not evidence of absence"}
+    return {"status": "CHANGED-FILE ANALYSIS", "found": found, "apps": apps,
+            "detail": ""}
+
+
 def count_sources(repo: pathlib.Path) -> int:
     code, out = _git(repo, "ls-files", "--", *SOURCE_GLOBS)
     return len([line for line in out.splitlines() if line.strip()]) if code == 0 else -1
 
 
-def report(repo: pathlib.Path) -> dict:
+def report(repo: pathlib.Path, offline: bool = False) -> dict:
     one = check_copyright(repo)
     two = check_existing_spdx(repo)
     three = check_root_vs_manifests(repo)
+    four = check_served_versions(repo, offline=offline)
+    five = check_changelog_coupling(repo)
+    six = check_changed_file_analysis(repo)
     total = count_sources(repo)
+    # ⚠️ Check 4 does NOT block a sweep and is not in `sweepable`. It is a
+    # SEQUENCING fact, not a licence fact: the sweep is correct either way, and
+    # what it changes is whether the repo needs a version bump alongside it.
+    # Folding a scheduling question into a correctness verdict would make the
+    # tool refuse work that is perfectly safe to do.
     sweepable = (one["status"] == "clean" and three["status"] == "AGREE")
     return {"repo": repo.name, "sources": total, "1": one, "2": two, "3": three,
-            "sweepable": sweepable}
+            "4": four, "5": five, "6": six, "sweepable": sweepable}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -208,13 +515,17 @@ def main(argv: list[str] | None = None) -> int:
     if not args:
         print(__doc__)
         return 2
-    results = [report(pathlib.Path(a)) for a in args]
+    offline = "--offline" in args
+    args = [a for a in args if a != "--offline"]
+    results = [report(pathlib.Path(a), offline=offline) for a in args]
 
     for r in results:
         print(f"\n===== {r['repo']}  ({r['sources']} source files) =====")
         one, two, three = r["1"], r["2"], r["3"]
         print(f"  1 copyright notices : {one['status']}"
               + (f"  ({len(one['hits'])} files)" if one["hits"] else "")
+              + f"   [control: {one.get('control', 0)} licence files found "
+                f"by the same query]"
               + (f"  {one['detail']}" if one["detail"] else ""))
         for hit in one["hits"][:12]:
             print(f"      {hit}")
@@ -229,7 +540,27 @@ def main(argv: list[str] | None = None) -> int:
             print(f"      root {name}: {kind}")
         for where, value in sorted(three["declared"].items()):
             print(f"      {where}: {value!r}")
-        print(f"  -> {'SWEEPABLE' if r['sweepable'] else 'NOT SWEEPABLE WITHOUT A RULING'}")
+        four = r["4"]
+        print(f"  4 served versions   : {four['status']}"
+              + (f"  {four['detail']}" if four["detail"] else ""))
+        for name, version in four["served"]:
+            print(f"      🔴 {name} {version} IS SERVED - a content change here "
+                  f"needs a version bump")
+        for name, version in four["unpublished"]:
+            print(f"      {name} {version}: unpublished, no collision possible")
+        five = r["5"]
+        print(f"  5 changelog coupling: {five['status']}"
+              + (f"  ({len(five['hits'])}+ refs)" if five["hits"] else "")
+              + (f"  {five['detail']}" if five["detail"] else ""))
+        six = r["6"]
+        print(f"  6 changed-file scan : {six['status']}"
+              + (f"  {', '.join(six['apps'] or six['found'])}" if (six["apps"] or six["found"]) else "")
+              + (f"  {six['detail']}" if six["detail"] else ""))
+        extra = ""
+        if four["served"]:
+            extra = f"  (+ BUMP {len(four['served'])} MEMBER(S) IN THE SWEEP PR"
+            extra += ", EACH A TWO-EDIT BUMP)" if five["status"] == "COUPLED" else ")"
+        print(f"  -> {'SWEEPABLE' if r['sweepable'] else 'NOT SWEEPABLE WITHOUT A RULING'}{extra}")
 
     print("\n" + "=" * 70)
     ok = [r["repo"] for r in results if r["sweepable"]]

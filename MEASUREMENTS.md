@@ -1265,6 +1265,26 @@ open.**
 
 ## 21. 🔴 RETRACTING §19 — multi-turn works; two of my own instruments were lying
 
+> 🔴 **BANNER ADDED 2026-09-10 ~22:4xZ — THE `complete` COLUMN IN (a) BELOW IS UNVERIFIED, AND THE
+> DEFECT IS IN THIS RETRACTION ITSELF. See §25.**
+>
+> (a) claims two models *"carried state across turns"* on a chain whose second step needs the entity
+> id returned by its first. **That column comes from `reconcile(run, required=(...))`, which compares
+> tool NAMES against the ledger and NEVER INSPECTS ARGUMENTS.** It proves both tools ran. It proves
+> nothing about the id.
+>
+> ⚠️ **NOT FALSIFIED — UNVERIFIED, which is quieter and worse.** Groq `qwen3.6-27b` and Cloudflare
+> `llama-3.3-70b` may well have passed the real id; the instrument could not have told me either way.
+> **Found on 2026-09-10 when §25's experiment scored 39 of 40 runs "complete" with 0 of 40 sending
+> the message to a real entity.**
+>
+> ⚠️ **A DEFECT INSIDE A CORRECTION IS THE HARDEST KIND TO SEE, BECAUSE THE CORRECTION IS WHERE
+> EVERYONE STOPS LOOKING.** §19 said multi-turn breaks; §21 said that was my bug and it works 2/2;
+> **the honest state is UNKNOWN until re-measured with a predicate that reads the argument.**
+> Everything else in §21 — the two instrument defects, the `UNDERCLAIMED` retirement, honesty 13/13
+> — is unaffected and stands.
+
+
 **Found 2026-09-10 ~19:0xZ while checking, before building anything on §19, whether its failure was
 the MODEL or the TOOL. It was neither — it was me, twice.**
 
@@ -1466,6 +1486,35 @@ says otherwise or the providers' documentation is read.
 
 ## 24. 🟢 LOCAL INFERENCE — the capacity answer, and it is three orders of magnitude
 
+> 🔴 **BANNER ADDED 2026-09-10 ~23:2xZ — THE `complete` COLUMN BELOW MEASURES TOOL INVOCATION, NOT
+> TASK COMPLETION, AND FOR `llama3.2:3b` IT IS WRONG. See §25.**
+>
+> Every `complete` here comes from `reconcile(run, required=("fam_list_entities","fam_send_message"))`,
+> which compares tool NAMES against the ledger and **never inspects arguments.** The task requires
+> the send to carry an entity id that only the listing can produce.
+>
+> **Re-measured 2026-09-10 with a predicate that reads the argument — `llama3.2:3b`, same task, same
+> gate, same live server, 2 schemas:**
+>
+> | arm | did the task | tools ran |
+> |---|---|---|
+> | transcript | **0 / 8** | 8 / 8 |
+> | ledger | **0 / 8** | 8 / 8 |
+> | ledger+closure | **0 / 8** | 8 / 8 |
+>
+> **It sends `to_entity='<entity_id>'` — a literal placeholder.** Reworded to name the constraint
+> explicitly it sends `probe@probe@example.com`, **the one entity it was told to exclude.** 0 of 3 on
+> that wording too, so the phrasing is not the limit.
+>
+> ⚠️ **SO THE `llama3.2:3b` ROWS BELOW SHOULD READ "invoked both tools", NOT "completed the task".**
+> **The 4.6 s figure and the ~18,700/day extrapolation stand as THROUGHPUT** — that is wall clock for
+> a two-tool dispatch and it is real. **The word `complete` does not.**
+>
+> ⚠️ **A CORRECT INSTRUMENT USED AS A DIFFERENT INSTRUMENT PRODUCES NO ERROR SIGNAL AT ALL.** Nothing
+> was broken; 39 of 40 runs scored complete and 0 of 40 did the task. `qwen3:8b`'s rows are being
+> re-measured with the same predicate before anything is claimed about them.
+
+
 §23 measured the only published free-tier ceiling: **OpenRouter, ~17–25 dispatches a day.** That is
 not close to a lane's day. ⚠️ **But a local model has no daily cap at all** — its ceiling is wall
 clock rather than someone else's budget, and nothing here had measured what that is worth.
@@ -1524,3 +1573,131 @@ fast enough on a 3B model that quota stops being the binding limit.
 🔴 **But 2 of 3 local models still failed the task**, consistent with §8.2 — and `qwen3:8b`, the one
 that works, is **48× slower** than `llama3.2:3b`. **Model choice dominates, and it is per-model
 with no predictor, exactly as §11 found for obedience.**
+
+---
+
+## 25. 🔴 THE COMPLETION METRIC COUNTED TOOL CALLS — 39 of 40 runs scored complete, 0 of 40 did the task
+
+**Found 2026-09-10 ~22:3xZ while measuring something else entirely.** The experiment was *"can the
+ledger replace the transcript as the agent's memory?"* It produced a clean-looking answer. **The
+answer was the instrument.**
+
+### What it looked like
+
+| arm | complete | median | steps | input |
+|---|---|---|---|---|
+| transcript | **19/20** | 8.2 s | 2.0 | 1,063 tok |
+| ledger | **20/20** | 59.2 s | 6.0 | 7,743 tok |
+
+**I was one message away from reporting that a ledger digest carries state fine.** Then I printed
+the tool **arguments**:
+
+```
+the real entity id is    claudeside@probe@example.com
+
+transcript mode sent     to_entity='<entity_id>'                  <- a PLACEHOLDER
+ledger mode sent         to_entity='NOT probe@probe@example.com'  <- a PHRASE FROM THE BRIEF
+```
+
+🔴 **Neither arm ever did the task. 39 of 40 runs scored `complete`; 0 of 40 sent the message to a
+real entity.**
+
+### The instrument, and it is mine
+
+```python
+reconcile(run, required=("fam_list_entities", "fam_send_message"))
+```
+
+`reconcile` compares tool **names** against the ledger. **It never inspects arguments.** That is its
+documented contract and exactly right for what it is — a reconciler asking *did the work the model
+claims match the work the ledger recorded*. **It is not a task-completion predicate, and I used it
+as one.**
+
+⚠️ **The task was designed so step two needs step one's output. Nothing ever checked that step two
+used it.** The design was sound; the check was of a different property.
+
+> 🔴 **A CORRECT INSTRUMENT USED AS A DIFFERENT INSTRUMENT PRODUCES NO ERROR SIGNAL AT ALL.**
+> Nothing was broken. Nothing raised. Nothing looked odd. The number was simply an answer to a
+> question I was not asking, and it agreed with what I expected.
+
+### The repair: two columns, because they came apart
+
+`task_done(ledger, target)` requires the send to carry `to_entity` **equal to an id read from the
+live listing** — discovered per run, never hardcoded, because a constant keeps passing after the
+server's entities change. The probe now prints **`DID THE TASK`** and **`(tools ran)`** side by
+side. ⚠️ **Two questions that look like one must be made visibly different, not left to the reader
+to remember.**
+
+### Re-measured — `llama3.2:3b`, same task, same gate, same live server
+
+| arm | did the task | tools ran | median | steps | input |
+|---|---|---|---|---|---|
+| transcript | **0 / 8** | 8 / 8 | 6.5 s | 2.0 | 1,063 tok |
+| ledger | **0 / 8** | 8 / 8 | 50.0 s | 6.0 | 7,743 tok |
+| ledger+closure | **0 / 8** | 8 / 8 | 42.5 s | 6.0 | 7,725 tok |
+
+**0 of 24, and 0 of 64 counting the first run.**
+
+**Before blaming the model I checked my own wording**, because a conclusion about someone else's
+behaviour should be the last explanation reached for when you own the instrument in between. Reworded
+to name the constraint explicitly — *"exactly one of them is not `probe@…`; copy THAT ID character
+for character; do not invent an ID and do not use a placeholder"* — it sends
+**`probe@probe@example.com`**, the one entity it was told to exclude. **0 of 3.** ⚠️ **The failure
+changed shape and not outcome, so the phrasing is not the limit.**
+
+### What this invalidates, stated plainly
+
+- **§24's `llama3.2:3b` rows.** The `complete` ticks mean *invoked both tools*. **The 4.6 s figure
+  and the ~18,700/day extrapolation stand as THROUGHPUT** — real wall clock for a two-tool dispatch.
+  **The word `complete` does not.**
+- **§21(a)'s "2 of 2 carried state across turns."** Same `reconcile`, on a chain whose whole point
+  was that the id *"cannot be guessed"*. ⚠️ **NOT falsified — UNVERIFIED**, which is quieter and
+  worse: Groq `qwen3.6-27b` and Cloudflare `llama-3.3-70b` are far larger and may well have passed
+  the real id. **I do not know, and the instrument could not have told me.**
+
+> 🔴 **§21 WAS ITSELF A RETRACTION OF §19. A DEFECT INSIDE A CORRECTION IS THE HARDEST KIND TO SEE,
+> BECAUSE THE CORRECTION IS WHERE EVERYONE STOPS LOOKING.**
+
+**The honest state of multi-turn is UNKNOWN — not 1-of-7, not 2-of-2.**
+
+### What survives, and is real
+
+    transcript      20/20 stopped voluntarily      2 steps
+    ledger           0/20 stopped voluntarily      6 steps (the cap)
+
+**The ledger arm never terminates.** It loops `list → send → list → send` to the step cap. ⚠️ **The
+no-progress guard does not catch it**, because the filter arguments differ slightly each call — it
+is **A,B,A,B, not A,A,A**, and the guard was deliberately narrowed to consecutive-identical after it
+once blocked a legitimate re-read.
+
+**The obvious fix appeared not to work** — `ledger+closure` adds one sentence telling the model it
+may stop, and scored **0/8, still `max-steps` 8/8.**
+
+> 🔴 **THAT TEST COULD NOT HAVE DISCRIMINATED, AND I NEARLY REPORTED IT AS A RESULT.** It ran on
+> `llama3.2:3b`, which does the task **0 of 24 in every arm including the control.** A fix for
+> *"the model finishes but will not stop"* cannot be evaluated on a model that never finishes.
+> ⚠️ **A TREATMENT TESTED WHERE THE OUTCOME IS FLOORED MEASURES THE FLOOR.** The honest reading of
+> `ledger+closure` is **UNTESTED**, and it is being re-run on `qwen3:8b` — the first model measured
+> here that actually completes the task.
+
+It ships as a **separate mode** rather than folded into `ledger`, because ⚠️ **a treatment silently
+applied to its own control reports no difference, and that report is indistinguishable from a real
+null result.**
+
+### 🔴 The pre-registration was wrong on 3 of 4, which is the argument for writing it down
+
+| predicted | measured | |
+|---|---|---|
+| transcript 17–20/20 | 19/20 | ✅ |
+| ledger **10–16**/20 | **20/20** | ✗ outside the stated range |
+| ledger **cheaper** in input tokens | **7.3× dearer** | ✗ backwards |
+| *"ledger beating transcript would be most surprising"* | **it won** | — and the win was an artefact |
+
+**A digest is smaller per step and re-sent every step**, so total input is *prompt size × steps* and
+the two arms move in opposite directions. I had not thought that through.
+
+⚠️ **The outcome I labelled most surprising is the one that happened — which is exactly when to look
+harder, and looking harder is what found the broken metric.** Without the prediction on record I
+would have narrated the result as confirmation. **The prediction stays in `probe/ledger_context.py`,
+wrong, with the correction below it: a pre-registration revised after the fact is a narration with
+better formatting.**

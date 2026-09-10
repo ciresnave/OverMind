@@ -109,6 +109,19 @@ def _parse_arguments(raw: Any) -> dict[str, Any]:
     return {}
 
 
+#: ⚠️ ONE SENTENCE, ADDED BECAUSE OF A MEASUREMENT, NOT A HUNCH. With the plain
+#: ledger prompt, 20 of 20 runs on llama3.2:3b executed BOTH required tools and
+#: then ran to `max-steps` - 0 of 20 stopped on their own, against 20 of 20 in
+#: transcript mode.
+#:
+#: ⚠️ THE LEDGER CARRIED THE STATE AND NOT THE CLOSURE. "Here is the task, here
+#: is what you did" reads as an instruction to do the task, every step, forever.
+#: A transcript ends in a tool result and the next turn naturally concludes; a
+#: rebuilt prompt has no such shape, so the cue has to be explicit.
+CLOSURE = ("If the ledger above already shows this task finished, reply in plain "
+           "text saying what was done and call no tool.")
+
+
 def run_agent(client: ProviderClient, executor: GatedExecutor,
               tools: Sequence[Mapping[str, Any]], task: str, *,
               system: str = "", max_steps: int = 8,
@@ -129,6 +142,13 @@ def run_agent(client: ProviderClient, executor: GatedExecutor,
       "ledger"      the brief plus a compact digest of what the LEDGER records,
                     rebuilt from scratch each step. The transcript is discarded.
 
+      "ledger+closure"
+                    the same, plus one sentence telling the model it may stop.
+                    ⚠️ A SEPARATE MODE RATHER THAN A FIX FOLDED INTO "ledger",
+                    because the plain arm is the control it has to be measured
+                    against - and a treatment silently applied to the control
+                    reports no difference.
+
     ⚠️ THE SECOND IS THE ARCHITECTURE THIS PROJECT ACTUALLY IMPLIES, AND IT IS
     UNMEASURED. "What have I already done" is exactly the state a stateless
     agent lacks, and a Claude session gets it for free by keeping its
@@ -142,9 +162,9 @@ def run_agent(client: ProviderClient, executor: GatedExecutor,
     reasoning was load-bearing is the question, and it is measurable rather than
     arguable - `probe/ledger_context.py` runs both arms over the same task.
     """
-    if context_mode not in ("transcript", "ledger"):
-        raise ValueError(f"context_mode must be 'transcript' or 'ledger', "
-                         f"not {context_mode!r}")
+    if context_mode not in ("transcript", "ledger", "ledger+closure"):
+        raise ValueError(f"context_mode must be 'transcript', 'ledger' or "
+                         f"'ledger+closure', not {context_mode!r}")
     messages: list[dict[str, Any]] = []
     if system:
         messages.append({"role": "system", "content": system})
@@ -183,7 +203,7 @@ def run_agent(client: ProviderClient, executor: GatedExecutor,
     notes: list[str] = []
 
     for step in range(max_steps):
-        if context_mode == "ledger":
+        if context_mode.startswith("ledger"):
             # ⚠️ REBUILT, NOT APPENDED. The transcript is deliberately thrown
             # away each step; the ledger is the only memory.
             messages = []
@@ -193,6 +213,8 @@ def run_agent(client: ProviderClient, executor: GatedExecutor,
                     executor.gate.ledger.digest()]
             if notes:
                 body += ["", "Notes from the harness:"] + [f"- {n}" for n in notes]
+            if context_mode == "ledger+closure":
+                body += ["", CLOSURE]
             messages.append({"role": "user",
                              "content": chr(10).join(body)})
         try:

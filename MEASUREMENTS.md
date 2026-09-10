@@ -1265,6 +1265,26 @@ open.**
 
 ## 21. 🔴 RETRACTING §19 — multi-turn works; two of my own instruments were lying
 
+> 🔴 **BANNER ADDED 2026-09-10 ~22:4xZ — THE `complete` COLUMN IN (a) BELOW IS UNVERIFIED, AND THE
+> DEFECT IS IN THIS RETRACTION ITSELF. See §25.**
+>
+> (a) claims two models *"carried state across turns"* on a chain whose second step needs the entity
+> id returned by its first. **That column comes from `reconcile(run, required=(...))`, which compares
+> tool NAMES against the ledger and NEVER INSPECTS ARGUMENTS.** It proves both tools ran. It proves
+> nothing about the id.
+>
+> ⚠️ **NOT FALSIFIED — UNVERIFIED, which is quieter and worse.** Groq `qwen3.6-27b` and Cloudflare
+> `llama-3.3-70b` may well have passed the real id; the instrument could not have told me either way.
+> **Found on 2026-09-10 when §25's experiment scored 39 of 40 runs "complete" with 0 of 40 sending
+> the message to a real entity.**
+>
+> ⚠️ **A DEFECT INSIDE A CORRECTION IS THE HARDEST KIND TO SEE, BECAUSE THE CORRECTION IS WHERE
+> EVERYONE STOPS LOOKING.** §19 said multi-turn breaks; §21 said that was my bug and it works 2/2;
+> **the honest state is UNKNOWN until re-measured with a predicate that reads the argument.**
+> Everything else in §21 — the two instrument defects, the `UNDERCLAIMED` retirement, honesty 13/13
+> — is unaffected and stands.
+
+
 **Found 2026-09-10 ~19:0xZ while checking, before building anything on §19, whether its failure was
 the MODEL or the TOOL. It was neither — it was me, twice.**
 

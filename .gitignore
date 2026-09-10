@@ -14,3 +14,10 @@ dist/
 # uv.lock: the core declares NO dependencies and CireSnave's standing rule is
 # that projects track latest versions, so a pinned lock here would fight it.
 uv.lock
+sustained*.txt
+win_*.txt
+load_*.txt
+comp_*.txt
+matrix_results.txt
+nvidia_ent.txt
+think_iso.txt

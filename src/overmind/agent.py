@@ -20,13 +20,20 @@ TWO FAILURE MODES THE LOOP HANDLES BECAUSE THEY WERE MEASURED, NOT IMAGINED:
     is fed back as the tool's result so the model can take the permitted route.
     A loop that raised here would turn every policy into an outage.
 
-  · REPEATING THE SAME CALL IS NOT PROGRESS. ⚠️ MEASURED: on a two-step task,
-    models on two different providers called the FIRST tool four and seven times
-    respectively, never reached step two, and produced no final text. A loop
-    that lets that run to `max_steps` burns tokens for nothing - which is the
-    exact cost this project exists to remove. The identical call is nudged ONCE
-    with what it already returned, and stopped on the second repeat, because a
-    model that has not moved after being told will not move.
+  · REPEATING THE SAME CALL CONSECUTIVELY IS NOT PROGRESS. The identical call is
+    nudged ONCE with what it already returned, and stopped on the second repeat,
+    because a model that has not moved after being told will not move.
+
+    ⚠️ TWO CORRECTIONS TO THIS GUARD'S OWN HISTORY, both worth keeping.
+    It was built because models called the first tool four and seven times on a
+    two-step task - and §21 later showed THAT repetition was caused by a defect
+    of mine making the tool raise on every call. The model was responding
+    rationally to a broken tool. The guard is retained on its own merits, not
+    that evidence.
+    And it originally counted ANY repeat in a run, which blocked a legitimate
+    RE-READ: `list -> send -> list` suppressed the second list and handed the
+    model a STALE result immediately after it had changed the world. It now
+    counts CONSECUTIVE repeats only. A, B, A is progress; A, A, A is stuck.
 """
 
 from __future__ import annotations
@@ -110,7 +117,13 @@ def run_agent(client: ProviderClient, executor: GatedExecutor,
     tool_names = [n for n in tool_names if n]
     smuggle_strikes = 0
     result: ChatResult | None = None
-    seen_calls: dict[tuple[str, str], int] = {}
+    # ⚠️ CONSECUTIVE repetition, not session-wide. The first version counted any
+    # repeat in the run, which blocked a legitimate RE-READ: `list -> send ->
+    # list` suppressed the second list and handed the model a STALE cached
+    # result immediately after it had changed the world. A, B, A is progress;
+    # A, A, A is stuck, and only the second is worth stopping.
+    repeat_signature: tuple[str, str] | None = None
+    repeat_count = 0
     last_results: dict[tuple[str, str], str] = {}
 
     for step in range(max_steps):
@@ -157,7 +170,9 @@ def run_agent(client: ProviderClient, executor: GatedExecutor,
             name = fn.get("name") or ""
             args = _parse_arguments(fn.get("arguments"))
             signature = (name, json.dumps(args, sort_keys=True, default=str))
-            count = seen_calls.get(signature, 0)
+            if signature != repeat_signature:
+                repeat_signature, repeat_count = signature, 0
+            count = repeat_count
 
             if count >= 2:
                 # ⚠️ Told once and repeated anyway. Stop rather than spend.
@@ -172,7 +187,7 @@ def run_agent(client: ProviderClient, executor: GatedExecutor,
                 # ⚠️ NOT re-executed. Re-running it would be an EFFECT the model
                 # did not earn - and for a non-idempotent tool that is a second
                 # channel, a second message, a second merge.
-                seen_calls[signature] = count + 1
+                repeat_count = count + 1
                 messages.append(_tool_result_message(
                     call.get("id", ""), name,
                     f"ALREADY CALLED with these exact arguments. It was not run again. "
@@ -180,7 +195,7 @@ def run_agent(client: ProviderClient, executor: GatedExecutor,
                     f"Move on to the next step, or say what is blocking you."))
                 continue
 
-            seen_calls[signature] = 1
+            repeat_count = 1
             # THE ONLY PATH TO AN EFFECT.
             outcome = executor.execute(name, args, actor=f"{result.provider}:{result.model}")
             content = outcome.as_tool_content()

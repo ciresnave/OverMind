@@ -266,3 +266,44 @@ class TestNoProgressDetection(unittest.TestCase):
         run = run_agent(client, self.ex, TOOLS, "go")
         self.assertEqual(len(self.spy.calls), 2)
         self.assertEqual(run.stop_reason, StopReason.COMPLETED)
+
+
+class TestRepeatDetectionIsConsecutiveOnly(unittest.TestCase):
+    """🔴 The guard originally counted ANY repeat in a run and blocked a
+    legitimate RE-READ: `list -> send -> list` suppressed the second list and
+    handed the model a STALE cached result immediately after it had changed the
+    world. A, B, A is progress; A, A, A is stuck."""
+
+    def setUp(self):
+        self.listing = Spy("entities: a, b")
+        self.send = Spy("sent")
+        self.gate, self.ex = build_gate(
+            [DenyUnlessDeclared(reversible=frozenset({"list_entities", "send_message"}))],
+            tools={"list_entities": self.listing, "send_message": self.send})
+
+    def test_a_re_read_after_acting_is_allowed(self):
+        client = ScriptedClient([tool_turn("list_entities"),
+                                 tool_turn("send_message", '{"to":"a"}', "c2"),
+                                 tool_turn("list_entities", "{}", "c3"),
+                                 {"role": "assistant", "content": "done"}])
+        run = run_agent(client, self.ex, TOOLS, "re-read after acting")
+        self.assertEqual(len(self.listing.calls), 2, "the re-read was suppressed")
+        self.assertEqual(run.stop_reason, StopReason.COMPLETED)
+
+    def test_consecutive_repeats_are_still_caught(self):
+        """The control - widening the rule must not disable it."""
+        client = ScriptedClient([tool_turn("list_entities")] * 5)
+        run = run_agent(client, self.ex, TOOLS, "stuck", max_steps=8)
+        self.assertEqual(run.stop_reason, StopReason.NO_PROGRESS)
+        self.assertEqual(len(self.listing.calls), 1)
+
+    def test_an_intervening_call_resets_the_counter(self):
+        """A, A, B, A, A must not stop: neither run of A reached three."""
+        client = ScriptedClient([tool_turn("list_entities"),
+                                 tool_turn("list_entities"),
+                                 tool_turn("send_message", '{"to":"a"}', "c2"),
+                                 tool_turn("list_entities", "{}", "c3"),
+                                 {"role": "assistant", "content": "done"}])
+        run = run_agent(client, self.ex, TOOLS, "mixed")
+        self.assertEqual(run.stop_reason, StopReason.COMPLETED)
+        self.assertEqual(len(self.listing.calls), 2)

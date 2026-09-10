@@ -1,4 +1,4 @@
-"""Five pre-flight checks to run before an SPDX sweep touches a repo.
+"""Six pre-flight checks to run before an SPDX sweep touches a repo.
 
     python tools/preflight.py <repo> [<repo> ...] [--offline]
 
@@ -395,6 +395,98 @@ def check_changelog_coupling(repo: pathlib.Path) -> dict:
             "detail": "" if has_file else "no CHANGELOG.md at the root"}
 
 
+#: Analysers that score a PR by looking at its CHANGED FILES.
+CHANGED_FILE_ANALYSERS = ("codacy", "sonar", "codeclimate", "sourcery",
+                          "codecov", "deepsource", "qlty")
+
+
+def check_changed_file_analysis(repo: pathlib.Path) -> dict:
+    """Check 6: does static analysis here score the CHANGED FILES?
+
+    🔴 A SWEEP THAT TOUCHES EVERY FILE CONVERTS EVERY PRE-EXISTING PER-FILE
+    VIOLATION IN THE REPO INTO A PR FINDING. Measured on `vulkane#94`: 22
+    Codacy findings, and 18 were `File X has N non-comment lines of code` on
+    files whose only change was ONE ADDED COMMENT LINE - which cannot move a
+    non-comment line count.
+
+    ⚠️ THE COUNT IS A FUNCTION OF THE REPO'S ACCUMULATED DEBT, NOT OF THE
+    CHANGE, so it looks worst exactly where the change is most mechanical.
+    Budget a DISPOSITION, not a fix - and the disposition has to carry its own
+    discriminator, because "we dispositioned 18 file-size findings" is
+    indistinguishable from "we ignored 18 findings" a week later:
+
+        N findings of class X dispositioned as PRE-EXISTING
+        DISCRIMINATOR: the only change to these files is a COMMENT line, and X
+                       counts non-comment lines
+        CONTROL:       the same files at <ref>, before the PR
+        NOT FIXED HERE, NOT DENIED: <where the debt is tracked, or "untracked">
+
+    ⚠️ THE LAST LINE IS THE LOAD-BEARING ONE. A blanket disposition that does
+    not say where the debt LIVES converts a visible problem into an invisible
+    one - and "untracked" is a finding, not a failure.
+
+    ⚠️ AND THE DISCRIMINATOR SHOULD BE THE DIFF, NOT THE COUNT. On vulkane my
+    line count matched Codacy exactly for one file (2660) and disagreed by 72
+    for another (1082 vs 1154) - different counting conventions, so the numbers
+    are not two measurements of one thing. `git diff --numstat` showing every
+    file at +1/-0 is not a convention question.
+    """
+    found = []
+    for name in (".codacy.yml", ".codacy.yaml", "sonar-project.properties",
+                 ".codeclimate.yml", ".sourcery.yaml", ".deepsource.toml",
+                 "codecov.yml", ".codecov.yml", ".qlty/qlty.toml"):
+        if (repo / name).is_file():
+            found.append(name)
+    # ⚠️ Config-file absence proves nothing: these tools are commonly enabled as
+    # GitHub Apps with no file in the repo at all - which is how vulkane runs
+    # Codacy. So the workflow files and the recent check history are read too.
+    workflows = sorted((repo / ".github" / "workflows").glob("*.y*ml"))
+    for path in workflows:
+        try:
+            low = path.read_text(encoding="utf-8", errors="replace").lower()
+        except OSError:
+            continue
+        for tool in CHANGED_FILE_ANALYSERS:
+            if tool in low and f"{path.name}:{tool}" not in found:
+                found.append(f"{path.name}:{tool}")
+    # ⚠️ THE HEAD OF A RECENT PULL REQUEST, NOT THE TIP OF `main`.
+    # Querying `main`'s last commit found NOTHING on `vulkane` - 15 check-runs,
+    # all of them the CI workflow's own jobs, no Codacy and no Sourcery - while
+    # Codacy was demonstrably running and had just posted 22 findings on #94.
+    #
+    # 🔴 THESE ANALYSERS ATTACH TO PULL REQUESTS AND NOT TO PUSHES, so the tool
+    # is INVISIBLE FROM THE ONE PLACE A PRE-FLIGHT NATURALLY LOOKS - and it is
+    # invisible in the direction that says "nothing to worry about". Same shape
+    # as branch protection's `isRequired`, which needs an open PR to answer and
+    # so cannot run on a quiet repo, which is where missing protection hides.
+    apps = []
+    prs = subprocess.run(
+        ["gh", "pr", "list", "--state", "all", "--limit", "3",
+         "--json", "headRefOid", "--jq", ".[].headRefOid"],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        cwd=str(repo))
+    for sha in (prs.stdout or "").splitlines()[:3]:
+        sha = sha.strip()
+        if not sha:
+            continue
+        api = subprocess.run(
+            ["gh", "api", f"repos/{{owner}}/{{repo}}/commits/{sha}/check-runs",
+             "--jq", ".check_runs[].name"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            cwd=str(repo))
+        for line in (api.stdout or "").splitlines():
+            for tool in CHANGED_FILE_ANALYSERS:
+                if tool in line.lower() and line.strip() not in apps:
+                    apps.append(line.strip())
+    if not found and not apps:
+        # ⚠️ Not "clean" - no evidence either way is not evidence of absence.
+        return {"status": "UNKNOWN", "found": [], "apps": [],
+                "detail": "no analyser config, workflow reference or check-run "
+                          "seen - absence of evidence, not evidence of absence"}
+    return {"status": "CHANGED-FILE ANALYSIS", "found": found, "apps": apps,
+            "detail": ""}
+
+
 def count_sources(repo: pathlib.Path) -> int:
     code, out = _git(repo, "ls-files", "--", *SOURCE_GLOBS)
     return len([line for line in out.splitlines() if line.strip()]) if code == 0 else -1
@@ -406,6 +498,7 @@ def report(repo: pathlib.Path, offline: bool = False) -> dict:
     three = check_root_vs_manifests(repo)
     four = check_served_versions(repo, offline=offline)
     five = check_changelog_coupling(repo)
+    six = check_changed_file_analysis(repo)
     total = count_sources(repo)
     # ⚠️ Check 4 does NOT block a sweep and is not in `sweepable`. It is a
     # SEQUENCING fact, not a licence fact: the sweep is correct either way, and
@@ -414,7 +507,7 @@ def report(repo: pathlib.Path, offline: bool = False) -> dict:
     # tool refuse work that is perfectly safe to do.
     sweepable = (one["status"] == "clean" and three["status"] == "AGREE")
     return {"repo": repo.name, "sources": total, "1": one, "2": two, "3": three,
-            "4": four, "5": five, "sweepable": sweepable}
+            "4": four, "5": five, "6": six, "sweepable": sweepable}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -459,6 +552,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  5 changelog coupling: {five['status']}"
               + (f"  ({len(five['hits'])}+ refs)" if five["hits"] else "")
               + (f"  {five['detail']}" if five["detail"] else ""))
+        six = r["6"]
+        print(f"  6 changed-file scan : {six['status']}"
+              + (f"  {', '.join(six['apps'] or six['found'])}" if (six["apps"] or six["found"]) else "")
+              + (f"  {six['detail']}" if six["detail"] else ""))
         extra = ""
         if four["served"]:
             extra = f"  (+ BUMP {len(four['served'])} MEMBER(S) IN THE SWEEP PR"

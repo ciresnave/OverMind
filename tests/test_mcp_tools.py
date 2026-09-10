@@ -225,3 +225,43 @@ class TestGateBoundaryDidNotMove(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestToolArgumentNameCollision(unittest.TestCase):
+    """🔴 A tool whose own argument is called `name` - `fam_create_channel(name=)`
+    is exactly one - collided with `call`'s positional parameter and raised
+    "got multiple values for argument 'name'" on EVERY invocation.
+
+    ⚠️ The failure was INVISIBLE in the agent loop: the exception was caught,
+    recorded, and handed back to the model as the tool's result, so the model
+    saw a broken tool and retried. MEASUREMENTS.md §19 attributed that retrying
+    to a multi-turn limitation of the MODEL. It was mine.
+    """
+
+    def setUp(self):
+        self.session = FakeSession("channel created")
+        self.tools = [Obj(name="fam_create_channel", description="create",
+                          input_schema={"type": "object",
+                                        "properties": {"name": {"type": "string"}},
+                                        "required": ["name"]})]
+        self.src = source_with(self.session, self.tools)
+
+    def tearDown(self):
+        self.src.close()
+
+    def test_a_tool_argument_called_name_does_not_collide(self):
+        out = self.src.call("fam_create_channel", name="general")
+        self.assertEqual(out, "channel created")
+        self.assertEqual(self.session.calls, [("fam_create_channel", {"name": "general"})])
+
+    def test_the_bound_callable_passes_name_through(self):
+        """The path the agent loop actually takes."""
+        invoke = self.src.callables()["fam_create_channel"]
+        self.assertEqual(invoke(name="general"), "channel created")
+        self.assertEqual(self.session.calls[-1][1], {"name": "general"})
+
+    def test_other_reserved_looking_arguments_also_survive(self):
+        for arg in ("name", "self", "arguments"):
+            with self.subTest(arg=arg):
+                self.src.call("fam_create_channel", **{arg: "x"})
+                self.assertEqual(self.session.calls[-1][1], {arg: "x"})

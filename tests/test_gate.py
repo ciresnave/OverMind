@@ -386,3 +386,61 @@ class TestPerSenderPoliciesRefuseUntilIdentityIsVouched(unittest.TestCase):
                     facts=StaticFacts(), ledger=Ledger())
         ex = GatedExecutor(gate, {"send": self.spy})
         self.assertTrue(ex.execute("send", {}).allowed)
+
+
+class TestAnErroredCallIsNotAnExecutedOne(unittest.TestCase):
+    """🔴 `executed_tools()` once returned every INVOKED tool, error or not.
+
+    A tool that raised on every call therefore counted as done - which let a
+    precondition be satisfied by a failure, and let a completion report say a
+    task was finished when nothing had happened. Both callers want success, not
+    attempt.
+    """
+
+    def setUp(self):
+        def boom(**kw):
+            raise TypeError("got multiple values for argument 'name'")
+        self.ok = Spy("fine")
+        gate = Gate([DenyUnlessDeclared(reversible=frozenset({"boom", "ok"}))], ledger=Ledger())
+        self.gate = gate
+        self.ex = GatedExecutor(gate, {"boom": boom, "ok": self.ok})
+
+    def test_a_raised_call_is_not_in_executed_tools(self):
+        self.ex.execute("boom", {"name": "x"})
+        self.assertEqual(self.gate.ledger.executed_tools(), ())
+        self.assertFalse(self.gate.ledger.was_executed("boom"))
+
+    def test_but_it_is_still_recorded_as_attempted(self):
+        """⚠️ The attempt must not vanish - a tool erroring every time is a fact
+        someone needs to see."""
+        self.ex.execute("boom", {})
+        self.assertEqual(self.gate.ledger.attempted_tools(), ("boom",))
+        self.assertEqual(len(self.gate.ledger.errored()), 1)
+
+    def test_a_successful_call_still_counts(self):
+        """The control - the stricter rule must not empty the set."""
+        self.ex.execute("ok", {})
+        self.assertEqual(self.gate.ledger.executed_tools(), ("ok",))
+
+    def test_a_failing_precondition_does_not_satisfy_a_precondition(self):
+        """⚠️ The consequence that matters: a step that ERRORED must not count
+        as having been done."""
+        class LedgerFacts(StaticFacts):
+            def __init__(self, ledger):
+                super().__init__()
+                self._ledger = ledger
+            def fact(self, key, **params):
+                return self._ledger.executed_tools() if key == "executed_tools" else super().fact(key, **params)
+
+        def boom(**kw):
+            raise RuntimeError("nope")
+        ledger = Ledger()
+        gate = Gate([RequirePrecondition(tool="send", requires="listing"),
+                     DenyUnlessDeclared(reversible=frozenset({"send", "listing"}))],
+                    facts=LedgerFacts(ledger), ledger=ledger)
+        send = Spy()
+        ex = GatedExecutor(gate, {"listing": boom, "send": send})
+        ex.execute("listing", {})
+        outcome = ex.execute("send", {})
+        self.assertFalse(outcome.allowed, "a failed precondition satisfied the requirement")
+        self.assertEqual(send.calls, [])

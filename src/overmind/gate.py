@@ -301,7 +301,25 @@ class Ledger:
         return tuple(self._entries)
 
     def executed_tools(self) -> tuple[str, ...]:
-        return tuple(e.call.name for e in self._entries if e.executed)
+        """Tools that ran AND RETURNED. ⚠️ A call that raised is NOT here.
+
+        This once returned every invoked tool, error or not, so a tool that
+        raised on every call counted as done - which let a precondition be
+        satisfied by a failure and let `reconcile` report a task complete when
+        nothing had happened. Both callers want success, not attempt.
+
+        ⚠️ For a non-idempotent tool that raised PARTWAY, the effect is genuinely
+        uncertain. Excluding it fails toward doing the step again, which is the
+        safe direction for a precondition and the honest one for a report.
+        """
+        return tuple(e.call.name for e in self._entries if e.executed and e.error is None)
+
+    def attempted_tools(self) -> tuple[str, ...]:
+        """Every tool the model tried to run, including refusals and errors."""
+        return tuple(e.call.name for e in self._entries)
+
+    def errored(self) -> tuple[LedgerEntry, ...]:
+        return tuple(e for e in self._entries if e.executed and e.error is not None)
 
     def denied(self) -> tuple[LedgerEntry, ...]:
         return tuple(e for e in self._entries if not e.decision.allowed)

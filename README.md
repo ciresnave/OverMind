@@ -13,7 +13,10 @@ imply.
 refuses rather than warns, and it cannot be satisfied by anything the model writes.
 
 Why it exists, in one measured sentence: **a model that states a prohibition perfectly violates it
-7 times out of 8** (`MEASUREMENTS.md` §11). A rule that must hold cannot be a rule in a prompt.
+4 to 7 times out of 8 when its reasoning is disabled** (`MEASUREMENTS.md` §11, §16) — and
+reasoning-off is the cheap setting a cost-driven orchestrator would choose. ⚠️ **With reasoning
+ON the same model complies 5 of 5**, so compliance is per-model × per-rule × per-inference-setting.
+**A rule that must hold cannot be a rule in a prompt.**
 
 ```
 python -m unittest discover -s tests -v

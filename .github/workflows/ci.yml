@@ -32,7 +32,7 @@ jobs:
   # Verified against the DEFECT rather than the fix, in THREE arms:
   #
   #   a tracked .py file with no header             -> exit 1, names it
-  #   a file carrying another party's copyright     -> exit 1, names it
+  #   a file carrying another party's licence notice -> exit 1, names it
   #   git absent, so the survey CANNOT RUN          -> exit 1, says which
   #
   # The third is the one that was broken when this gate first shipped elsewhere:

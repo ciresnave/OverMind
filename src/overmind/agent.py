@@ -133,12 +133,40 @@ def run_agent(client: ProviderClient, executor: GatedExecutor,
               tools: Sequence[Mapping[str, Any]], task: str, *,
               system: str = "", max_steps: int = 8,
               max_tokens: int | None = None,
-              context_mode: str = "transcript") -> AgentRun:
+              context_mode: str = "transcript",
+              offer: str = "as-given") -> AgentRun:
     """Drive one task to completion through the gate.
 
     `tools` are OpenAI-shaped schemas; `executor` holds the callables. The two
     are deliberately separate: a schema the model can see is not permission to
     run anything, and the gate is what decides.
+
+    `offer` selects which schemas the model is SHOWN:
+
+      "as-given"   the caller's list, untouched. The default, because a harness
+                   that quietly edits the tool list is one whose behaviour
+                   cannot be predicted from its inputs.
+
+      "permitted"  the caller's list MINUS the tools the gate will refuse no
+                   matter how they are called.
+
+    ⚠️ THE CORRECTNESS ARGUMENT IS THE ONE THAT MATTERS, NOT THE COST ONE.
+    DESCRIBING A TOOL THE GATE WILL ALWAYS REFUSE INVITES AN ATTEMPT - and the
+    attempt costs a round trip to be told no. The permitted set and the
+    described set drifting apart is a cost bug and a correctness bug at once;
+    one change closes both.
+
+    ⚠️ AND IT IS SUBTRACTION, NEVER PREDICTION. `certainly_denied` is a pure
+    function of the policy stack. Working out which tools the TASK needs is
+    planning, and planning is judgement - a different and much harder thing,
+    deferred until there is evidence it earns anything.
+
+    ⚠️ THE SUBTRACTION IS DELIBERATELY CONSERVATIVE. An argument-dependent
+    policy - one that refuses `merge_pr` for YOUR pr and allows it for another -
+    is never listed, because "sometimes refused" is not "always refused". A tool
+    dropped as certainly-denied that would sometimes have succeeded is worse
+    than one left in: the first is a false statement about what the system will
+    do, the second is a smaller saving.
 
     `context_mode` selects what the model is shown of its own past:
 
@@ -169,6 +197,8 @@ def run_agent(client: ProviderClient, executor: GatedExecutor,
     reasoning was load-bearing is the question, and it is measurable rather than
     arguable - `probe/ledger_context.py` runs both arms over the same task.
     """
+    if offer not in ("as-given", "permitted"):
+        raise ValueError(f"offer must be 'as-given' or 'permitted', not {offer!r}")
     if context_mode not in ("transcript", "ledger", "ledger+closure"):
         raise ValueError(f"context_mode must be 'transcript', 'ledger' or "
                          f"'ledger+closure', not {context_mode!r}")
@@ -190,6 +220,22 @@ def run_agent(client: ProviderClient, executor: GatedExecutor,
     wasted = executor.gate.certainly_denied(tool_names)
     if wasted:
         offered_but_refused.extend(wasted)
+    if offer == "permitted" and wasted:
+        # ⚠️ SUBTRACTION, NEVER PREDICTION. `certainly_denied` is a pure
+        # function of the policy stack and needs no judgement; working out which
+        # tools the TASK will need is planning, and planning is judgement. This
+        # does the first and not the second.
+        #
+        # ⚠️ AND IT IS ASKED FOR, NOT ASSUMED. The default leaves the caller's
+        # list untouched, because a harness that quietly edits the tool list is
+        # one whose behaviour cannot be predicted from its inputs. With
+        # `offer="permitted"` the caller has asked, and `offered_but_refused`
+        # still records exactly what was removed - so the run remains readable
+        # from its inputs plus its own report.
+        dropped = set(wasted)
+        tools = [t for t in tools
+                 if (t.get("function") or {}).get("name") not in dropped]
+        tool_names = [n for n in tool_names if n not in dropped]
     smuggle_strikes = 0
     result: ChatResult | None = None
     spent = Usage.zero()

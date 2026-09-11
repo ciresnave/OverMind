@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: MIT OR Apache-2.0
 cd /c/Projects/OverMind/probe
 for M in "$@"; do
   export LLM_MODEL="$M"

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 // PROBE SERVER — drives FAM's REAL ChannelPushHandler over a real MCP stdio server.
 // No reimplementation of the push: ChannelPushHandler is imported from FAM's tree,
 // so the notification is emitted by FAM's own code path (channel-push.ts:134).

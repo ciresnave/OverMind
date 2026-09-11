@@ -115,11 +115,32 @@ def _parse_arguments(raw: Any) -> dict[str, Any]:
 #: then ran to `max-steps` - 0 of 20 stopped on their own, against 20 of 20 in
 #: transcript mode.
 #:
-#: 🔴 AND WHETHER THIS SENTENCE HELPS IS UNTESTED. It scored 0/8 on llama3.2:3b
-#: - but that model does the task 0 of 24 in EVERY arm including the control, so
-#: the run measured the floor rather than the treatment. ⚠️ A FIX FOR "FINISHES
-#: BUT WILL NOT STOP" CANNOT BE EVALUATED ON A MODEL THAT NEVER FINISHES.
-#: Re-running on qwen3:8b, which does complete the task.
+#: 🔴 MEASURED ON qwen3:8b, AND IT IS ACTIVELY HARMFUL. DO NOT MAKE THIS A
+#: DEFAULT. Both arms alternating, n=3 each:
+#:
+#:     arm              did the task   steps   input        median
+#:     ledger              3 / 3        4.0    3,411 tok    681.1 s
+#:     ledger+closure      1 / 3        2.0    1,638 tok    183.2 s
+#:
+#:     stop: ledger completed=1 no-progress=1 truncated=1
+#:           ledger+closure completed=3
+#:
+#: ⚠️ THE SENTENCE DOES EXACTLY WHAT IT WAS WRITTEN TO DO AND BREAKS THE TASK.
+#: Termination goes 1-of-3 to 3-of-3; completion goes 3-of-3 to 1-of-3. It stops
+#: early, cleanly, and without doing the work.
+#:
+#: 🔴 AND IT IS 3.7x FASTER AND 2.1x CHEAPER - better on every metric except the
+#: only one that matters. Measuring stop-reason and cost, which is what this fix
+#: was built to improve, reports an unambiguous win. THE IMPROVING NUMBERS ARE
+#: THE ONES THE CHANGE WAS DESIGNED TO IMPROVE, SO THEY READ AS CONFIRMATION
+#: RATHER THAN AS A WARNING.
+#:
+#: ⚠️ A PROMPT THAT TELLS A MODEL IT *MAY* STOP IS READ BY A SMALL MODEL AS A
+#: SUGGESTION THAT IT *SHOULD*. Permission and instruction are not
+#: distinguishable at this scale.
+#:
+#: Kept as a flag rather than deleted, because deleting it would delete the
+#: evidence - and this is an obvious idea that somebody will have again.
 #:
 #: ⚠️ THE LEDGER CARRIED THE STATE AND NOT THE CLOSURE. "Here is the task, here
 #: is what you did" reads as an instruction to do the task, every step, forever.

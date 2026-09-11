@@ -197,7 +197,14 @@ def uncovered_extensions(root: pathlib.Path):
     present = {("." + n.rsplit(".", 1)[-1]).lower() for n in names if "." in n}
     source_present = present & SOURCE_EXTENSIONS
     uncovered = sorted(source_present - set(EXTENSIONS) - set(NOT_STAMPED))
-    stale = sorted(set(NOT_STAMPED) - source_present)
+    # ⚠️ AGAINST EVERY PRESENT EXTENSION, NOT JUST THE SOURCE ONES.
+    # NOT_STAMPED means "present in this tree and deliberately not
+    # stamped"; the staleness question is whether it is STILL PRESENT,
+    # not whether it is still classified as source. Comparing against
+    # `source_present` reported vulkane's `.spv` and `.xml` as stale
+    # while both sit in its tree - a decline of a NON-SOURCE extension
+    # could never be recorded without redding.
+    stale = sorted(set(NOT_STAMPED) - present)
     return uncovered, stale
 
 

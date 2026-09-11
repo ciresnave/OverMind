@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
 """Tests for the agent loop.
 
 The load-bearing assertions are about the LEDGER, not about what the loop

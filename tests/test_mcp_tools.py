@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
 """Tests for the MCP tool source.
 
 ⚠️ No `mcp` package needed: schema translation is pure, and invocation is tested

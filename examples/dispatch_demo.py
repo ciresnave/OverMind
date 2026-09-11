@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
 """An end-to-end dispatch: a free-tier model is SENT work and reports back.
 
     python examples/dispatch_demo.py [provider]

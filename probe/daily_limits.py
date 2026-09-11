@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
 """What do the free tiers actually allow per day?
 
 ⚠️ THE DISCIPLINE, which is the point of the file: a provider that does not

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
 """Audit an MCP server's tool schemas before pointing a model at them.
 
     python examples/audit_mcp_tools.py <command> [args...]

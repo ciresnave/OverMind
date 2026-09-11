@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
 """Is a LOCAL model a lane's day? Capacity bounded by clock, not by quota.
 
     python probe/local_throughput.py [model ...]

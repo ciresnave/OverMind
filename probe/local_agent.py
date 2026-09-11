@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
 # A NON-CLAUDE AGENT: a local LLM driving MCP tools.
 #
 # Nothing Anthropic anywhere in this file or its dependency set.

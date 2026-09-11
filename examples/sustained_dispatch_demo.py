@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
 """Sustained work: multi-step tasks, a blocked step, and an impossible one.
 
     python examples/sustained_dispatch_demo.py [provider ...]

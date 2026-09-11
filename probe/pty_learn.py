@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
 # Learn the READY and WORKING screen signatures. Positive screen predicate, not byte-quiet.
 import time, threading
 import winpty, pyte

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
 """Tests for reconciling testimony against evidence.
 
 ⚠️ The heuristic half of this module is prose matching and it WILL be imperfect.

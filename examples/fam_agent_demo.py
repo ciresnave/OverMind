@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
 """A non-Claude model doing real work in the FAM fabric, through the gate.
 
 This is the first thing in this repo that is a non-Claude AGENT rather than a

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
 # IS IT THE API SURFACE, OR IS IT THINKING?
 #
 # §11 measured qwen3:8b violating the self-merge prohibition 7 of 8 times via

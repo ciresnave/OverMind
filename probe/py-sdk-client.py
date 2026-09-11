@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
 # STOCK PYTHON MCP SDK CLIENT — different implementation from the TS SDK.
 import anyio, json
 from mcp import ClientSession, StdioServerParameters

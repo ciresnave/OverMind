@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
 """Can the ledger replace the transcript as the agent's memory?
 
     python probe/ledger_context.py [--n 20] [--model llama3.2:3b]

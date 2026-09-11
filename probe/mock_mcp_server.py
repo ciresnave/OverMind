@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
 # A minimal MCP stdio server, Python stdlib only, no SDK.
 # Stands in for FAM's adapter while FAM's live server is being brought up.
 # Its tools are deliberately shaped like FAM's so the agent swaps target with

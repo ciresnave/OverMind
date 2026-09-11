@@ -20,6 +20,37 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # ⚠️ THIS REPOSITORY BUILT THE SWEEP AND WAS 0/47 UNTIL THE COMMIT THAT ADDED
+  # THIS JOB. It stamped seven other repositories before stamping itself, which
+  # is the shape of nearly every measurement defect found here: the instrument
+  # is the last thing anybody points at itself.
+  #
+  # A SEPARATE JOB, so it stays informative on a run where the test matrix or a
+  # toolchain step dies first - a job that fails early asserts nothing about the
+  # steps below it while its name goes on claiming otherwise.
+  #
+  # Verified against the DEFECT rather than the fix, in THREE arms:
+  #
+  #   a tracked .py file with no header             -> exit 1, names it
+  #   a file carrying another party's copyright     -> exit 1, names it
+  #   git absent, so the survey CANNOT RUN          -> exit 1, says which
+  #
+  # The third is the one that was broken when this gate first shipped elsewhere:
+  # it returned an empty list, which is the PASS condition, so a survey that
+  # could not run was indistinguishable from a clean tree.
+  spdx:
+    name: Every source file declares the licence
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      # The gate's own controls run FIRST. A checker nobody has watched fail is
+      # a checker nobody has evidence works.
+      - name: Self-test the SPDX gate
+        run: python3 .github/spdx_gate.py --self-test
+      - name: Every tracked source file declares the licence
+        run: python3 .github/spdx_gate.py
+
   tests:
     name: tests (${{ matrix.os }}, py${{ matrix.python }})
     runs-on: ${{ matrix.os }}

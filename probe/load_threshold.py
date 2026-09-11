@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
 # AT WHAT INSTRUCTION LOAD DOES A LOCAL MODEL STOP DOING THE WORK?
 #
 # This is the number a CLAUDE.md restructure is cutting TO. Without it, cutting

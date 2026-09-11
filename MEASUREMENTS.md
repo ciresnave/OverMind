@@ -1668,8 +1668,9 @@ changed shape and not outcome, so the phrasing is not the limit.**
 > 🔴 **AND THIS IS MODEL-SPECIFIC, WHICH I DID NOT SAY WHEN I FIRST WROTE IT.**
 > On `qwen3:8b` — the first model measured here that actually completes the task
 > — **the ledger arm DID the task AND stopped voluntarily**, 650.9 s against
-> transcript's 329.6 s and 256.2 s. **n=1 on that arm at the time of writing;
-> the full run is in progress and the figure will be restated with its n.**
+> transcript's 329.6 s and 256.2 s. **Restated with its n: the ledger arm is
+> 3/3 on `qwen3:8b`, and 3/3 again on the later closure comparison — 6 of 6
+> across two independent runs.**
 >
 > ⚠️ **"THE LEDGER ARM NEVER TERMINATES" WAS A STATEMENT ABOUT `llama3.2:3b`
 > WEARING THE GRAMMAR OF A STATEMENT ABOUT THE MECHANISM.** The looping is what
@@ -1687,9 +1688,9 @@ may stop, and scored **0/8, still `max-steps` 8/8.**
 > 🔴 **THAT TEST COULD NOT HAVE DISCRIMINATED, AND I NEARLY REPORTED IT AS A RESULT.** It ran on
 > `llama3.2:3b`, which does the task **0 of 24 in every arm including the control.** A fix for
 > *"the model finishes but will not stop"* cannot be evaluated on a model that never finishes.
-> ⚠️ **A TREATMENT TESTED WHERE THE OUTCOME IS FLOORED MEASURES THE FLOOR.** The honest reading of
-> `ledger+closure` is **UNTESTED**, and it is being re-run on `qwen3:8b` — the first model measured
-> here that actually completes the task.
+> ⚠️ **A TREATMENT TESTED WHERE THE OUTCOME IS FLOORED MEASURES THE FLOOR.**
+>
+> 🔴 **RE-RUN ON `qwen3:8b`, AND THE FIX IS ACTIVELY HARMFUL. See below.**
 
 It ships as a **separate mode** rather than folded into `ledger`, because ⚠️ **a treatment silently
 applied to its own control reports no difference, and that report is indistinguishable from a real
@@ -1729,6 +1730,49 @@ and was scored `TRUNCATED`, correctly excluded rather than counted as silence.**
 
 ⚠️ **n=3 per arm, both at ceiling.** That establishes the mechanism *works*; it
 cannot rank the arms, and no p-value is printed because none is supported.
+
+### 🔴 THE FIX I PROPOSED IS ACTIVELY HARMFUL, and it looks like an improvement on every metric but one
+
+`ledger+closure` adds one sentence — *"if the ledger above already shows this task
+finished, reply in plain text and call no tool."* **Measured on `qwen3:8b`, both arms
+alternating, n=3 each:**
+
+| arm | **did the task** | steps | input | median wall clock |
+|---|---|---|---|---|
+| ledger | **3 / 3** | 4.0 | 3,411 tok | 681.1 s |
+| ledger+closure | **1 / 3** | 2.0 | **1,638 tok** | **183.2 s** |
+
+**stop reason —** ledger `completed`×1 `no-progress`×1 `truncated`×1 · **ledger+closure `completed`×3**
+
+> 🔴 **THE SENTENCE DOES EXACTLY WHAT I ASKED IT TO DO AND BREAKS THE TASK.**
+> Termination goes from 1-of-3 clean to **3 of 3**. Task completion goes from
+> **3 of 3 to 1 of 3.** It stops early, cleanly, and without doing the work.
+
+⚠️ **AND IT IS 3.7× FASTER AND 2.1× CHEAPER.** Faster, cheaper, terminates cleanly,
+scores `completed` every time — **better on every metric except the only one that
+matters.** Had I shipped it and measured stop-reason and cost, which is what I built
+the fix to improve, **I would have reported an unambiguous win.**
+
+> ⚠️ **THAT IS THE SAME SHAPE AS THIS SECTION'S OWN SUBJECT.** The `reconcile` defect
+> was a metric that looked right while the work did not happen. **This is a FIX that
+> looks right while the work does not happen** — and the second is harder, because
+> the improving numbers are the ones the change was designed to improve, so they read
+> as confirmation rather than as a warning.
+
+**What it trades:** the plain ledger arm **does the work and will not stop**; the
+closure arm **stops and will not do the work.** ⚠️ **A prompt that tells a model it
+MAY stop is read by a small model as a suggestion that it SHOULD** — the permission
+and the instruction are not distinguishable at this scale.
+
+**`ledger+closure` stays in the codebase as a flag, never a default, with this result
+in its docstring.** ⚠️ **Deleting it would delete the evidence**, and the next person
+to have this idea — it is an obvious idea — should find the measurement rather than
+the reasoning.
+
+**And the plain ledger arm's stop reasons are not stable:** `completed`,
+`no-progress` and `truncated`, one each across three runs that all did the task.
+⚠️ **A single run's stop reason is not a property of the arm**, which is the reason
+both columns are reported separately in the first place.
 
 ### 🔴 The pre-registration was wrong on 3 of 4, which is the argument for writing it down
 

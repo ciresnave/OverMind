@@ -194,10 +194,28 @@ def uncovered_extensions(root: pathlib.Path):
     ok, names = _git_z_all(root)
     if not ok:
         return None, None
-    present = {("." + n.rsplit(".", 1)[-1]).lower() for n in names if "." in n}
+    # ⚠️ `PurePosixPath.suffix`, NOT `rsplit(".")`. Filed as a LOW-RISK style
+    # nitpick and it is a correctness bug - measured on real path shapes:
+    #
+    #     some.dir/file    rsplit -> ".dir/file"   suffix -> none
+    #     a.b.c/README     rsplit -> ".c/readme"   suffix -> none
+    #     .gitignore       rsplit -> ".gitignore"  suffix -> none
+    #
+    # A dot in a DIRECTORY name, or a dotfile with no extension, produced a
+    # fabricated extension. PurePosixPath because `git ls-files` always
+    # returns forward slashes regardless of platform.
+    present = {pathlib.PurePosixPath(n).suffix.lower() for n in names}
+    present.discard("")
     source_present = present & SOURCE_EXTENSIONS
     uncovered = sorted(source_present - set(EXTENSIONS) - set(NOT_STAMPED))
-    stale = sorted(set(NOT_STAMPED) - source_present)
+    # ⚠️ AGAINST EVERY PRESENT EXTENSION, NOT JUST THE SOURCE ONES.
+    # NOT_STAMPED means "present in this tree and deliberately not
+    # stamped"; the staleness question is whether it is STILL PRESENT,
+    # not whether it is still classified as source. Comparing against
+    # `source_present` reported vulkane's `.spv` and `.xml` as stale
+    # while both sit in its tree - a decline of a NON-SOURCE extension
+    # could never be recorded without redding.
+    stale = sorted(set(NOT_STAMPED) - present)
     return uncovered, stale
 
 
@@ -210,7 +228,22 @@ def _git_z_all(root: pathlib.Path):
     proc = subprocess.run(  # noqa: S603 - fixed argv, shell=False
         [git, "-C", str(root), "ls-files", "-z"],
         capture_output=True, encoding=None, shell=False, check=False)
-    if proc.returncode not in (0, 1):
+    # ⚠️ `!= 0`, NOT `not in (0, 1)`. MEASURED, not reasoned:
+    #
+    #     git ls-files  with matches     -> 0
+    #     git ls-files  NO matches       -> 0        <- never 1
+    #     git ls-files  outside a repo   -> 128
+    #     git grep      NO matches       -> 1        <- the helper this was copied from
+    #
+    # The `(0, 1)` form came from the grep wrapper, where 1 genuinely means "no
+    # matches". Here it accepted an exit code `ls-files` cannot produce.
+    #
+    # ⚠️ INERT TODAY - no input reaches the gap - AND THE SAME PROVENANCE DEFECT
+    # AS A BAD PORT: a predicate carried from the call it was written for to a
+    # call with different exit semantics. The moment someone copies this to wrap
+    # a command that DOES use 1 as a signal, the gap opens and nothing says so.
+    # Found by an analyser reading the code against the PR's own prose.
+    if proc.returncode != 0:
         print("FAIL: git ls-files: "
               + proc.stderr.decode("utf-8", "replace").strip()[:200], file=sys.stderr)
         return False, []
@@ -425,6 +458,51 @@ def self_test() -> int:
         verb = "exempt" if expected else "examined"
         print(f"  {'ok  ' if ok else 'FAIL'}  {path} is {verb}")
 
+    # ⚠️ CONTROLS FOR THE EXTENSION CENSUS. `uncovered_extensions` needs git,
+    # but the part that ROTS is the path->extension derivation and the set
+    # arithmetic, and neither does. A reviewer asked for this and was right:
+    # a manual run proves it worked that afternoon; nothing re-runs it when
+    # SOURCE_EXTENSIONS or NOT_STAMPED grows.
+    #
+    # The first three FAIL against the `rsplit(".")` form this replaced, so
+    # they are controls rather than decoration.
+    suffixes = [
+        ("src/lib.rs", ".rs"),
+        ("some.dir/file", ""),
+        ("a.b.c/README", ""),
+        (".gitignore", ""),
+        ("x/y.tar.gz", ".gz"),
+        ("crates/core/LICENSE-MIT", ""),
+    ]
+    for path, expected in suffixes:
+        got = pathlib.PurePosixPath(path).suffix.lower()
+        ok = got == expected
+        failures += not ok
+        print(f"  {'ok  ' if ok else 'FAIL'}  suffix({path!r}) == {got!r}")
+
+    # The census arithmetic, with the tree's extensions supplied directly.
+    census = [
+        ("a source ext outside the list is UNCOVERED",
+         {".rs", ".md"}, (".py",), {}, [".rs"], []),
+        ("a source ext IN the list is covered",
+         {".rs", ".md"}, (".rs",), {}, [], []),
+        ("a source ext DECLINED is covered",
+         {".rs", ".md"}, (".py",), {".rs": "why"}, [], []),
+        # ⚠️ THE CASE THAT WAS BROKEN: declining a PRESENT but NON-SOURCE
+        # extension must not read as stale.
+        ("a present NON-source decline is not stale",
+         {".rs", ".spv"}, (".rs",), {".spv": "generated"}, [], []),
+        ("an ABSENT decline IS stale",
+         {".rs"}, (".rs",), {".slang": "gone"}, [], [".slang"]),
+    ]
+    for name, present, exts, not_stamped, want_unc, want_stale in census:
+        source_present = present & SOURCE_EXTENSIONS
+        unc = sorted(source_present - set(exts) - set(not_stamped))
+        stl = sorted(set(not_stamped) - present)
+        ok = unc == want_unc and stl == want_stale
+        failures += not ok
+        print(f"  {'ok  ' if ok else 'FAIL'}  {name}")
+
     equivalences = [("MIT OR Apache-2.0", "Apache-2.0 OR MIT", True),
                     ("Apache-2.0", "MIT OR Apache-2.0", False),
                     ("MIT", "MIT OR Apache-2.0", False)]
@@ -436,7 +514,8 @@ def self_test() -> int:
     # ⚠️ SUMMED, NOT WRITTEN DOWN. This line said "10 controls" while 18 ran,
     # for one commit - a stale count inside the run whose entire purpose is to
     # kill stale counts. A COUNT CANNOT SURVIVE ITS OWN LIST GROWING.
-    total = len(cases) + len(equivalences) + len(classifications)
+    total = (len(cases) + len(equivalences) + len(classifications)
+             + len(suffixes) + len(census))
     print(f"{chr(10)}{'PASS' if not failures else 'FAIL'}: {total} controls, "
           f"{failures} failed")
     return 1 if failures else 0

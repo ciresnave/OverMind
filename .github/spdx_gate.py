@@ -213,7 +213,14 @@ def tracked_sources(root: pathlib.Path) -> list[str] | None:
 #: nothing is vendored; not contrived in the three repos this gate also runs in,
 #: two of which vendor third-party source.
 COPYRIGHT_EXPECTED = ("LICENSE", "LICENCE", "COPYING", "CHANGELOG", "NOTICE",
-                      "spdx_gate.py", "spdx.py", "preflight.py", "test_spdx.py")
+                      "spdx_gate.py", "spdx.py", "preflight.py", "test_spdx.py",
+                      # ⚠️ FIFTH TIME A DETECTOR HERE HAS MATCHED SOMETHING
+                      # WRITTEN TO DESCRIBE IT. `gate_fleet.py` compares
+                      # deployments of THIS script and explains the
+                      # copyright survey at length, so the survey finds it.
+                      # Exempted rather than reworded: its subject genuinely
+                      # IS licence tooling, like the three above it.
+                      "gate_fleet.py")
 
 
 def uncovered_extensions(root: pathlib.Path):

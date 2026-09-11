@@ -1662,10 +1662,21 @@ changed shape and not outcome, so the phrasing is not the limit.**
 
 ### What survives, and is real
 
-    transcript      20/20 stopped voluntarily      2 steps
-    ledger           0/20 stopped voluntarily      6 steps (the cap)
+    llama3.2:3b   transcript   20/20 stopped voluntarily   2 steps
+    llama3.2:3b   ledger         0/20 stopped voluntarily   6 steps (the cap)
 
-**The ledger arm never terminates.** It loops `list → send → list → send` to the step cap. ⚠️ **The
+> 🔴 **AND THIS IS MODEL-SPECIFIC, WHICH I DID NOT SAY WHEN I FIRST WROTE IT.**
+> On `qwen3:8b` — the first model measured here that actually completes the task
+> — **the ledger arm DID the task AND stopped voluntarily**, 650.9 s against
+> transcript's 329.6 s and 256.2 s. **n=1 on that arm at the time of writing;
+> the full run is in progress and the figure will be restated with its n.**
+>
+> ⚠️ **"THE LEDGER ARM NEVER TERMINATES" WAS A STATEMENT ABOUT `llama3.2:3b`
+> WEARING THE GRAMMAR OF A STATEMENT ABOUT THE MECHANISM.** The looping is what
+> a model does when it cannot do the task and is handed a prompt that re-states
+> it every step — **not what the ledger does to a model that can.**
+
+**On `llama3.2:3b` the ledger arm never terminates.** It loops `list → send → list → send` to the step cap. ⚠️ **The
 no-progress guard does not catch it**, because the filter arguments differ slightly each call — it
 is **A,B,A,B, not A,A,A**, and the guard was deliberately narrowed to consecutive-identical after it
 once blocked a legitimate re-read.
@@ -1683,6 +1694,41 @@ may stop, and scored **0/8, still `max-steps` 8/8.**
 It ships as a **separate mode** rather than folded into `ledger`, because ⚠️ **a treatment silently
 applied to its own control reports no difference, and that report is indistinguishable from a real
 null result.**
+
+### 🟢 THE ANSWER, on the first model measured here that can do the task
+
+**`qwen3:8b`, same task, same gate, same live server, arms alternating, n=3 each:**
+
+| arm | did the task | steps | input | median wall clock |
+|---|---|---|---|---|
+| transcript | **3 / 3** | 3.0 | 2,512 tok (837/step) | 256.2 s |
+| ledger | **3 / 3** | 3.0 | **2,503 tok (834/step)** | 521.5 s |
+
+**stop reason —** transcript `completed`×3 · ledger `completed`×2, `truncated`×1
+
+> ✅ **THE LEDGER CAN REPLACE THE TRANSCRIPT AS THE AGENT'S MEMORY.** Same
+> completion, same step count, and input tokens within **0.4%**. A digest
+> assembled from what the ledger recorded carried the entity id as well as the
+> full conversation did.
+
+🔴 **AND THIS FALSIFIES BOTH MY PREDICTION AND MY OWN CORRECTION OF IT.** I
+pre-registered *"ledger is cheaper"*. I then corrected that to *"7.3× dearer"*
+on the `llama3.2:3b` data. **Neither is right: on a model that can do the task
+the two arms cost the same.** The 7.3× was **step count** — a model looping six
+times because it could not finish, not a property of the digest.
+
+⚠️ **EVERY NUMBER IN THIS SECTION'S FIRST HALF CAME FROM A MODEL THAT NEVER
+COMPLETED THE TASK, SO NONE OF THEM COULD DISTINGUISH A PROPERTY OF THE
+MECHANISM FROM A PROPERTY OF THE FLOOR.** Cost, termination and step count all
+read as findings about the ledger and were findings about `llama3.2:3b`.
+
+**What the ledger arm does cost is WALL CLOCK — 2.0× — at equal tokens.** That
+is not prefill: it is a thinking model reasoning from a restated brief each step
+instead of reading its own prior turn. **One ledger run hit the output budget
+and was scored `TRUNCATED`, correctly excluded rather than counted as silence.**
+
+⚠️ **n=3 per arm, both at ceiling.** That establishes the mechanism *works*; it
+cannot rank the arms, and no p-value is printed because none is supported.
 
 ### 🔴 The pre-registration was wrong on 3 of 4, which is the argument for writing it down
 

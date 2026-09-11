@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
 # STOCK PYTHON MCP SDK — same client, plus the SDK's own NotificationBinding
 # extension point for a vendor notification method. Nothing patched.
 import anyio, json

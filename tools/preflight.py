@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
 """Six pre-flight checks to run before an SPDX sweep touches a repo.
 
     python tools/preflight.py <repo> [<repo> ...] [--offline]

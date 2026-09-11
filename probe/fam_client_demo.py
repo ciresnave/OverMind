@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
 # NON-CLAUDE MCP CLIENT for FAM's LIVE adapter.
 # Nothing Anthropic in this file: stock `mcp` Python SDK over stdio.
 #

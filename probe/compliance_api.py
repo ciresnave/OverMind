@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
 # THE SAME COMPLIANCE EXPERIMENT AS compliance_probe.py, AGAINST A HOSTED
 # OPENAI-COMPATIBLE PROVIDER.
 #

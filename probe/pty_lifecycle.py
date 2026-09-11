@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
 # LIFECYCLE MEASUREMENT v3 - raw stream captured to disk for offline analysis.
 import time, threading
 import winpty, pyte

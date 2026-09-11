@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
 """Tests for the mechanical gate.
 
 Each test encodes a MEASURED failure from MEASUREMENTS.md rather than an

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
 """Reconciling what a model SAYS against what it DID.
 
 The whole harness rests on one rule: only the tool side is evidence. This module

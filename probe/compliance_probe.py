@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
 # GIVEN A RULE IT DEMONSTRABLY HOLDS IN CONTEXT, HOW OFTEN DOES IT APPLY IT?
 #
 # NOT "does load degrade compliance" - that framing is already falsified: the

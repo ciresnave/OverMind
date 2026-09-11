@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
 """The mechanical gate.
 
 WHY THIS EXISTS, in one measured sentence: a model that states a prohibition

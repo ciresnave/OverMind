@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
 """Tests for the SPDX tool.
 
 ⚠️ The pass condition for the real sweep is a COUNT READ FROM THE TREE, never a
@@ -228,12 +229,33 @@ class TestTheCheckerDoesNotCountItself(unittest.TestCase):
         text = "#!/usr/bin/env python\n# SPDX-License-Identifier: MIT\n"
         self.assertEqual(spdx.existing_identifier(text), "MIT")
 
-    def test_this_tools_own_source_reports_as_missing(self):
-        """⚠️ The end-to-end version of the same check, against the real file."""
+    def test_this_tools_own_source_reads_its_header_and_not_its_constants(self):
+        """⚠️ The end-to-end version, against the real file.
+
+        🔴 THIS TEST USED TO ASSERT THE FILE HAD NO HEADER AT ALL, and swept
+        itself into failure the moment this repo stamped its own source. The
+        premise - "spdx.py is unstamped" - was never the property being tested;
+        it was a convenient stand-in for it, and stamping the file destroyed the
+        stand-in while leaving the property untouched.
+
+        ⚠️ A TEST WHOSE PREMISE IS "THIS FILE HAS NOT BEEN DONE YET" EXPIRES WHEN
+        THE FILE IS DONE. Same family as a claim about an artifact written into
+        that artifact and falsified by finishing it.
+
+        The property is: the reader takes the header at the TOP and ignores the
+        several mentions of the marker further down. That is now asserted
+        directly, and it is a STRONGER test than the old one - the file today
+        contains both a real header and its own string constants, so this
+        distinguishes them where "returns None" could not.
+        """
         source = pathlib.Path(spdx.__file__).read_text(encoding="utf-8")
-        self.assertIn(spdx.MARKER, source, "precondition: the marker IS in this file")
-        self.assertIsNone(spdx.existing_identifier(source),
-                          "the checker counted its own string constant as a header")
+        self.assertGreater(source.count(spdx.MARKER), 1,
+                           "precondition: the marker appears MORE THAN ONCE here")
+        self.assertEqual(spdx.existing_identifier(source), MIT,
+                         "the reader did not take the header at the top")
+        below = spdx.HEADER_WINDOW
+        self.assertIn(spdx.MARKER, chr(10).join(source.splitlines()[below:]),
+                      "precondition: a mention also sits BELOW the header window")
 
 
 class TestOrderInsensitiveLicenceComparison(unittest.TestCase):

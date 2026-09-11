@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
 # Shared rule definitions for the compliance experiments.
 # ⚠️ IMPORTED BY BOTH compliance_probe.py (local, Ollama) AND compliance_api.py
 # (hosted, OpenAI-compatible). They must be the SAME rules or the local-vs-hosted

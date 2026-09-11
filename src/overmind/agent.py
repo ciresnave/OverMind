@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
 """The agent loop — a model, its tools, and the gate between them.
 
 ⚠️ THE LOOP NEVER DERIVES STATE FROM THE MODEL'S TEXT. Every effect goes through

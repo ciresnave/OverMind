@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
 # WHAT IS A LOCAL MODEL'S ACTUAL USABLE WINDOW?
 #
 # ⚠️ THE TRAP THIS EXISTS TO CATCH: Ollama's DEFAULT num_ctx is usually far below

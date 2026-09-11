@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
 # LIFECYCLE v4 - submit is VERIFIED by observing the working state, not assumed.
 import time, threading, re, sys
 import winpty, pyte

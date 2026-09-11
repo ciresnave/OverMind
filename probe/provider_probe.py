@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
 # WHICH OF THE FIVE FREE-TIER PROVIDERS REACHES A WORKING TOOL CALL?
 #
 # ⚠️ KEYS ARE READ FROM HKCU\Environment DIRECTLY. This process was started

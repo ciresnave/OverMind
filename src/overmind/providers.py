@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
 """Provider client — one OpenAI-shaped surface over five free-tier backends.
 
 Every behaviour here is a measured one (MEASUREMENTS.md §12, §12.1, §12.2).

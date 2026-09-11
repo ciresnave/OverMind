@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
 # Which input encoding does the TUI's select list actually accept? Measure, don't guess.
 import time, threading, sys
 import winpty, pyte

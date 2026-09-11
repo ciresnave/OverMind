@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
 # DOES THE FAILURE BELONG TO THE MODEL, OR TO MY TRANSPORT?
 #
 # The matrix reached the models through Ollama's OPENAI-COMPATIBLE shim (/v1).

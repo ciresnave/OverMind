@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
 """MCP as a tool source for the agent loop.
 
 ⚠️ THE GATE DOES NOT MOVE. `GatedExecutor` still takes a mapping of callables and

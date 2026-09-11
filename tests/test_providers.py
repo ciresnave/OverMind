@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
 """Tests for the provider client.
 
 Each test names the measurement it protects (MEASUREMENTS.md §12, §12.1, §12.2).

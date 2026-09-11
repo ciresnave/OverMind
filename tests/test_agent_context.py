@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
 """Does the agent still work when its only memory is the ledger?
 
 ⚠️ THE ARCHITECTURE THIS PROJECT IMPLIES, MEASURED RATHER THAN ASSERTED. A

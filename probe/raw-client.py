@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
 # RAW JSON-RPC over stdio. No MCP SDK at all. Proves what bytes leave the server.
 import json, subprocess, sys, threading, time
 

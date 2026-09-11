@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
 # PTY LIFECYCLE MEASUREMENT — (a) idle detection (b) does /clear actually forget (c) does the process survive.
 import sys, time, threading, re
 import winpty, pyte

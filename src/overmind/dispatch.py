@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
 """Being dispatched to — the difference between a participant and a tool.
 
 Until now an OverMind agent acted only when a human started it. This turns an

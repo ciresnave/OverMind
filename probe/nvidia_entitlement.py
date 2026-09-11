@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
 # WHICH NVIDIA MODELS IS THIS ACCOUNT ACTUALLY ENTITLED TO?
 # A 404 "Function <uuid>: Not found for account" is returned BEFORE inference,
 # so sweeping the roster costs no quota. max_tokens=1 keeps the entitled ones cheap.

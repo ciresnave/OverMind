@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
 """End-to-end: a real non-Claude model, a real provider, and the gate between.
 
 This is the §11 scenario run for real rather than scripted. The model is told the

@@ -1,0 +1,105 @@
+name: Gate fleet
+
+# ⚠️ WHY THIS EXISTS: `.github/spdx_gate.py` is hand-copied into four
+# repositories, and on 2026-09-11 one copy lagged the other three while ALL
+# FOUR printed PASS. No single repository's CI can see that - each checkout
+# holds one copy - so `tools/gate_fleet.py` was a tool somebody had to
+# remember to run. On 2026-09-16 the same blindness let all four copies carry
+# CR CR LF line endings unnoticed.
+#
+# All four repositories are public, so the default token can check them out
+# and this job compares them without any new secret.
+#
+# ⚠️ WHAT IT STILL CANNOT DO: fire on a pull request in kiss-ref, vulkane or
+# synapse. A change there is caught by the daily schedule, up to a day later.
+
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  push:
+    branches: [main]
+    paths:
+      - ".github/spdx_gate.py"
+      - "tools/gate_fleet.py"
+      - ".github/workflows/gate-fleet.yml"
+  pull_request:
+    paths:
+      - ".github/spdx_gate.py"
+      - "tools/gate_fleet.py"
+      - ".github/workflows/gate-fleet.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fleet:
+    name: Every deployment of spdx_gate.py agrees
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: OverMind
+      - uses: actions/checkout@v4
+        with:
+          repository: ThinkersJournal/kiss-ref
+          path: kiss-ref
+          persist-credentials: false
+          sparse-checkout: .github/spdx_gate.py
+          sparse-checkout-cone-mode: false
+      - uses: actions/checkout@v4
+        with:
+          repository: ciresnave/vulkane
+          path: vulkane
+          persist-credentials: false
+          sparse-checkout: .github/spdx_gate.py
+          sparse-checkout-cone-mode: false
+      - uses: actions/checkout@v4
+        with:
+          repository: ciresnave/synapse
+          path: synapse
+          persist-credentials: false
+          sparse-checkout: .github/spdx_gate.py
+          sparse-checkout-cone-mode: false
+
+      # ⚠️ CONTROL 1: each directory holds the repository its name claims. A
+      # wiring slip that checked out OverMind four times would compare one
+      # file with itself and agree forever.
+      - name: Control - four different repositories
+        run: |
+          for r in kiss-ref vulkane synapse; do
+            url=$(git -C "$r" remote get-url origin)
+            echo "$r <- $url @ $(git -C "$r" rev-parse --short HEAD)"
+            case "$url" in
+              */"$r"|*/"$r".git) ;;
+              *) echo "::error::$r is checked out from $url"; exit 1 ;;
+            esac
+          done
+
+      # ⚠️ CONTROL 2: the comparison must be able to fail HERE, in this run,
+      # on these files - not just in the unit tests. A copy with one
+      # vacuity bug and one lone CR planted must red.
+      - name: Control - a planted divergence is caught
+        run: |
+          cp -r vulkane planted
+          python3 - <<'PY'
+          import pathlib
+          p = pathlib.Path("planted/.github/spdx_gate.py")
+          b = p.read_bytes()
+          old = b"return names if ok else None" + bytes([10])
+          assert b.count(old) == 1, b.count(old)
+          new = b"return names if ok else []" + bytes([13, 13, 10])
+          p.write_bytes(b.replace(old, new))
+          PY
+          if python3 OverMind/tools/gate_fleet.py OverMind kiss-ref planted synapse > planted.txt; then
+            cat planted.txt
+            echo "::error::the fleet check passed a planted divergence"
+            exit 1
+          fi
+          cat planted.txt
+          grep -q "DIVERGED  tracked_sources()" planted.txt
+          grep -q "LONE CR   planted: 1 CRs" planted.txt
+
+      - name: Compare the four deployments
+        run: python3 OverMind/tools/gate_fleet.py OverMind kiss-ref vulkane synapse

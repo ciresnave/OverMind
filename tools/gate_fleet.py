@@ -45,10 +45,16 @@ nothing else; the comparison needs all four at once. So this is a tool somebody
 RUNS, not a gate that fires - and a tool somebody runs is one that gets
 forgotten, which is the failure mode this whole session has been cataloguing.
 
-⚠️ STATED RATHER THAN SOLVED. Closing it properly means one of: a scheduled job
-with checkouts of every deployment, or publishing the gate as a package each
-repo pins by version - at which point the fleet cannot diverge silently because
-the version string says so. Both are larger than tonight, and NAMING THE
+⚠️ PARTLY SOLVED ON 2026-09-16: `.github/workflows/gate-fleet.yml` checks out
+all four (they are public, so no secret is needed) and runs this daily, on
+OverMind pushes and PRs that touch the gate, and on demand - with two same-run
+controls: each checkout is the repository it claims to be, and a planted
+divergence reds. What it still cannot do is fire on a PR in the OTHER three
+repositories; a change there is caught up to a day later.
+
+Closing it fully means publishing the gate as a package each repo pins by
+version - at which point the fleet cannot diverge silently because the version
+string says so. NAMING THE
 TRIGGER is the part that stops this becoming a promise with no state: when a
 FIFTH repo gets this gate, OR WHEN ANY `DIVERGENT` ENTRY NEEDS A SECOND REASON,
 hand-copying stops being defensible. (The second clause is the PM's, from

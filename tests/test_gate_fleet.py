@@ -121,6 +121,16 @@ class TestFleet(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("does not exist", out)
 
+    def test_a_fleet_with_no_controls_anywhere_does_not_crash(self):
+        """⚠️ `max()` of an empty sequence raises. Every count being 0 or None
+        is a legitimate input - copies with no self-test at all - and the
+        answer must be a report, not a traceback."""
+        for name in ("a", "b"):
+            self.fleet.add(name, b"def f():\n    return 1\n")
+        code, out = self.fleet.run()
+        self.assertEqual(code, 0, out)
+        self.assertIn("self-test case-tuples: a=None  b=None", out)
+
     def test_a_lagging_control_count_is_reported(self):
         self.fleet.add("a", self.source.encode("utf-8"))
         case = '        ("MIT", "MIT OR Apache-2.0", False)]\n'

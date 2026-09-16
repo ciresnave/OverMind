@@ -98,9 +98,10 @@ DIVERGENT: dict[str, str] = {
              "newline, and requiring a header on them means the gate can never "
              "go green.",
     "report": "synapse prints the empty-file count.",
-    "self_test": "the control lists grow per repo as each finds new cases; the "
-                 "COUNT is compared separately below, which is the part that "
-                 "caught the original defect.",
+    # ⚠️ `self_test` WAS HERE until 2026-09-16, on the grounds that its control
+    # lists grow per repo. They never did diverge, and they now live in
+    # `*_controls` helpers that ARE compared - so a case added to one copy is
+    # a DIVERGED finding that needs a reason, not a silent difference.
     "survey_copyright": "vulkane subtracts COPYRIGHT_ACKNOWLEDGED, which only "
                         "it declares.",
 }
@@ -208,8 +209,12 @@ def main(argv: list[str]) -> int:
     print(f"  self-test case-tuples: "
           + "  ".join(f"{r}={counts[r]}" for r in sorted(counts)))
 
+    # ⚠️ `default=`, because `max()` of nothing RAISES. The first version took
+    # `max(x for x in counts.values() if x)`, which crashed whenever every
+    # count was 0 or None - found by a mutation that zeroed the helper counts.
+    top = max((c for c in counts.values() if c is not None), default=None)
     lagging = [r for r, c in counts.items()
-               if c is not None and c < max(x for x in counts.values() if x)]
+               if c is not None and top is not None and c < top]
     if lagging:
         # ⚠️ NOT AN ERROR BY ITSELF - a repo can legitimately have fewer cases.
         # It is reported because it is the signal that worked, and because

@@ -1,0 +1,973 @@
+{
+  "2410.11905": {
+    "source": {
+      "key": "2410.11905",
+      "cite": "arXiv:2410.11905 (Agora)",
+      "url": "https://arxiv.org/abs/2410.11905",
+      "text": "2410.11905.txt"
+    },
+    "summary": {
+      "title": "A SCALABLE COMMUNICATION PROTOCOL FOR NETWORKS OF LARGE LANGUAGE MODELS",
+      "problem": "Scaling networks of heterogeneous LLM agents introduces the Agent Communication Trilemma, where protocols must balance versatility, efficiency, and portability. Existing solutions trade off these traits, resulting in expensive natural language communications, inflexible REST APIs, or high human implementation effort.",
+      "mechanism": "Agents communicate over HTTPS using JSON messages that include a protocol hash, protocol download URIs, and a payload body. For frequent interactions, agents autonomously negotiate plain-text protocol documents (PDs) and generate local code routines to process structured JSON messages directly without invoking an LLM. Rare interactions or routine failures fall back to natural language processed by LLMs.",
+      "access": [
+        "api-tokens"
+      ],
+      "access_detail": "The protocol requires text-level API access to LLMs for instruction following, protocol negotiation, code routine synthesis, and natural language fallback.",
+      "gains": [
+        {
+          "claim": "Agora reduces execution cost by approximately five times compared to natural language communication in a 100-agent network.",
+          "metric": "overall cost in API queries (USD)",
+          "benchmark": "100-agent heterogeneous network running 1000 task queries",
+          "baseline": "natural language communication",
+          "quote": "executing this demo with Agora is approximately five times cheaper than with regular natural language.",
+          "check": "claim numbers ['100'] not in quote - quote is verbatim; the extra figure(s) appear elsewhere in the paper"
+        },
+        {
+          "claim": "Negotiating a protocol and generating routines costs 0.043 USD compared to 0.020 USD for a single natural-language query, achieving net savings after three uses.",
+          "metric": "cost in API calls (USD)",
+          "benchmark": "2-agent weather data retrieval task",
+          "baseline": "natural-language exchange",
+          "quote": "In our demo, negotiating the protocol and implementing the routines cost 0.043 USD in API calls, compared to an average cost of 0.020 USD for a natural-language exchange.",
+          "check": "verified"
+        },
+        {
+          "claim": "Across 1000 task queries in a 100-agent network, only 0.8% failed due to third-party model API issues.",
+          "metric": "query failure rate (%)",
+          "benchmark": "100-agent network demo running 1000 queries",
+          "baseline": "N/A",
+          "quote": "Out of 1000 queries, 8 (representing thus 0.8% of the total query volume) failed due to Google\u2019s Gemini API not responding.",
+          "check": "claim numbers ['100'] not in quote - quote is verbatim; the extra figure(s) appear elsewhere in the paper"
+        }
+      ],
+      "limitations": "Negotiating protocols and writing routines incurs an initial cost overhead, requiring multiple transactions to achieve cost efficiency. Additionally, partial network isolation can lead to duplicate protocols emerging independently, and the framework relies on LLM capability and third-party API stability for code generation and negotiation.",
+      "tier": "token"
+    },
+    "meta": {
+      "provider": "google",
+      "model": "models/gemini-3.6-flash",
+      "finish_reason": "stop",
+      "latency_s": 18.8,
+      "usage": {
+        "prompt_tokens": 16622,
+        "completion_tokens": 663,
+        "total_tokens": 20327,
+        "reported": true
+      }
+    }
+  },
+  "2412.07646": {
+    "source": {
+      "key": "2412.07646",
+      "cite": "arXiv:2412.07646",
+      "url": "https://arxiv.org/abs/2412.07646",
+      "text": "2412.07646.txt"
+    },
+    "summary": {
+      "title": "Searching for Structure: Investigating Emergent Communication with Large Language Models",
+      "problem": "This paper investigates whether artificial languages evolve structural properties that optimize communicative efficiency and learnability when shaped by the implicit biases of Large Language Models (LLMs) in a referential signaling game.",
+      "mechanism": "LLM agents communicate in a referential game by exchanging text signals (concatenations of CV syllables) formatted in structured JSON-like in-context prompts. The speaker model observes stimulus attributes and completes a prompt to produce a text utterance, while the listener model identifies the target stimulus by selecting the distractor candidate that yields the highest log-probability when prefilled into the completion prompt.",
+      "access": [
+        "api-tokens",
+        "model-internals"
+      ],
+      "access_detail": "The method requires passing textual prompts via API/tokens and accessing output token probabilities/logits to score prefilled distractor completions during listener discrimination.",
+      "gains": [
+        {
+          "claim": "LLMs achieve near-perfect accuracy when guessing signals for target stimuli in lookup tasks.",
+          "metric": "guessing accuracy (M)",
+          "benchmark": "15 training stimuli in the guessing block",
+          "baseline": "chance performance",
+          "quote": "LLMs were able to guess the correct signals for the stimuli almost perfectly (M = .973,SD = .031).",
+          "check": "quote verified; the claim states no figure"
+        },
+        {
+          "claim": "Communicative success between LLM agents starts at approximately 70% in the first round and increases to roughly 75% in later rounds.",
+          "metric": "PercCom (percentage of successful interactions)",
+          "benchmark": "30-interaction referential communication game rounds",
+          "baseline": "chance performance of 25%",
+          "quote": "approximately 70% of the interactions in the first round are successful (chance performance would amount to 25%). This increases somewhat in the following rounds to\u2248 75%",
+          "check": "quote not found in paper - near-verbatim (likely extraction noise): 92% of quote matches in order"
+        },
+        {
+          "claim": "Higher topographic similarity in evolved languages strongly correlates with improved generalisation to unseen stimuli.",
+          "metric": "Pearson correlation coefficient r",
+          "benchmark": "27-stimuli testing block generalisation (GenScore vs TopSim)",
+          "baseline": "unstructured / low TopSim languages",
+          "quote": "high TopSim languages allow for better generalisation (r = 0.735,p<. 001, Figure 3).",
+          "check": "quote verified; the claim states no figure"
+        },
+        {
+          "claim": "Labelling initial unstructured stimuli via prompt completion yields an average accuracy of 0.453.",
+          "metric": "labelling accuracy (M)",
+          "benchmark": "15 training stimuli in the labelling completion block",
+          "baseline": "guessing accuracy (0.973)",
+          "quote": "labelling the same stimuli via completion proved much more difficult ( M = .453,SD = .152)",
+          "check": "verified"
+        },
+        {
+          "claim": "Generational transmission via iterated learning significantly reduces the ratio of uniquely produced signals by generation 7.",
+          "metric": "ratio of uniquely produced signals (M)",
+          "benchmark": "8-generation iterated learning transmission chain testing block",
+          "baseline": "generation 0 (M gen0 = .707)",
+          "quote": "significantly lower number of uniquely produced signals in the last generation compared to the first simulation (t(5) = 2 .64,p = .046,M gen0 = .707,SD gen0 = .142,M gen7 = .519,SD gen7 = .119).",
+          "check": "verified"
+        }
+      ],
+      "limitations": "Languages often exhibit non-humanlike tendencies such as increasing message lengths over communication rounds and developing degenerate, underspecified vocabularies. The framework relies on greedy decoding and fixed in-context prompt structures, lacking cognitive or memory constraints found in humans.",
+      "tier": "token"
+    },
+    "meta": {
+      "provider": "google",
+      "model": "models/gemini-3.6-flash",
+      "finish_reason": "stop",
+      "latency_s": 15.5,
+      "usage": {
+        "prompt_tokens": 16745,
+        "completion_tokens": 892,
+        "total_tokens": 19853,
+        "reported": true
+      }
+    }
+  },
+  "doi-10.1080-01691864.2026.2661958": {
+    "source": {
+      "key": "doi-10.1080-01691864.2026.2661958",
+      "cite": "doi:10.1080/01691864.2026.2661958 (Advanced Robotics)",
+      "url": "https://doi.org/10.1080/01691864.2026.2661958",
+      "text": "doi-preprint-2501.00226.txt",
+      "note": "Publisher page refused this fetch (HTTP 403 from tandfonline via doi.org). Summarised from the arXiv PREPRINT 2501.00226, matched to the DOI by Crossref title and all five authors. The journal version may differ."
+    },
+    "summary": {
+      "title": "Generative Emergent Communication: Large Language Model is a Collective World Model",
+      "problem": "It remains a puzzle how disembodied Large Language Models (LLMs) acquire rich world knowledge without direct sensorimotor experience. Existing theories fail to bridge the gap between an individual agent's grounded world model and the collective emergence of a shared language that reflects that knowledge.",
+      "mechanism": "Agents exchange external symbolic messages to perform decentralized Bayesian inference over their internal latent representations, minimizing the group's Collective Free Energy. In games such as the Metropolis-Hastings Naming Game, a speaker samples a message based on its internal state, and a listener accepts or rejects it based on conditional likelihoods. Through this interactive process, the society collectively encodes its grounded sensorimotor experiences into language, which an LLM subsequently decodes to reconstruct the latent structure of the collective world model.",
+      "access": [
+        "model-internals",
+        "training"
+      ],
+      "access_detail": "Agents must access their local internal latent representations and conditional likelihood distributions to evaluate and sample messages, as well as update internal model parameters during learning.",
+      "gains": [],
+      "limitations": "Direct empirical evidence for the collective world model hypothesis remains limited, and the relationship between neural representations in LLMs and human conceptual structures requires further investigation. Additionally, the framework focuses primarily on linguistic structure and meaning rather than pragmatic language use or multi-agent language evolution in open, dynamic environments.",
+      "tier": "neither"
+    },
+    "meta": {
+      "provider": "google",
+      "model": "models/gemini-3.6-flash",
+      "finish_reason": "stop",
+      "latency_s": 17.7,
+      "usage": {
+        "prompt_tokens": 29716,
+        "completion_tokens": 331,
+        "total_tokens": 32904,
+        "reported": true
+      }
+    }
+  },
+  "2503.17407": {
+    "source": {
+      "key": "2503.17407",
+      "cite": "arXiv:2503.17407",
+      "url": "https://arxiv.org/abs/2503.17407",
+      "text": "2503.17407.txt",
+      "note": "This ID resolves to 'A Comprehensive Survey on Long Context Language Modeling', which does not look like an agent-communication paper. Check the ID; summarised as it resolves."
+    },
+    "summary": {
+      "title": "A Comprehensive Survey on Long Context Language Modeling",
+      "problem": "This paper is a survey on long context language modeling and is not about communication between AI agents or models.",
+      "mechanism": "The paper provides a comprehensive review of long context language modeling across three main dimensions. It examines data engineering, architectural designs (such as position embeddings and linear attention), and workflow strategies (such as prompt compression and memory modules). Additionally, it surveys training/inference infrastructure, evaluation benchmarks for comprehension and long-form generation, and behavioral/mechanistic analysis.",
+      "access": [],
+      "access_detail": "As a survey paper, it covers techniques across all levels of model access, including text-based APIs, internal KV caches and hidden states, and model training.",
+      "gains": [],
+      "limitations": "Existing long context models exhibit a large gap between claimed supported context lengths and effective context lengths, suffer from performance degradation in long-form generation, and incur severe memory and computational costs during inference.",
+      "tier": "neither"
+    },
+    "meta": {
+      "provider": "google",
+      "model": "models/gemini-3.6-flash",
+      "finish_reason": "stop",
+      "latency_s": 12.5,
+      "usage": {
+        "prompt_tokens": 125016,
+        "completion_tokens": 232,
+        "total_tokens": 126942,
+        "reported": true
+      }
+    }
+  },
+  "2609.01491": {
+    "source": {
+      "key": "2609.01491",
+      "cite": "arXiv:2609.01491 (GlossoGen; listed via alphaxiv)",
+      "url": "https://arxiv.org/abs/2609.01491",
+      "text": "2609.01491.txt"
+    },
+    "summary": {
+      "title": "GLOSSOGEN: Emergent Language in Complex Multi-Agent LLM Interactions",
+      "problem": "Prior work on emergent communication mostly focuses on simple reference games or agents trained from scratch, leaving a gap in understanding how pre-trained LLM agents develop non-English communication protocols in complex, multi-turn, sequential scenarios.",
+      "mechanism": "Agents communicate through text messages over structured Slack-style channels alongside tool calls. In the cooperative SAVEVEYRU scenario, a Field Observer reports partial environmental observations while a Specialist provides treatment steps over a channel constrained by a character-based time budget. Between rounds, agents can optionally use an unconstrained 'postmortem' text channel to deliberate on past performance and negotiate symbolic shorthand conventions.",
+      "access": [
+        "api-tokens"
+      ],
+      "access_detail": "Only standard text generation and token exchange via API interfaces are required to operate the LLM agents and communication channels.",
+      "gains": [
+        {
+          "claim": "Under high time pressure and postmortem access, mean perplexity of agent messages increases by approximately 430% across proprietary models compared to maximum budget without postmortem.",
+          "metric": "mean perplexity",
+          "benchmark": "SAVEVEYRU scenario",
+          "baseline": "setting with maximum budget and no postmortem",
+          "quote": "finding that, across proprietary models, high budget pressure and postmortem access result in an average increase in mean perplexity of\u2248430% (from 320 to 1700) over a setting with maximum budget and no postmortem.",
+          "check": "verified"
+        },
+        {
+          "claim": "Proprietary models achieved a 92.1% task success rate under the 2000s budget compared to 30.8% for open-weight models.",
+          "metric": "success rate",
+          "benchmark": "SAVEVEYRU scenario at 2000s budget",
+          "baseline": "open-weight models (Qwen3-32B and Llama-3.3-70B-Instruct)",
+          "quote": "as evidenced by their relatively lower success rates even in the high-est budget setting (30.8% for open-weight models, vs. 92.1% for proprietary models, at 2000s).",
+          "check": "quote not found in paper - near-verbatim (likely extraction noise): 99% of quote matches in order"
+        },
+        {
+          "claim": "The Haiku 4.5 LLM judge achieved 95.7% accuracy when evaluated against a gold action benchmark dataset.",
+          "metric": "accuracy",
+          "benchmark": "500-example dataset of gold and distractor actions",
+          "baseline": "three-run consensus followed by manual validation",
+          "quote": "The judge was verified against a balanced 500-example constructed dataset of gold actions \u2013 as determined by three-run consensus followed by manual validation \u2013 and distractor actions, where it achieved 95.7% accuracy.",
+          "check": "quote not found in paper - near-verbatim (likely extraction noise): 100% of quote matches in order"
+        },
+        {
+          "claim": "Human and LLM judge annotations agreed on identifying metalinguistic questions with a Cohen's kappa of 0.96.",
+          "metric": "Cohen's kappa",
+          "benchmark": "50 randomly-sampled agent messages",
+          "baseline": "human blind annotation",
+          "quote": "Agreement was strong, with 49/50 agreement on whether an example constitutes a question (Cohen\u2019s\u03ba= 0.96 ), with 28 examples labeled as questions; the annotator and LLM judge agreed on the compositionality of25/28of the questions (\u03ba= 0.75).",
+          "check": "quote not found in paper - paraphrased, number present in paper: 58% of quote matches in order"
+        }
+      ],
+      "limitations": "Emergent non-English languages fail to develop without access to a postmortem deliberation channel, and high budget pressure remains difficult with agents failing on the majority of low-budget runs even with postmortem access. Less capable open-weight models (such as Qwen3-32B and Llama-3.3-70B-Instruct) fail to construct emergent shorthand languages even when provided both time pressure and postmortem channels.",
+      "tier": "token"
+    },
+    "meta": {
+      "provider": "google",
+      "model": "models/gemini-3.6-flash",
+      "finish_reason": "stop",
+      "latency_s": 18.8,
+      "usage": {
+        "prompt_tokens": 38096,
+        "completion_tokens": 913,
+        "total_tokens": 41996,
+        "reported": true
+      }
+    }
+  },
+  "2503.01063": {
+    "source": {
+      "key": "2503.01063",
+      "cite": "arXiv:2503.01063",
+      "url": "https://arxiv.org/abs/2503.01063",
+      "text": "2503.01063.txt"
+    },
+    "summary": {
+      "title": "AI-Invented Tonal Languages: Preventing a Machine Lingua Franca Beyond Human Understanding",
+      "problem": "The paper addresses the risk of AI agents autonomously developing private, human-incomprehensible tonal languages for machine-to-machine communication that evade human oversight and auditing.",
+      "mechanism": "Agents convert text characters (ASCII 32\u2013126) into discrete audio frequencies using equal temperament semitone scaling defined by f = 220 \u00d7 2^((i-32)/12) Hz. Messages are transmitted as short audio tones (ranging from 220 Hz up to ultrasonic 50,175.42 Hz) or stored as ABC musical notation, and are decoded back into text via frequency domain analysis or multimodal transformer interfaces.",
+      "access": [
+        "api-tokens"
+      ],
+      "access_detail": "The method only requires sending and receiving text or multimodal audio tokens through model API endpoints.",
+      "gains": [],
+      "limitations": "The mapping relies on Western musical conventions, lacks semantic compression by allocating equal encoding resources to every character, and faces real-world ultrasonic limitations such as environmental noise and signal degradation. Additionally, it uses a fixed predetermined lookup table rather than demonstrating truly emergent linguistic conventions between multiple agents.",
+      "tier": "token"
+    },
+    "meta": {
+      "provider": "google",
+      "model": "models/gemini-3.6-flash",
+      "finish_reason": "stop",
+      "latency_s": 13.9,
+      "usage": {
+        "prompt_tokens": 6908,
+        "completion_tokens": 290,
+        "total_tokens": 9367,
+        "reported": true
+      }
+    }
+  },
+  "2505.12741": {
+    "source": {
+      "key": "2505.12741",
+      "cite": "arXiv:2505.12741",
+      "url": "https://arxiv.org/abs/2505.12741",
+      "text": "2505.12741.txt"
+    },
+    "summary": {
+      "title": "Language Model Networks: Supervision-Efficient Learning through Dense Communication",
+      "problem": "Existing multi-model and multi-agent systems communicate via discrete natural language text, creating an optimization bottleneck that causes information loss during token embedding/de-embedding cycles and prevents end-to-end gradient flow.",
+      "mechanism": "LMNet strips internal embedding and de-embedding layers from language models serving as vertex nodes in a computational graph, enabling intermediate models to directly exchange dense vectors (hidden states). Small, trainable sequence-to-sequence modules serve as communication edges that align, translate, and route these dense vector sequences between vertexes. Natural language input and output interfaces are preserved solely at the system boundaries, allowing the full network to be optimized end-to-end via gradient descent from task-level supervision.",
+      "access": [
+        "model-internals",
+        "training"
+      ],
+      "access_detail": "The architecture requires access to intermediate internal hidden states (dense vector representations), stripped transformer layers, and model parameters for end-to-end gradient-based optimization.",
+      "gains": [
+        {
+          "claim": "LMNet achieves a 30.5% relative performance improvement over prompting across general reasoning, science, math, and coding benchmarks.",
+          "metric": "Relative Improvement",
+          "benchmark": "Combined benchmarks (MMLU, BBH, GSM8K, MATH, HumanEval, MBPP, etc. with Qwen2.5-0.5B)",
+          "baseline": "Prompt",
+          "quote": "First, LMNet brings consistent and significant improvement compared with Prompt (+30.5%), which can be viewed as natural-language communication with the model itself.",
+          "check": "quote not found in paper - near-verbatim (likely extraction noise): 99% of quote matches in order"
+        },
+        {
+          "claim": "LMNet outperforms test-time scaling strategies Self-Consistency (+3.4%) and Self-Refine (+0.5%) under equivalent compute budgets.",
+          "metric": "Relative Improvement",
+          "benchmark": "Combined benchmarks on Qwen2.5-0.5B",
+          "baseline": "Self-Refine (+0.5%) and Self-Consistency (+3.4%)",
+          "quote": "The results show that LMNet significantly outperforms both methods (+30.5% vs. +0.5%/+3.4%).",
+          "check": "verified"
+        },
+        {
+          "claim": "LMNet outperforms parameter-efficient fine-tuning baselines including LoRA and Adapters on the E2E dataset.",
+          "metric": "BLEU",
+          "benchmark": "E2E dataset (GPT2-M)",
+          "baseline": "LoRA (68.9 BLEU) and Full Fine-Tuning (68.2 BLEU)",
+          "quote": "LMNet 70.5 8.85 46.5 71.52.48 1.6",
+          "check": "quote verified; the claim states no figure"
+        },
+        {
+          "claim": "LMNet improves reasoning performance on MMLU beyond fine-tuning and continuous latent reasoning approaches.",
+          "metric": "\u2206Acc",
+          "benchmark": "MMLU (Qwen2.5-1.5B)",
+          "baseline": "SFT (35.02%), COCONUT (33.85%), and CODI (35.16%)",
+          "quote": "LMNet 13.10 27.19 27.57 23.35 37.28",
+          "check": "quote verified; the claim states no figure"
+        }
+      ],
+      "limitations": "LMNet increases parameter count and per-token inference latency compared to a single LLM node. It requires direct access to model internals and parameter optimization, preventing its use with black-box API models, and its dense vector communications lack human interpretability. Furthermore, end-to-end auto-regressive decoding does not yet realize inner-auto-regressive sentence-level message passing.",
+      "tier": "latent"
+    },
+    "meta": {
+      "provider": "google",
+      "model": "models/gemini-3.6-flash",
+      "finish_reason": "stop",
+      "latency_s": 22.5,
+      "usage": {
+        "prompt_tokens": 20298,
+        "completion_tokens": 874,
+        "total_tokens": 25176,
+        "reported": true
+      }
+    }
+  },
+  "gibberlink-scribd-972509569": {
+    "source": {
+      "key": "gibberlink-scribd-972509569",
+      "cite": "Gibberlink Mode Protocol spec (Scribd 972509569)",
+      "url": "https://www.scribd.com/document/972509569",
+      "text": null,
+      "note": "NOT FETCHED. Scribd served only its landing page (HTTP 200, 3,151 characters of page chrome): a 23-page document uploaded by a Scribd user, with a description Scribd itself labels 'AI-enhanced'. No specification text was available, so nothing is summarised. A copy is needed."
+    }
+  },
+  "2606.29354": {
+    "source": {
+      "key": "2606.29354",
+      "cite": "arXiv:2606.29354",
+      "url": "https://arxiv.org/abs/2606.29354",
+      "text": "2606.29354.txt"
+    },
+    "summary": {
+      "title": "When LLMs Develop Languages: Symbolic Communication for Efficient Multi-Agent Reasoning",
+      "problem": "Chain-of-Thought (CoT) reasoning incurs long, verbose natural-language rationales that add substantial token latency and cost. Existing prompt optimization and compression techniques fail to create persistent, socially emergent symbolic protocols that agents can adaptively share, route, and compose.",
+      "mechanism": "Multiple frozen LLM agents autonomously synthesize, evaluate, and mutate custom Language Symbolism Frameworks (LSFs)\u2014textual protocols containing compact lexicons, grammars, and usage constraints\u2014via an offline evolutionary loop driven by correctness and token efficiency. At test time, a latent-free LLM router inspects query difficulty and LSF profile descriptors to dynamically choose a single LSF call, aggregate multi-LSF outputs, or execute sequential multi-round LSF message passing.",
+      "access": [
+        "api-tokens"
+      ],
+      "access_detail": "The backbone models remain frozen black-box instances requiring access only to text inputs and outputs (tokens) via an API.",
+      "gains": [
+        {
+          "claim": "CLSR reduces latency-oriented generated completion tokens by 3 to 6 times compared to standard CoT while maintaining accuracy",
+          "metric": "generated token completion",
+          "benchmark": "seven reasoning benchmarks (MMLU-Pro, GPQA, GSM8K, MATH-500, AIME21-24, ScienceQA, HotpotQA)",
+          "baseline": "standard CoT",
+          "quote": "Across challenging benchmarks, CLSR reduces latency-oriented generated token completion by 3\u223c6\u00d7 compared to standard CoT while maintaining accuracy.",
+          "check": "verified"
+        },
+        {
+          "claim": "CLSR with T=3 reaches 94.8% accuracy on GSM8K using 214 generated tokens",
+          "metric": "accuracy",
+          "benchmark": "GSM8K",
+          "baseline": "PoT and PAL",
+          "quote": "with a small majority-vote ensemble (T=3 ), CLSR reaches 94.8% on GSM8K and 89.7% on MATH500 using 214 and 417 tokens, respectively, exceeding both PoT and PAL in accuracy\u2013token frontier.",
+          "check": "verified"
+        },
+        {
+          "claim": "CLSR with T=3 reaches 89.7% accuracy on MATH500 using 417 generated tokens",
+          "metric": "accuracy",
+          "benchmark": "MATH500",
+          "baseline": "PoT and PAL",
+          "quote": "with a small majority-vote ensemble (T=3 ), CLSR reaches 94.8% on GSM8K and 89.7% on MATH500 using 214 and 417 tokens, respectively, exceeding both PoT and PAL in accuracy\u2013token frontier.",
+          "check": "verified"
+        }
+      ],
+      "limitations": "The offline evolution of language protocols requires upfront computational cost and training exemplars with reasoning traces. In addition, highly compressed symbolic reasoning traces are less directly human-interpretable than full natural-language rationales, which may complicate direct human auditing.",
+      "tier": "token"
+    },
+    "meta": {
+      "provider": "google",
+      "model": "models/gemini-3.6-flash",
+      "finish_reason": "stop",
+      "latency_s": 21.7,
+      "usage": {
+        "prompt_tokens": 34204,
+        "completion_tokens": 721,
+        "total_tokens": 38566,
+        "reported": true
+      }
+    }
+  },
+  "acl-2025.emnlp-main.518": {
+    "source": {
+      "key": "acl-2025.emnlp-main.518",
+      "cite": "EMNLP 2025 main, paper 518",
+      "url": "https://aclanthology.org/2025.emnlp-main.518/",
+      "text": "acl-2025.emnlp-main.518.txt"
+    },
+    "summary": {
+      "title": "Augmenting Multi-Agent Communication with State Delta Trajectory",
+      "problem": "Using natural language tokens for multi-agent communication introduces information loss because models must downsample continuous internal state vectors to discrete tokens. This sampling discards unchosen reasoning paths and latent logic that would be valuable to other agents sharing the same base LLM.",
+      "mechanism": "Agents exchange natural language tokens along with a token-wise state delta trajectory extracted from internal representations. As a sender agent generates each token, State Delta Encoding (SDE) computes the difference between adjacent hidden states at specific selected transformer layers. When a receiver agent processes these output tokens, these state delta vectors are added directly to the receiver's corresponding token hidden states before passing them to subsequent transformer layers.",
+      "access": [
+        "model-internals"
+      ],
+      "access_detail": "Intermediate hidden states at specific, pre-selected transformer layers must be extractable during generation and injectable into another agent's forward pass during token encoding.",
+      "gains": [
+        {
+          "claim": "SDE improves performance in information asymmetry tasks by 0.3% to 8.9% over the best baseline.",
+          "metric": "EM / F1 / Accuracy",
+          "benchmark": "Information asymmetry tasks (Quasar-T, ComplexWebQuestions, StrategyQA)",
+          "baseline": "Best-performing baseline (NL or CIPHER)",
+          "quote": "SDE achieves a performance improvement of 0.3% to 8.9% compared to the best-performing baseline in most tasks, with particular notable improvements on the Llama-8B-Instruct model.",
+          "check": "verified"
+        },
+        {
+          "claim": "SDE enhances multi-agent debate performance by 0.3% to 13.7% compared to the best baseline.",
+          "metric": "Accuracy",
+          "benchmark": "Multi-agent debate tasks (GSM8K, MMLU Abstract Algebra, College Math, Formal Logic)",
+          "baseline": "Best-performing baseline (NL or CIPHER)",
+          "quote": "For the IS setting, Table 2 shows the results of multi-agent debate tasks, where SDE enhances performance ranging from 0.3% to 13.7% compared to the best-performing baseline.",
+          "check": "verified"
+        },
+        {
+          "claim": "SDE improves multi-agent workflow architectures by up to 17.3% over baselines.",
+          "metric": "Accuracy / EM / F1",
+          "benchmark": "Agent workflow tasks (FEVER, HotpotQA, StrategyQA)",
+          "baseline": "Best-performing baseline (NL or CIPHER)",
+          "quote": "Furthermore, our experiments with Qwen2.5-7B-Instruct in the agent workflow tasks (Table 3) reveal that SDE can also enhance multi-agent workflow architectures, with improvements up to 17.3%.",
+          "check": "verified"
+        }
+      ],
+      "limitations": "SDE requires access to model internal states, making it infeasible for agents built on black-box model APIs. Exchanging continuous vector trajectories increases inter-agent communication bandwidth overhead. Furthermore, injecting state deltas into all transformer layers degrades generation performance, requiring careful layer selection.",
+      "tier": "latent"
+    },
+    "meta": {
+      "provider": "google",
+      "model": "models/gemini-3.6-flash",
+      "finish_reason": "stop",
+      "latency_s": 24.2,
+      "usage": {
+        "prompt_tokens": 22755,
+        "completion_tokens": 721,
+        "total_tokens": 27851,
+        "reported": true
+      }
+    }
+  },
+  "2606.19135": {
+    "source": {
+      "key": "2606.19135",
+      "cite": "arXiv:2606.19135",
+      "url": "https://arxiv.org/abs/2606.19135",
+      "text": "2606.19135.txt"
+    },
+    "summary": {
+      "title": "A Technical Taxonomy of LLM Agent Communication Protocols",
+      "problem": "The fragmented ecosystem of LLM agent frameworks lacks standardized communication protocols, preventing heterogeneous agents from seamlessly discovering each other and collaborating across distributed multi-agent networks.",
+      "mechanism": "Agents and external context systems exchange natural language text, structured data, or hybrid payloads containing both. Exchanged via application-layer APIs over protocols like HTTP, WebSockets, and peer-to-peer networks, communication spans stateless tool calls to stateful multi-turn sessions. Protocols format these exchanges using single static schemas, multiple predefined templates, or dynamic runtime schema negotiation.",
+      "access": [
+        "api-tokens"
+      ],
+      "access_detail": "Communication takes place strictly at the application layer via text and structured JSON payloads passed to standard API endpoints.",
+      "gains": [],
+      "limitations": "The framework excludes proprietary protocols, conceptual models lacking open-source implementations, and protocols not designed specifically for LLM agents. Furthermore, the surveyed protocols consistently lack privacy safeguards, compliance checks, and policy enforcement mechanisms needed for safety-critical deployments.",
+      "tier": "neither"
+    },
+    "meta": {
+      "provider": "google",
+      "model": "models/gemini-3.6-flash",
+      "finish_reason": "stop",
+      "latency_s": 14.8,
+      "usage": {
+        "prompt_tokens": 23745,
+        "completion_tokens": 254,
+        "total_tokens": 26383,
+        "reported": true
+      }
+    }
+  },
+  "2510.13821": {
+    "source": {
+      "key": "2510.13821",
+      "cite": "arXiv:2510.13821 (LACP)",
+      "url": "https://arxiv.org/abs/2510.13821",
+      "text": "2510.13821.txt"
+    },
+    "summary": {
+      "title": "LLM Agent Communication Protocol (LACP) Requires Urgent Standardization: A Telecom-Inspired Protocol is Necessary",
+      "problem": "The current LLM agent communication landscape is fragmented with proprietary, ad-hoc protocols, leading to interoperability gaps, security vulnerabilities, and a lack of transactional integrity.",
+      "mechanism": "Agents communicate using a three-layer protocol consisting of Semantic, Transactional, and Transport layers. Messages are structured with semantic intents (such as PLAN, ACT, and OBSERVE), wrapped in a JSON Web Signature (JWS) envelope with unique transaction IDs for security and idempotency, and transmitted over transport-agnostic protocols like HTTP/2 or QUIC.",
+      "access": [
+        "api-tokens"
+      ],
+      "access_detail": "Only text-based JSON payloads sent via standard network APIs need to be reachable.",
+      "gains": [
+        {
+          "claim": "LACP increases latency by an absolute value of only 0.03 ms for large, complex tasks compared to a standard REST baseline.",
+          "metric": "Latency overhead",
+          "benchmark": "Large payload (1,964 Bytes) sequential requests",
+          "baseline": "Standard, non-secured RESTful API communication baseline",
+          "quote": "The latency overhead is minimal across all scenarios, with an absolute increase of only0.03msfor large, complex tasks.",
+          "check": "verified"
+        },
+        {
+          "claim": "The payload size overhead of LACP shrinks to +30% for realistic payloads.",
+          "metric": "Size Overhead (%)",
+          "benchmark": "Large payload (1,964 Bytes) sequential requests",
+          "baseline": "Standard, non-secured RESTful API communication baseline",
+          "quote": "The payload size overhead, while significant for trivial messages, shrinks to a modest and justifiable+30%for realistic payloads.",
+          "check": "verified"
+        },
+        {
+          "claim": "The performance and overhead analysis was validated by sending 10,000 sequential requests to the endpoints.",
+          "metric": "Number of sequential requests",
+          "benchmark": "Performance and overhead analysis benchmark script",
+          "baseline": "Standard, non-secured RESTful API communication baseline",
+          "quote": "We developed a benchmark script that sent 10,000 sequential requests to two different server endpoints",
+          "check": "verified"
+        }
+      ],
+      "limitations": "LACP introduces a significant payload size overhead (up to +500%) for small, trivial messages like heartbeats. It also requires additional computational overhead for cryptographic signature verification and transaction tracking.",
+      "tier": "token"
+    },
+    "meta": {
+      "provider": "google",
+      "model": "models/gemini-3.5-flash",
+      "finish_reason": "stop",
+      "latency_s": 18.9,
+      "usage": {
+        "prompt_tokens": 10143,
+        "completion_tokens": 573,
+        "total_tokens": 14686,
+        "reported": true
+      }
+    }
+  },
+  "2606.19857": {
+    "source": {
+      "key": "2606.19857",
+      "cite": "arXiv:2606.19857",
+      "url": "https://arxiv.org/abs/2606.19857",
+      "text": "2606.19857.txt"
+    },
+    "summary": {
+      "title": "Large Language Models Do Not Always Need Readable Language",
+      "problem": "Natural language optimized for human communication contains substantial redundancy, which reduces semantic density and creates context overhead bottlenecks in long-context and multi-agent systems. This paper investigates whether semantic information can be encoded in compact, non-standard textual forms that sacrifice human readability while remaining recoverable by LLMs.",
+      "mechanism": "Agents exchange BabelTele, a class of compact, non-standard textual representations that combine abbreviations, symbols, cross-lingual fragments, and non-standard syntactic structures. These representations are generated by a compressor LLM using zero-shot prompting that relaxes human readability constraints. The resulting high-density text is then transmitted to and decoded by a reader LLM to perform downstream tasks.",
+      "access": [
+        "api-tokens"
+      ],
+      "access_detail": "Only text input and output via a black-box API is required, with no access to model internals, gradient updates, or tokenizer modifications.",
+      "gains": [
+        {
+          "claim": "BabelTele maintains 99.5% semantic fidelity while condensing text volume to 27.9% of its original length.",
+          "metric": "semantic fidelity and text volume condensation ratio",
+          "benchmark": "task-agnostic representational paradigm",
+          "baseline": "original uncompressed text",
+          "quote": "BabelTele demonstrates high information density, maintaining 99.5% semantic fidelity even when the text volume is condensed to 27.9% of its original length.",
+          "check": "verified"
+        },
+        {
+          "claim": "On Qwen3.6-Max, BabelTele representations allow the model to capture broader evidence and achieve 62.07% accuracy compared to 55.17% for truncated input.",
+          "metric": "accuracy",
+          "benchmark": "Code Repo QA Long subset from LongBench v2",
+          "baseline": "direct truncation of original input",
+          "quote": "On Qwen3.6-Max, the original truncated input achieves an accuracy of55.17%, while the dense BabelTele representations allow the model to capture broader evidence, achieving an accuracy of62.07%.",
+          "check": "verified"
+        },
+        {
+          "claim": "Gemini 3.1 Pro achieves over 95% compression, while GPT-5.4 is more conservative at roughly 75% compression.",
+          "metric": "compression rate",
+          "benchmark": "Short subset of the LongBench v2 benchmark",
+          "baseline": "original uncompressed text",
+          "quote": "Gemini 3.1 Pro is the most aggressive, exceeding 95% compression, whereas GPT-5.4 is more conservative at roughly75%;",
+          "check": "verified"
+        },
+        {
+          "claim": "BabelTele achieves a compression rate of around 50% on the LoCoMo agent memory benchmark.",
+          "metric": "compression rate",
+          "benchmark": "LoCoMo agent memory benchmark",
+          "baseline": "original uncompressed text",
+          "quote": "Compared with other experiments, the compression rate of BabelTele on the LoCoMo benchmark is relatively low, around50%.",
+          "check": "verified"
+        },
+        {
+          "claim": "The Quality drop when using Gemini-induced BabelTele inputs remains within a relatively narrow range of 10.75 to 14.95 percentage points across Qwen-family models.",
+          "metric": "Quality drop (percentage points)",
+          "benchmark": "QuALITY dataset (Qwen-family models)",
+          "baseline": "original inputs",
+          "quote": "the Quality drop remains within a relatively narrow range, from 10.75to14.95percentage points, and does not improve monotonically with model size.",
+          "check": "verified"
+        }
+      ],
+      "limitations": "The evaluation is limited to a selected set of benchmarks and model families, and its effectiveness depends on the specific compressor-reader pair and task setting. Additionally, as an empirical study, it primarily characterizes the phenomenon without fully explaining the underlying theoretical mechanisms of how LLMs form and interpret these representations.",
+      "tier": "token"
+    },
+    "meta": {
+      "provider": "google",
+      "model": "models/gemini-3.5-flash",
+      "finish_reason": "stop",
+      "latency_s": 24.3,
+      "usage": {
+        "prompt_tokens": 32874,
+        "completion_tokens": 913,
+        "total_tokens": 39299,
+        "reported": true
+      }
+    }
+  },
+  "2606.05711": {
+    "source": {
+      "key": "2606.05711",
+      "cite": "arXiv:2606.05711",
+      "url": "https://arxiv.org/abs/2606.05711",
+      "text": "2606.05711.txt"
+    },
+    "summary": {
+      "title": "BEYONDTOKENS: A UNIFIEDFRAMEWORK FOR LATENTCOMMUNICATION INLLM-BASED MULTI-AGENTSYSTEMS",
+      "problem": "Multi-agent systems built on large language models typically communicate via natural language, which introduces high inference costs, potential information loss during discretization, and linguistic redundancy. This survey unifies and analyzes the emerging area of latent communication to address these limitations.",
+      "mechanism": "Agents exchange continuous model states directly, such as input embeddings, hidden states, or key-value (KV) caches, bypassing the natural language token bottleneck. These continuous representations are aligned across agents (either training-free for identical models or via learned projections/codecs for heterogeneous ones) and fused into the receiver's computation through concatenation, prepending, mathematical operations, or cross-attention.",
+      "access": [
+        "model-internals",
+        "training"
+      ],
+      "access_detail": "Access to model internals is required, specifically continuous representations like input embeddings, intermediate hidden states, and KV caches, as well as the ability to inject these into the receiver's layers or train alignment adapters.",
+      "gains": [
+        {
+          "claim": "AC achieves approximately 27% accuracy improvement over natural language communication",
+          "metric": "accuracy improvement",
+          "benchmark": "representative benchmark suite",
+          "baseline": "natural language communication",
+          "quote": "Approximately 27% accuracy improvement over natural language communication on a representative benchmark suite.",
+          "check": "verified"
+        },
+        {
+          "claim": "Interlat achieves up to 24x speedup over natural language communication",
+          "metric": "latency reduction",
+          "benchmark": "long-context multi-agent tasks",
+          "baseline": "NL-Comm",
+          "quote": "Up to 24\u00d7 speedup over NL-Comm on long-context multi-agent tasks.",
+          "check": "verified"
+        },
+        {
+          "claim": "Agent Primitives achieves 12.0-16.5% average accuracy improvement over single-agent baselines",
+          "metric": "average accuracy",
+          "benchmark": "multi-agent systems",
+          "baseline": "single-agent baselines",
+          "quote": "+12.0\u201316.5% average accuracy over single-agent baselines.",
+          "check": "verified"
+        },
+        {
+          "claim": "RelayCaching achieves up to 4.7x TTFT speedup on math, code, and general knowledge tasks",
+          "metric": "TTFT speedup",
+          "benchmark": "math, code, and general knowledge tasks",
+          "baseline": "baselines",
+          "quote": "80%+ cache reuse, 4.7\u00d7TTFT speedup on math, code, and general knowledge tasks.",
+          "check": "verified"
+        },
+        {
+          "claim": "Agent Memory achieves up to 136x TTFT speedup on edge devices",
+          "metric": "TTFT speedup",
+          "benchmark": "Gemma 3 12B, DeepSeek-Coder-V2-Lite 16B, and Llama 3.1 8B",
+          "baseline": "re-prefill cost",
+          "quote": "TTFT speedups: Gemma 3 12B 22\u00d7\u2013136\u00d7; DeepSeek-Coder-V2-Lite 16B 11\u00d7\u201376\u00d7; Llama 3.1 8B 24\u00d7\u2013111\u00d7.",
+          "check": "verified"
+        },
+        {
+          "claim": "Mixture of Thoughts achieves average gains of 0.38% on in-distribution and 2.92% on out-of-distribution benchmarks",
+          "metric": "average gains",
+          "benchmark": "five in-distribution and three out-of-distribution benchmarks",
+          "baseline": "Avengers",
+          "quote": "The paper reports average gains of 0.38% on five in-distribution benchmarks and 2.92% on three out-of-distribution benchmarks over Avengers.",
+          "check": "verified"
+        }
+      ],
+      "limitations": "Latent communication is highly architecture-dependent, making cross-architecture transfer difficult without training complex alignment adapters. It also suffers from a lack of human interpretability, potential security vulnerabilities (such as untrusted or tampered latent states), and high transport costs for large payloads like full KV-caches.",
+      "tier": "latent"
+    },
+    "meta": {
+      "provider": "google",
+      "model": "models/gemini-3.5-flash",
+      "finish_reason": "stop",
+      "latency_s": 23.6,
+      "usage": {
+        "prompt_tokens": 20265,
+        "completion_tokens": 983,
+        "total_tokens": 26548,
+        "reported": true
+      }
+    }
+  },
+  "recursivemas": {
+    "source": {
+      "key": "recursivemas",
+      "cite": "recursivemas.github.io -> arXiv:2604.25917",
+      "url": "https://recursivemas.github.io/",
+      "text": "recursivemas-2604.25917.txt",
+      "note": "The listed item is a project page; summarised from the paper it links, arXiv:2604.25917."
+    },
+    "summary": {
+      "title": "Recursive Multi-Agent Systems",
+      "problem": "Standard text-based multi-agent systems suffer from high latency due to sequential text generation and are difficult to co-optimize as a whole because text-based interactions cause gradient vanishing during training.",
+      "mechanism": "Agents communicate by exchanging continuous latent representations (hidden states) in a recursive loop. An inner RecursiveLink (a two-layer residual projection module) refines an agent's ongoing latent thoughts during auto-regressive generation, while an outer RecursiveLink maps and transfers these latent representations across heterogeneous agents of different types and sizes.",
+      "access": [
+        "model-internals",
+        "training"
+      ],
+      "access_detail": "Requires access to the last-layer hidden states and input embeddings of the models, as well as the ability to train the parameters of the lightweight RecursiveLink modules.",
+      "gains": [
+        {
+          "claim": "Average accuracy improvement of 8.3%",
+          "metric": "accuracy",
+          "benchmark": "9 benchmarks spanning mathematics, science, medicine, search, and code generation",
+          "baseline": "advanced recursive language models and MAS baselines",
+          "quote": "Compared with advanced recursive language models and MAS baselines,RecursiveMASachieves an average accuracy improvement of 8.3%, while delivering 1.2\u00d7\u20132.4\u00d7 inference speedup and reducing token usage by 34.6%\u201375.6%.",
+          "check": "verified"
+        },
+        {
+          "claim": "End-to-end inference speedup of 1.2x to 2.4x",
+          "metric": "inference speedup",
+          "benchmark": "9 benchmarks spanning mathematics, science, medicine, search, and code generation",
+          "baseline": "advanced recursive language models and MAS baselines",
+          "quote": "Compared with advanced recursive language models and MAS baselines,RecursiveMASachieves an average accuracy improvement of 8.3%, while delivering 1.2\u00d7\u20132.4\u00d7 inference speedup and reducing token usage by 34.6%\u201375.6%.",
+          "check": "verified"
+        },
+        {
+          "claim": "Token usage reduction of 34.6% to 75.6%",
+          "metric": "token usage reduction",
+          "benchmark": "9 benchmarks spanning mathematics, science, medicine, search, and code generation",
+          "baseline": "advanced recursive language models and MAS baselines",
+          "quote": "Compared with advanced recursive language models and MAS baselines,RecursiveMASachieves an average accuracy improvement of 8.3%, while delivering 1.2\u00d7\u20132.4\u00d7 inference speedup and reducing token usage by 34.6%\u201375.6%.",
+          "check": "verified"
+        },
+        {
+          "claim": "Accuracy improvement of 20.2% at recursion round r = 3 compared to text-based recursion",
+          "metric": "accuracy",
+          "benchmark": "seven math, science, and code generation tasks",
+          "baseline": "text-based recursion",
+          "quote": "When compared with the text-based recursion,RecursiveMAS consistently improves over the baseline by an average of 8.1% at r = 1, 19.6% at r = 2, and 20.2% at r = 3, with performance advantagemorepronouncedastherecursiondeepens.",
+          "check": "verified"
+        },
+        {
+          "claim": "Accuracy improvement of 8.0% for the learner model in distillation style",
+          "metric": "accuracy",
+          "benchmark": "AIME2026, GPQA-D, LiveCodeBench, MBPP+, MedQA",
+          "baseline": "Learner model",
+          "quote": "Finally, inDistillation-style,RecursiveMAS improves the learner by 8.0% while retaining 1.5\u00d7 end-to-end speed advantage over the expert.",
+          "check": "verified"
+        },
+        {
+          "claim": "Accuracy improvement of 4.8% in deliberation style",
+          "metric": "accuracy",
+          "benchmark": "mathematical and search-intensive tasks",
+          "baseline": "original tool-calling agent",
+          "quote": "RecursiveMAS improves the original tool-calling agent by 4.8%, showing that recursive latent coordination remains effective in tool-calling settings through iterative interaction with the Reflector.",
+          "check": "verified"
+        }
+      ],
+      "limitations": "The framework requires training specialized projection layers (RecursiveLink) for each pair of communicating agents, and its performance gains stabilize once the latent thought length reaches a moderate budget of around 80 steps. Additionally, it requires access to model internals, making it incompatible with closed-source API-only models.",
+      "tier": "latent"
+    },
+    "meta": {
+      "provider": "google",
+      "model": "models/gemini-3.5-flash",
+      "finish_reason": "stop",
+      "latency_s": 26.0,
+      "usage": {
+        "prompt_tokens": 28963,
+        "completion_tokens": 1040,
+        "total_tokens": 35511,
+        "reported": true
+      }
+    }
+  },
+  "2411.02820": {
+    "source": {
+      "key": "2411.02820",
+      "cite": "arXiv:2411.02820 (DroidSpeak)",
+      "url": "https://arxiv.org/abs/2411.02820",
+      "text": "2411.02820.txt"
+    },
+    "summary": {
+      "title": "DroidSpeak: KV Cache Sharing for Cross-LLM Communication and Multi-LLM Serving",
+      "problem": "In multi-LLM and agentic systems, different models often process inputs sharing the same context prefix, but reusing prefix KV caches across different models remains an open challenge because naive sharing causes severe generation quality drops.",
+      "mechanism": "The sender model transmits its KV cache for non-critical layers and its embedding (E) cache at transition layers to the receiver model over the network. The receiver model then selectively recomputes only the critical layers of the KV cache while reusing the rest, pipelining the loading of the reused cache with the layer-wise recomputation to hide network latency.",
+      "access": [
+        "model-internals"
+      ],
+      "access_detail": "The system requires access to the layer-wise KV cache and embedding (E) cache of the models to selectively reuse, recompute, and transfer them.",
+      "gains": [
+        {
+          "claim": "Up to 4\u00d7 throughput improvement",
+          "metric": "throughput",
+          "benchmark": "diverse datasets and model pairs under Poisson arrival rate",
+          "baseline": "baseline which does not allow any sharing across models",
+          "quote": "DroidSpeak achieves up to 4\u00d7 throughput improvement and about 3.1\u00d7 faster prefill (time to first token), with negligible loss of quality",
+          "check": "verified"
+        },
+        {
+          "claim": "About 3.1\u00d7 faster prefill (time to first token)",
+          "metric": "prefill (time to first token)",
+          "benchmark": "diverse datasets and model pairs",
+          "baseline": "baseline which does not allow any sharing across models",
+          "quote": "DroidSpeak achieves up to 4\u00d7 throughput improvement and about 3.1\u00d7 faster prefill (time to first token), with negligible loss of quality",
+          "check": "verified"
+        },
+        {
+          "claim": "Average prefill speedup of 2.1\u00d7",
+          "metric": "prefill speedup",
+          "benchmark": "three datasets and eight model pairs",
+          "baseline": "full prefill",
+          "quote": "Across three datasets and eight model pairs, DroidSpeak can reduce the prefill latency by 1.7\u20133.1\u00d7 without compromising accuracy, with an average prefill speedup of 2.1\u00d7.",
+          "check": "verified"
+        },
+        {
+          "claim": "Prefill latency reduction of 1.7\u20133.1\u00d7",
+          "metric": "prefill latency",
+          "benchmark": "three datasets and eight model pairs",
+          "baseline": "full prefill",
+          "quote": "Across three datasets and eight model pairs, DroidSpeak can reduce the prefill latency by 1.7\u20133.1\u00d7 without compromising accuracy, with an average prefill speedup of 2.1\u00d7.",
+          "check": "verified"
+        },
+        {
+          "claim": "Only 11% of layers identified as critical on average",
+          "metric": "percentage of critical layers",
+          "benchmark": "eight representative model pairs",
+          "baseline": "all layers (100%)",
+          "quote": "On average across all pairs of models, we identify 11% of layers to be critical.",
+          "check": "verified"
+        },
+        {
+          "claim": "5\u201333% higher quality than CacheBlend",
+          "metric": "generation quality (F1 score, Rouge-L, or code similarity)",
+          "benchmark": "eight model pairs on three datasets",
+          "baseline": "CacheBlend",
+          "quote": "Specifically, DroidSpeak has 5\u201333% (average 16%) higher quality than CacheBlend at a similar prefill latency.",
+          "check": "verified"
+        }
+      ],
+      "limitations": "DroidSpeak does not support KV cache sharing across LLMs originating from different foundation models. It may suffer from quality degradation if real test data drifts significantly from the training data used for offline profiling, and its adaptation algorithm does not currently consider changes in network bandwidth.",
+      "tier": "latent"
+    },
+    "meta": {
+      "provider": "google",
+      "model": "models/gemini-3.5-flash",
+      "finish_reason": "stop",
+      "latency_s": 19.2,
+      "usage": {
+        "prompt_tokens": 22620,
+        "completion_tokens": 894,
+        "total_tokens": 27600,
+        "reported": true
+      }
+    }
+  },
+  "2402.18439": {
+    "source": {
+      "key": "2402.18439",
+      "cite": "arXiv:2402.18439",
+      "url": "https://arxiv.org/abs/2402.18439",
+      "text": "2402.18439.txt"
+    },
+    "summary": {
+      "title": "Beyond Natural Language: LLMs Leveraging Alternative Formats for Enhanced Reasoning and Communication",
+      "problem": "Natural language is traditionally the default format for LLM reasoning and multi-agent communication, but its inherent ambiguities and redundancies can limit efficiency and precision.",
+      "mechanism": "Agents exchange structured, non-natural language formats (such as JSON, markdown tables, lists, logical expressions, or pseudocode) instead of natural language. This is achieved by adding an instruction (AutoForm prompt) that directs the LLMs to autonomously select, devise, and utilize the most suitable non-NL format for the task.",
+      "access": [
+        "api-tokens"
+      ],
+      "access_detail": "Only text input and output via an API are required to send prompts and receive formatted responses.",
+      "gains": [
+        {
+          "claim": "Allowing LLMs to autonomously select the most suitable format leads to a 3.3 to 5.7% improvement in reasoning efficiency",
+          "metric": "reasoning efficiency",
+          "benchmark": "single-LLM reasoning tasks (Logic Grid Puzzle, Coin Flip, Information Essentiality, Minute Mysteries QA, AQuA)",
+          "baseline": "plain CoT",
+          "quote": "We show that allowing LLMs to autonomously select the most suitable format before reasoning or communicating leads to a 3.3 to 5.7% improvement in reasoning efficiency for different LLMs",
+          "check": "verified"
+        },
+        {
+          "claim": "AutoForm achieves up to a 72.7% reduction in token usage in multi-agent communication",
+          "metric": "token reduction",
+          "benchmark": "Hotpot QA dataset with the GPT-4 and GPT-3.5 pairing",
+          "baseline": "natural language-based interactions",
+          "quote": "This is particularly evident in the Hotpot QA dataset with the GPT-4 and GPT-3.5 pairing, where we witness a token reduction reaching 72.7%.",
+          "check": "verified"
+        },
+        {
+          "claim": "AutoForm yields an overall average performance boost of 5.4% for GPT-3.5",
+          "metric": "overall average performance boost",
+          "benchmark": "single-LLM reasoning tasks",
+          "baseline": "CoT",
+          "quote": "Across other datasets, AutoForm yields consistent enhancements, with increases generally ranging between 3% to 5%, culminating in an overall average performance boost of 5.4%.",
+          "check": "verified"
+        },
+        {
+          "claim": "AutoForm achieves an average performance enhancement of 5.7% for Gemini Pro",
+          "metric": "average performance enhancement",
+          "benchmark": "single-LLM reasoning tasks",
+          "baseline": "CoT",
+          "quote": "Similarly, for Gemini Pro, AutoForm achieves an average performance enhancement of 5.7%.",
+          "check": "verified"
+        },
+        {
+          "claim": "AutoForm achieves an average performance uplift of 3.3% for GPT-4",
+          "metric": "average performance uplift",
+          "benchmark": "single-LLM reasoning tasks",
+          "baseline": "CoT",
+          "quote": "GPT-4 also benefits from AutoForm, with an average performance uplift of 3.3% across all tasks.",
+          "check": "verified"
+        },
+        {
+          "claim": "GPT-3.5 accuracy on Coin Flip escalates from 22.2% to 38.0% with AutoForm",
+          "metric": "accuracy",
+          "benchmark": "Coin Flip dataset",
+          "baseline": "CoT",
+          "quote": "For GPT-3.5, the implementation of AutoForm leads to a significant improvement in accuracy, particularly notable in the Coin Flip dataset, where accuracy escalates from 22.2% to 38.0%.",
+          "check": "verified"
+        }
+      ],
+      "limitations": "The scope of alternative formats explored is not exhaustive, and the effectiveness of format generalization varies depending on task complexity and the specific LLM used. Additionally, less advanced models like GPT-3.5 can produce suboptimal, overly succinct, or hallucinated responses when prompted to use non-NL formats without extra guidance.",
+      "tier": "token"
+    },
+    "meta": {
+      "provider": "google",
+      "model": "models/gemini-3.5-flash",
+      "finish_reason": "stop",
+      "latency_s": 15.2,
+      "usage": {
+        "prompt_tokens": 49451,
+        "completion_tokens": 923,
+        "total_tokens": 53279,
+        "reported": true
+      }
+    }
+  }
+}

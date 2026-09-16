@@ -50,7 +50,18 @@ with checkouts of every deployment, or publishing the gate as a package each
 repo pins by version - at which point the fleet cannot diverge silently because
 the version string says so. Both are larger than tonight, and NAMING THE
 TRIGGER is the part that stops this becoming a promise with no state: when a
-FIFTH repo gets this gate, hand-copying stops being defensible.
+FIFTH repo gets this gate, OR WHEN ANY `DIVERGENT` ENTRY NEEDS A SECOND REASON,
+hand-copying stops being defensible. (The second clause is the PM's, from
+review on 2026-09-11: a declared divergence that keeps growing is a fork
+nobody has admitted to.)
+
+🔴 AND THE AST IS BLIND TO WHAT IT DISCARDS, WHICH IS HOW THE WHOLE FLEET CARRIED
+ONE DEFECT UNSEEN. On 2026-09-16 all four deployments were stored with ~200
+lines ending CR CR LF. Git reads a lone CR as "not text" and never normalises
+the file; Python reads it as a line break, so a traceback's line number was up
+to 159 lines away from the line GitHub shows. Every copy agreed with every
+other, because an AST has no line endings. So the raw bytes are read too:
+a CR not followed by LF is reported. A CRLF checkout is not.
 
 VERIFIED AGAINST THE REAL DEFECT, not a synthetic one. `synapse`'s gate at
 `ebcad61c`, the commit before the fix landed, against the three that were
@@ -117,22 +128,39 @@ def functions(path: pathlib.Path) -> dict[str, str]:
 
 
 def control_count(path: pathlib.Path) -> int | None:
-    """How many case-tuples `self_test` declares.
+    """How many case-tuples `self_test` declares, including the ones it gets
+    from any `*_controls` helper it calls.
 
     ⚠️ THE NUMBER THAT CAUGHT THE ORIGINAL DEFECT. 18 against 29, with every
     copy printing PASS. It is compared as a NUMBER rather than as logic because
     the lists legitimately grow - what is suspicious is one lagging the others.
+
+    ⚠️ THE HELPERS ARE COUNTED BECAUSE THE GATE COUNTS THEM. The controls that
+    run git live in `_git_fixture_controls`, and a count that stopped at
+    `self_test` would read 30 beside a gate printing 40 - two numbers for one
+    set, which is how a count stops being checked.
     """
     tree = ast.parse(path.read_text(encoding="utf-8"))
-    for node in ast.walk(tree):
-        if isinstance(node, ast.FunctionDef) and node.name == "self_test":
-            total = 0
-            for sub in ast.walk(node):
-                if isinstance(sub, ast.List):
-                    total += sum(1 for e in sub.elts
-                                 if isinstance(e, ast.Tuple))
-            return total
-    return None
+    top = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
+    entry = top.get("self_test")
+    if entry is None:
+        return None
+    called = {c.func.id for c in ast.walk(entry)
+              if isinstance(c, ast.Call) and isinstance(c.func, ast.Name)}
+    scope = [entry] + [top[name] for name in sorted(called)
+                       if name.endswith("_controls") and name in top]
+    total = 0
+    for fn in scope:
+        for sub in ast.walk(fn):
+            if isinstance(sub, ast.List):
+                total += sum(1 for e in sub.elts if isinstance(e, ast.Tuple))
+    return total
+
+
+def lone_crs(path: pathlib.Path) -> int:
+    """CRs not followed by LF. A CRLF file scores 0; CR CR LF scores 1 a line."""
+    data = path.read_bytes()
+    return data.count(b"\r") - data.count(b"\r\n")
 
 
 def main(argv: list[str]) -> int:
@@ -188,6 +216,13 @@ def main(argv: list[str]) -> int:
         # every copy printing PASS is what made it invisible.
         findings.append(f"  LAGGING   self-test counts differ; {lagging} "
                         f"behind the highest. Every copy still prints PASS.")
+
+    for r in sorted(repos):
+        n = lone_crs(repos[r])
+        if n:
+            findings.append(f"  LONE CR   {r}: {n} CRs not followed by LF. Git "
+                            f"stores it as not-text, and Python's line "
+                            f"numbers no longer match GitHub's.")
 
     for line in findings:
         print(line)

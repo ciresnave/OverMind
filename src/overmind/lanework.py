@@ -454,10 +454,22 @@ def claims_done(text: str) -> bool:
     return claims_success(text) or bool(_CODE_CLAIM.search(text))
 
 
+#: A run of absolute directories: an optional drive, a leading separator,
+#: then one or more `name/` components. Relative paths never match, because
+#: they carry no leading separator and say nothing about this machine.
+#: `,` and `;` end a component because they join paths in a list.
+_ABS_DIRS = re.compile(r"(?:[A-Za-z]:)?[\\/]+(?:[^\\/\s\"'=,;]+[\\/]+)+")
+
+
 def _public_arg(arg: str) -> str:
-    if re.match(r"^[A-Za-z]:[\\/]", arg) or arg.startswith(("/", "\\")):
-        return re.split(r"[\\/]", arg.rstrip("\\/"))[-1]
-    return arg
+    """`arg` with every absolute directory run removed, WHEREVER it occurs.
+
+    ⚠️ NOT ONLY AT THE START. The first version reduced an argument that
+    began with a path and passed `--config=C:\\Users\\...` straight through
+    (caught at the gate on #33). Over-redacting a label costs nothing;
+    under-redacting publishes a home directory.
+    """
+    return _ABS_DIRS.sub("", arg)
 
 
 def check_label(task: Task) -> str:

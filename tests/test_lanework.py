@@ -340,6 +340,23 @@ class TestPieces(unittest.TestCase):
                          "a relative argv is already public and stays whole")
         self.assertEqual(label(["/abs/x"], name="readme bullet check"), "readme bullet check")
 
+    def test_embedded_absolute_paths_are_removed_too(self):
+        """🔴 Caught at the gate on #33: only a LEADING path was reduced."""
+        def label(argv):
+            return lw.check_label(lw.Task(id="x", repo=".", goal="g", check=argv, writable=[]))
+        self.assertEqual(label(["tool", "--config=C:\\Users\\someone\\cfg.toml"]),
+                         "tool --config=cfg.toml")
+        self.assertEqual(label(["tool", "-o/c/Users/someone/out.txt"]), "tool -oout.txt")
+        self.assertEqual(label(["tool", "--in=/home/someone/a.txt,/srv/b.txt"]),
+                         "tool --in=a.txt,b.txt")
+        self.assertEqual(label(["python", "-m", "unittest", "tests/test_x.py", "--k=src/a"]),
+                         "python -m unittest tests/test_x.py --k=src/a",
+                         "control: relative paths stay whole")
+        for argv in (["tool", "--config=C:\\Users\\someone\\cfg.toml"],
+                     ["tool", "-o/c/Users/someone/out.txt"],
+                     ["C:\\Users\\someone\\python.exe", "x"]):
+            self.assertNotIn("someone", label(argv), argv)
+
     def test_glob_segments(self):
         self.assertTrue(lw.glob_match("crates/a/Cargo.toml", "crates/*/Cargo.toml"))
         self.assertFalse(lw.glob_match("crates/a/b/Cargo.toml", "crates/*/Cargo.toml"),

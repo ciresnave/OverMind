@@ -346,7 +346,11 @@ class Workspace:
         return _clip(f"{path}: lines {start}-{start + len(chunk) - 1} of {len(lines)}\n{body}")
 
     def search(self, pattern: str, path: str = "") -> str:
-        args = ["grep", "-n", "-I", "-e", pattern]
+        # ⚠️ `-E`. git grep defaults to BASIC regex, where `\(` OPENS A GROUP.
+        # A model writes `name\(` to mean a literal paren - measured: a local
+        # model's first search failed with "Unmatched ( or \\(" and it never
+        # found the call it was looking for.
+        args = ["grep", "-n", "-I", "-E", "-e", pattern]
         if path:
             args += ["--", self._path(path).relative_to(self.root.resolve()).as_posix() or "."]
         proc = _run(["git", *args], self.root)
@@ -422,7 +426,8 @@ def schemas() -> list[dict[str, Any]]:
            {"pattern": s, "path": s}),
         fn("read_file", "Read a file, with line numbers. Use start/count for long files.",
            {"path": s, "start": i, "count": i}, ("path",)),
-        fn("search", "Search tracked files for a regular expression (git grep).",
+        fn("search", "Search tracked files for an extended regular expression "
+                     "(git grep -E; escape a literal paren as \\( ).",
            {"pattern": s, "path": s}, ("pattern",)),
         fn("write_file", "Create a NEW file. An existing file must be changed with "
                          "replace_in_file. Only paths the task declares writable.",
@@ -472,7 +477,14 @@ def claims_done(text: str) -> bool:
 #: then one or more `name/` components. Relative paths never match, because
 #: they carry no leading separator and say nothing about this machine.
 #: `,` and `;` end a component because they join paths in a list.
-_ABS_DIRS = re.compile(r"(?:[A-Za-z]:)?[\\/]+(?:[^\\/\s\"'=,;]+[\\/]+)+")
+#:
+#: ⚠️ ANCHORED: the run must begin the argument, follow `=`, `,` or `;`,
+#: or follow a short flag such as `-o`. Unanchored, the `/checks/` inside
+#: the RELATIVE path `scripts/checks/x.py` matched and the label read
+#: `scriptsx.py` (caught at the gate on #35; its own control was one
+#: directory deep, which cannot contain an interior run).
+_ABS_DIRS = re.compile(r"(?:^|(?<=[=,;])|(?<=^-[A-Za-z]))"
+                       r"(?:[A-Za-z]:)?[\\/]+(?:[^\\/\s\"'=,;]+[\\/]+)+")
 
 
 def _public_arg(arg: str) -> str:

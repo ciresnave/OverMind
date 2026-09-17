@@ -163,7 +163,7 @@ class TestConfinement(RepoCase):
         """Both arms in one run, so the refusal cannot come from a gate that
         refuses everything."""
         r = self.run_it(call(("write_file", {"path": "Cargo.toml", "content": "evil = true\n"}),
-                             ("write_file", {"path": "a.txt", "content": "fixed\n"})),
+                             ("replace_in_file", {"path": "a.txt", "old": "broken", "new": "fixed"})),
                         say("done"))
         self.assertEqual(r.denied_calls, 1)
         self.assertEqual(r.verdict, "PASS")
@@ -178,11 +178,26 @@ class TestConfinement(RepoCase):
                              ("write_file", {"path": ".GitHub/evil.yml", "content": "x: 1\n"}),
                              ("write_file", {"path": "sub/.cargo/config.toml", "content": "x\n"}),
                              ("write_file", {"path": ".gitattributes", "content": "* -text\n"}),
-                             ("write_file", {"path": "a.txt", "content": "fixed\n"})),
+                             ("replace_in_file", {"path": "a.txt", "old": "broken", "new": "fixed"})),
                         say("done"), writable=["**"])
         self.assertEqual(r.denied_calls, 4, r.ledger_digest)
         self.assertEqual(r.changed_files, ["a.txt"])
         self.assertEqual(r.verdict, "PASS")
+
+    def test_write_file_creates_but_never_replaces_a_tracked_file(self):
+        """🔴 A local model replaced all 626 lines of lanework.py with a
+        7-line fragment through write_file. Three arms in one run: a tracked
+        file refused (also under another case), a new file created, and the
+        new file rewritten - it was not tracked at the base."""
+        r = self.run_it(call(("write_file", {"path": "a.txt", "content": "fixed\n"}),
+                             ("write_file", {"path": "A.TXT", "content": "fixed\n"}),
+                             ("write_file", {"path": "new.txt", "content": "one\n"}),
+                             ("write_file", {"path": "new.txt", "content": "two\n"})),
+                        say("done"), writable=["a.txt", "A.TXT", "new.txt"])
+        self.assertEqual(r.denied_calls, 2, r.ledger_digest)
+        self.assertIn("replace_in_file", r.ledger_digest)
+        self.assertEqual(r.changed_files, ["new.txt"])
+        self.assertEqual((self.repo / "a.txt").read_bytes(), b"broken\n")
 
     def test_escapes_and_dot_git_are_refused(self):
         r = self.run_it(call(("read_file", {"path": "../outside.txt"}),
@@ -209,7 +224,7 @@ class TestConfinement(RepoCase):
             self.assertIn("FAKE_API_TOKEN", os.environ)
             check = [sys.executable, "-c",
                      "import os, sys; sys.exit(3 if 'FAKE_API_TOKEN' in os.environ else 0)"]
-            r = self.run_it(call(("write_file", {"path": "a.txt", "content": "x\n"})),
+            r = self.run_it(call(("replace_in_file", {"path": "a.txt", "old": "broken", "new": "x"})),
                             say("done"), check=check)
         finally:
             del os.environ["FAKE_API_TOKEN"]
@@ -217,7 +232,7 @@ class TestConfinement(RepoCase):
 
     def test_the_lane_checkout_is_untouched_and_the_worktree_is_gone(self):
         before = git(self.repo, "worktree", "list")
-        r = self.run_it(call(("write_file", {"path": "a.txt", "content": "fixed\n"})), say("done"))
+        r = self.run_it(call(("replace_in_file", {"path": "a.txt", "old": "broken", "new": "fixed"})), say("done"))
         self.assertEqual(r.verdict, "PASS")
         self.assertEqual((self.repo / "a.txt").read_bytes(), b"broken\n")
         self.assertEqual(git(self.repo, "worktree", "list"), before)
@@ -247,12 +262,12 @@ class TestWriting(RepoCase):
         """Measured live: a whole-file rewrite dropped the README's last newline."""
         exact = [sys.executable, "-c",
                  "import pathlib, sys; sys.exit(0 if pathlib.Path('a.txt').read_bytes() == b'fixed\\n' else 1)"]
-        r = self.run_it(call(("write_file", {"path": "a.txt", "content": "fixed"})),
+        r = self.run_it(call(("replace_in_file", {"path": "a.txt", "old": "broken\n", "new": "fixed"})),
                         say("done"), check=exact)
         self.assertEqual(r.verdict, "PASS", r.check_tail)
 
     def test_a_bare_cr_is_refused(self):
-        r = self.run_it(call(("write_file", {"path": "a.txt", "content": "fixed\r\r\n"})), say("done"))
+        r = self.run_it(call(("replace_in_file", {"path": "a.txt", "old": "broken", "new": "fix\red"})), say("done"))
         self.assertIn("bare CR", r.ledger_digest)
         self.assertEqual(r.verdict, "NO_CHANGE")
 
@@ -281,7 +296,7 @@ class TestPublishing(RepoCase):
         return "https://example.invalid/pr/1"
 
     def test_a_pass_is_committed_pushed_and_opened(self):
-        r = self.run_it(call(("write_file", {"path": "a.txt", "content": "fixed\n"})), say("done"),
+        r = self.run_it(call(("replace_in_file", {"path": "a.txt", "old": "broken", "new": "fixed"})), say("done"),
                         base="origin/main", fetch=True, publish=True, pr_creator=self.creator,
                         pr_title="Fix a.txt")
         self.assertEqual(r.verdict, "PASS", r.error)
@@ -300,7 +315,7 @@ class TestPublishing(RepoCase):
         checks = self.tmp / "private-checks"
         checks.mkdir()
         (checks / "fixed_check.py").write_text(CHECK_FIXED, encoding="utf-8")
-        r = self.run_it(call(("write_file", {"path": "a.txt", "content": "fixed\n"})), say("done"),
+        r = self.run_it(call(("replace_in_file", {"path": "a.txt", "old": "broken", "new": "fixed"})), say("done"),
                         base="origin/main", fetch=True, publish=True, pr_creator=self.creator,
                         check=[sys.executable, str(checks / "fixed_check.py")])
         self.assertEqual(r.verdict, "PASS", r.check_tail)
@@ -312,14 +327,14 @@ class TestPublishing(RepoCase):
             self.assertNotIn(os.path.dirname(sys.executable), text)
 
     def test_nothing_is_published_unless_PASS(self):
-        r = self.run_it(call(("write_file", {"path": "a.txt", "content": "wrong\n"})), say("done"),
+        r = self.run_it(call(("replace_in_file", {"path": "a.txt", "old": "broken", "new": "wrong"})), say("done"),
                         base="origin/main", fetch=True, publish=True, pr_creator=self.creator)
         self.assertEqual(r.verdict, "CHECK_FAILED")
         self.assertEqual(self.opened, [])
         self.assertEqual(git(self.remote, "branch", "--list", "agent/*").strip(), "")
 
     def test_a_dry_run_publishes_nothing(self):
-        r = self.run_it(call(("write_file", {"path": "a.txt", "content": "fixed\n"})), say("done"),
+        r = self.run_it(call(("replace_in_file", {"path": "a.txt", "old": "broken", "new": "fixed"})), say("done"),
                         base="origin/main", fetch=True, pr_creator=self.creator)
         self.assertEqual(r.verdict, "PASS")
         self.assertEqual(self.opened, [])
@@ -356,6 +371,21 @@ class TestPieces(unittest.TestCase):
                      ["tool", "-o/c/Users/someone/out.txt"],
                      ["C:\\Users\\someone\\python.exe", "x"]):
             self.assertNotIn("someone", label(argv), argv)
+
+    def test_the_tracked_rule_ignores_case_on_any_filesystem(self):
+        """On Windows, resolving `A.TXT` already returns an existing `a.txt`,
+        so the end-to-end test cannot tell whether the rule itself ignores
+        case. A tracked name with no file on disk can: nothing resolves it."""
+        from overmind.gate import StaticFacts, ToolCall
+        root = pathlib.Path(tempfile.mkdtemp(prefix="lanework-case-"))
+        try:
+            policy = lw.WorkspaceConfined(root, ["**"], frozenset({"gone.txt"}))
+            upper = policy.decide(ToolCall("write_file", {"path": "GONE.TXT"}), StaticFacts())
+            other = policy.decide(ToolCall("write_file", {"path": "fresh.txt"}), StaticFacts())
+            self.assertFalse(upper.allowed, upper.reason)
+            self.assertTrue(other.allowed, "control: an untracked name is creatable")
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
 
     def test_glob_segments(self):
         self.assertTrue(lw.glob_match("crates/a/Cargo.toml", "crates/*/Cargo.toml"))

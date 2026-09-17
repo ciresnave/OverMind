@@ -221,3 +221,43 @@ problem* — running routine work on non-Claude providers is, and that needs §2
 🔴 **Not proven: that any of this does a lane's work.** Two tool calls is not a day, and the one
 model that holds the context does not reliably obey it. **Everything above is capability. None of
 it is yet capacity.**
+
+
+---
+
+## 7. ⚠️ 2026-09-17 addendum — wiring `lanework.py` to a live dispatch channel is a security decision, not an engineering one
+
+**Written before building it, not after finding a problem in it.** README's "What is not" names the
+runner's transport as a CLI invocation, and closing that gap looks at first like plumbing:
+`dispatch.py` already receives live inbound messages and runs them through `run_agent`; making it
+build a `lanework.Task` from the message and call `run_task(..., publish=True)` instead looks like a
+few lines.
+
+🔴 **IT IS NOT PLUMBING. `Task.check` IS AN ARGV THIS HOST EXECUTES AS A REAL SUBPROCESS**, with
+secrets scrubbed from its environment (`lanework.py`'s own docstring) but with no other confinement -
+no container, no chroot, full access to this machine outside the git worktree. Today that argv comes
+from a file a human or a lane operator writes, which is the entire trust boundary the design has ever
+had: `lanework.py`'s own CLI usage assumes whoever wrote `task.json` is trusted. `dispatch.py`'s
+design assumes the opposite of its input - "**THE INBOUND CONTENT IS UNTRUSTED**" is stated in its own
+docstring - and its own `Dispatch.vouched` property exists because sender identity is **usually
+false** today (§20's transport-does-not-vouch finding). Connecting the two verbatim means an
+unvouched message from anyone in the fabric chooses the command this host runs.
+
+⚠️ **THE EXISTING GATE DOES NOT COVER THIS.** `WorkspaceConfined` governs `write_file` and
+`replace_in_file` - the MODEL's six tools inside the worktree. `run_check` is not gated the same way:
+it always runs the task's own declared `check`, and the gate has no policy over what that argv *is*.
+A dispatch-supplied `Task` reaches `check` before the model ever calls a tool.
+
+**Not decided here, because it is a policy about how much the fabric is allowed to make this host do,
+not a fact I can measure:**
+
+1. **Does a dispatched task ever get to supply `check` at all**, or must `check` always come from a
+   host-side, pre-registered set of known-safe commands, with the dispatch only selecting one by name?
+2. **If `check` may be dispatch-supplied, what proves the sender may be trusted with it** - `vouched`
+   alone, given §20 measured it usually false today? A stronger identity check would need to exist
+   *before* this, not be assumed by it.
+3. **Does this need a second gate policy**, parallel to `WorkspaceConfined`, that inspects `Task`
+   itself (not just tool calls made *during* the run) before `run_task` ever starts a subprocess?
+
+**Until one of these is answered, `dispatch.py` and `lanework.py` stay unconnected.** The gap README
+names is real; wiring it the obvious way would open a different one.

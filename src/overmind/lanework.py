@@ -463,7 +463,14 @@ def claims_done(text: str) -> bool:
 #: then one or more `name/` components. Relative paths never match, because
 #: they carry no leading separator and say nothing about this machine.
 #: `,` and `;` end a component because they join paths in a list.
-_ABS_DIRS = re.compile(r"(?:[A-Za-z]:)?[\\/]+(?:[^\\/\s\"'=,;]+[\\/]+)+")
+#:
+#: ⚠️ ANCHORED: the run must begin the argument, follow `=`, `,` or `;`,
+#: or follow a short flag such as `-o`. Unanchored, the `/checks/` inside
+#: the RELATIVE path `scripts/checks/x.py` matched and the label read
+#: `scriptsx.py` (caught at the gate on #35; its own control was one
+#: directory deep, which cannot contain an interior run).
+_ABS_DIRS = re.compile(r"(?:^|(?<=[=,;])|(?<=^-[A-Za-z]))"
+                       r"(?:[A-Za-z]:)?[\\/]+(?:[^\\/\s\"'=,;]+[\\/]+)+")
 
 
 def _public_arg(arg: str) -> str:

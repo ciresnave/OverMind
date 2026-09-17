@@ -368,6 +368,13 @@ class TestPieces(unittest.TestCase):
         self.assertEqual(label(["python", "-m", "unittest", "tests/test_x.py", "--k=src/a"]),
                          "python -m unittest tests/test_x.py --k=src/a",
                          "control: relative paths stay whole")
+        # 🔴 The control above is one directory deep, and a single separator
+        # cannot form an interior run - so it passed an unanchored pattern.
+        self.assertEqual(label(["python", "scripts/checks/x.py", "--k=src/a/b.py",
+                                "-c", "import sys; sys.exit(a/b/c)"]),
+                         "python scripts/checks/x.py --k=src/a/b.py "
+                         "-c import sys; sys.exit(a/b/c)",
+                         "deep relative paths and inline code stay whole")
         for argv in (["tool", "--config=C:\\Users\\someone\\cfg.toml"],
                      ["tool", "-o/c/Users/someone/out.txt"],
                      ["C:\\Users\\someone\\python.exe", "x"]):

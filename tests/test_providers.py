@@ -140,6 +140,33 @@ class TestFailover(unittest.TestCase):
         self.assertEqual(len(ctx.exception.attempts), 3)
         self.assertIn("HTTP 404", str(ctx.exception))
 
+    def test_a_timeout_fails_over_and_is_not_blacklisted(self):
+        """🔴 Measured 2026-09-17: a read timeout escaped the client, so one
+        slow model crashed the caller instead of failing over.
+
+        BOTH ARMS IN ONE RUN: the 404 model must still be blacklisted, so the
+        test cannot pass because nothing is ever marked bad."""
+        t = FakeTransport({"bad1": TimeoutError("The read operation timed out"),
+                           "good": chat_body("ok")})           # bad2 raises 404
+        client = ProviderClient(self.prov, opener=t)
+        result = client.chat([{"role": "user", "content": "hi"}])
+        self.assertEqual(result.model, "good")
+        self.assertNotIn("bad1", client._known_bad, "a slow minute is not a verdict")
+        self.assertIn("bad2", client._known_bad, "control: a 404 still blacklists")
+
+    def test_a_dropped_connection_fails_over_too(self):
+        t = FakeTransport({"bad1": ConnectionResetError("reset by peer"),
+                           "good": chat_body("ok")})
+        result = ProviderClient(self.prov, opener=t).chat([{"role": "user", "content": "hi"}])
+        self.assertEqual(result.model, "good")
+
+    def test_every_model_timing_out_says_so(self):
+        """'all timed out' and 'entitled to none' need different responses."""
+        t = FakeTransport({m: TimeoutError("slow") for m in ("bad1", "bad2", "good")})
+        with self.assertRaises(NoUsableModel) as ctx:
+            ProviderClient(self.prov, opener=t).chat([{"role": "user", "content": "hi"}])
+        self.assertEqual([r for _, r in ctx.exception.attempts], ["timed out"] * 3)
+
     def test_a_pinned_model_is_not_failed_over(self):
         t = FakeTransport({})
         client = ProviderClient(self.prov, opener=t, model="pinned")

@@ -71,6 +71,15 @@ class RateLimited(ProviderError):
     """429. ⚠️ NOT a model verdict and never scored as behaviour."""
 
 
+class TimedOut(ProviderError):
+    """No answer in time, or the connection dropped mid-answer.
+
+    ⚠️ TRANSIENT, LIKE A 429: the model is NOT marked bad. A slow minute is not
+    an entitlement verdict, and blacklisting on it would shrink the candidate
+    list for the rest of the client's life.
+    """
+
+
 class NoUsableModel(RuntimeError):
     """Every candidate was refused, unentitled or rate-limited.
 
@@ -383,6 +392,13 @@ class ProviderClient:
             raise ProviderError(self.provider.key, exc.code, text) from None
         except urllib.error.URLError as exc:
             raise ProviderError(self.provider.key, None, str(exc.reason)) from None
+        except (TimeoutError, ConnectionError) as exc:
+            # ⚠️ ONCE A RESPONSE HAS STARTED, A SOCKET TIMEOUT IS NOT A URLError.
+            # Measured 2026-09-17: NVIDIA's gpt-oss-20b held a read past 120 s
+            # and the TimeoutError escaped the client entirely - no failover, and
+            # the caller crashed on one slow model.
+            raise TimedOut(self.provider.key, None,
+                           f"{type(exc).__name__}: {exc}") from None
 
     # -- models ------------------------------------------------------------- #
 
@@ -455,6 +471,9 @@ class ProviderClient:
                         time.sleep(2 ** attempt)
                         continue
                     attempts.append((model, "rate-limited"))
+                    break
+                except TimedOut:
+                    attempts.append((model, "timed out"))
                     break
                 except ProviderError as exc:
                     # 404 here means "not served to this account" far more often

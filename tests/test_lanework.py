@@ -293,6 +293,24 @@ class TestPublishing(RepoCase):
         author = git(self.remote, "log", "-1", "--format=%an <%ae>", branch).strip()
         self.assertEqual(author, f"{lw.AGENT_NAME} <{lw.AGENT_EMAIL}>")
 
+    def test_public_text_carries_no_local_paths(self):
+        """🔴 OverMind#31 put the interpreter's path and a scratch directory -
+        username and all - into public history, because the commit message
+        quoted the check verbatim."""
+        checks = self.tmp / "private-checks"
+        checks.mkdir()
+        (checks / "fixed_check.py").write_text(CHECK_FIXED, encoding="utf-8")
+        r = self.run_it(call(("write_file", {"path": "a.txt", "content": "fixed\n"})), say("done"),
+                        base="origin/main", fetch=True, publish=True, pr_creator=self.creator,
+                        check=[sys.executable, str(checks / "fixed_check.py")])
+        self.assertEqual(r.verdict, "PASS", r.check_tail)
+        body = self.opened[0][3]
+        message = git(self.remote, "log", "-1", "--format=%B", self.opened[0][0])
+        for text in (body, message):
+            self.assertIn("fixed_check.py", text, "control: the check is still named")
+            self.assertNotIn(str(checks), text)
+            self.assertNotIn(os.path.dirname(sys.executable), text)
+
     def test_nothing_is_published_unless_PASS(self):
         r = self.run_it(call(("write_file", {"path": "a.txt", "content": "wrong\n"})), say("done"),
                         base="origin/main", fetch=True, publish=True, pr_creator=self.creator)
@@ -309,6 +327,18 @@ class TestPublishing(RepoCase):
 
 
 class TestPieces(unittest.TestCase):
+
+    def test_check_label_hides_local_paths(self):
+        def label(argv, name=None):
+            return lw.check_label(lw.Task(id="x", repo=".", goal="g", check=argv,
+                                          writable=[], check_name=name))
+        self.assertEqual(label(["C:\\Users\\someone\\py\\python.exe",
+                                "C:/Users/someone/scratch/check.py"]), "python.exe check.py")
+        self.assertEqual(label(["/usr/bin/python3", "/home/someone/c.py", "--flag"]),
+                         "python3 c.py --flag")
+        self.assertEqual(label(["cargo", "test", "--workspace"]), "cargo test --workspace",
+                         "a relative argv is already public and stays whole")
+        self.assertEqual(label(["/abs/x"], name="readme bullet check"), "readme bullet check")
 
     def test_glob_segments(self):
         self.assertTrue(lw.glob_match("crates/a/Cargo.toml", "crates/*/Cargo.toml"))

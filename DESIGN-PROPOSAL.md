@@ -233,15 +233,23 @@ runner's transport as a CLI invocation, and closing that gap looks at first like
 build a `lanework.Task` from the message and call `run_task(..., publish=True)` instead looks like a
 few lines.
 
+⚠️ **`dispatch.py` IS BUILT AGAINST FAM, NOT SYNAPSE.** It has zero references to Synapse anywhere in
+its code - every mechanism it names (the reply tool, the system-notice shape, the sealed-envelope
+shape) is FAM's. It is a different, independent transport from the one §20 measured; nothing here
+routes through Synapse or bypasses it, because it was never on that path.
+
 🔴 **IT IS NOT PLUMBING. `Task.check` IS AN ARGV THIS HOST EXECUTES AS A REAL SUBPROCESS**, with
 secrets scrubbed from its environment (`lanework.py`'s own docstring) but with no other confinement -
 no container, no chroot, full access to this machine outside the git worktree. Today that argv comes
 from a file a human or a lane operator writes, which is the entire trust boundary the design has ever
 had: `lanework.py`'s own CLI usage assumes whoever wrote `task.json` is trusted. `dispatch.py`'s
 design assumes the opposite of its input - "**THE INBOUND CONTENT IS UNTRUSTED**" is stated in its own
-docstring - and its own `Dispatch.vouched` property exists because sender identity is **usually
-false** today (§20's transport-does-not-vouch finding). Connecting the two verbatim means an
-unvouched message from anyone in the fabric chooses the command this host runs.
+docstring - and its own `Dispatch.vouched` property reads a `sender_vouched` flag FAM supplies. ⚠️ **THE
+ONE LIVE MEASUREMENT OF IT (§18, not §20) FOUND IT `false`** - a real dispatch through the live FAM
+server, where the sender's identity was, in FAM's own terms, "the relay's word," not a
+cryptographically verified account key. One observation, not a survey; whether FAM has a path to a
+`true` value at all is unmeasured here. Connecting `dispatch.py` to `lanework.py` verbatim means an
+unvouched FAM message chooses the command this host runs.
 
 ⚠️ **THE EXISTING GATE DOES NOT COVER THIS.** `WorkspaceConfined` governs `write_file` and
 `replace_in_file` - the MODEL's six tools inside the worktree. `run_check` is not gated the same way:
@@ -254,7 +262,8 @@ not a fact I can measure:**
 1. **Does a dispatched task ever get to supply `check` at all**, or must `check` always come from a
    host-side, pre-registered set of known-safe commands, with the dispatch only selecting one by name?
 2. **If `check` may be dispatch-supplied, what proves the sender may be trusted with it** - `vouched`
-   alone, given §20 measured it usually false today? A stronger identity check would need to exist
+   alone, given the one measurement of it (§18) came back false? Whether FAM has a working path to a
+   verified `true` at all is unmeasured here, and a stronger identity check would need to exist
    *before* this, not be assumed by it.
 3. **Does this need a second gate policy**, parallel to `WorkspaceConfined`, that inspects `Task`
    itself (not just tool calls made *during* the run) before `run_task` ever starts a subprocess?

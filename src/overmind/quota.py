@@ -49,12 +49,45 @@ _QUOTA_VALUE = re.compile(r'"quotaValue"\s*:\s*"?(\d+)')
 PACIFIC_RESET = frozenset({"google"})
 
 
+_MESSAGE_LIMIT = re.compile(r"free_tier_requests,\s*limit:\s*(\d+)")
+
+
+def _violations(node):
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key == "violations" and isinstance(value, list):
+                yield from (v for v in value if isinstance(v, dict))
+            else:
+                yield from _violations(value)
+    elif isinstance(node, list):
+        for item in node:
+            yield from _violations(item)
+
+
 def daily_limit_in(body: str) -> tuple[bool, int | None]:
-    """(is this a DAILY-quota refusal?, the cap if the body states one)."""
+    """(is this a DAILY-quota refusal?, the daily REQUEST cap if stated).
+
+    ⚠️ A BODY LISTS EVERY VIOLATED QUOTA, and not all of them count requests:
+    `...InputTokensPerModelPerDay...` is a token cap. So the cap is taken from
+    the per-day REQUEST violation first; then from the message line naming
+    `free_tier_requests` - Google's refusal for a model with no free allowance
+    carried `limit: 0` there and no `quotaValue` at all; then from any
+    `quotaValue`.
+    """
     if not body or not _DAILY.search(body):
         return False, None
-    m = _QUOTA_VALUE.search(body)
-    return True, int(m.group(1)) if m else None
+    try:
+        for v in _violations(json.loads(body)):
+            qid = str(v.get("quotaId", ""))
+            if "PerDay" in qid and "Request" in qid and str(v.get("quotaValue", "")).isdigit():
+                return True, int(v["quotaValue"])
+    except ValueError:
+        pass
+    for pattern in (_MESSAGE_LIMIT, _QUOTA_VALUE):
+        m = pattern.search(body)
+        if m:
+            return True, int(m.group(1))
+    return True, None
 
 
 def _nth_sunday(year: int, month: int, n: int) -> datetime:
@@ -135,7 +168,11 @@ class QuotaBook:
         return entry
 
     def blocked(self, provider: str, model: str) -> bool:
-        return bool(self._entry(provider, model)["blocked"])
+        entry = self._entry(provider, model)
+        # ⚠️ A CAP OF 0 IS A FACT ABOUT THE MODEL, NOT THE DAY: it has no free
+        # allowance, so a new day does not lift it. Measured on Google's Pro
+        # models, refused on their first request with `limit: 0`.
+        return bool(entry["blocked"] or entry["cap"] == 0)
 
     def used(self, provider: str, model: str) -> int:
         return int(self._entry(provider, model)["used"])

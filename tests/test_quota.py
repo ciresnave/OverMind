@@ -33,6 +33,21 @@ GOOGLE_MINUTE = json.dumps({"error": {"code": 429, "details": [{"violations": [{
     "quotaId": "GenerateRequestsPerMinutePerProjectPerModel-FreeTier", "quotaValue": "10"}]}]}})
 OPENROUTER_DAY = json.dumps({"error": {"message": "Rate limit exceeded: free-models-per-day",
                                        "code": 429}})
+# Google's refusal for a model with NO free allowance (gemini-pro-latest,
+# 2026-09-17): the limit is only in the message; no violation has quotaValue.
+GOOGLE_NO_ALLOWANCE = json.dumps([{"error": {"code": 429, "message": (
+    "You exceeded your current quota.\n"
+    "* Quota exceeded for metric: generativelanguage.googleapis.com/"
+    "generate_content_free_tier_input_token_count, limit: 0, model: gemini-3.1-pro\n"
+    "* Quota exceeded for metric: generativelanguage.googleapis.com/"
+    "generate_content_free_tier_requests, limit: 0, model: gemini-3.1-pro\n"),
+    "details": [{"violations": [
+        {"quotaId": "GenerateContentInputTokensPerModelPerDay-FreeTier"},
+        {"quotaId": "GenerateRequestsPerDayPerProjectPerModel-FreeTier"}]}]}}])
+# A TOKEN cap listed before the REQUEST cap - the first quotaValue is the wrong one.
+GOOGLE_TOKENS_FIRST = json.dumps([{"error": {"code": 429, "details": [{"violations": [
+    {"quotaId": "GenerateContentInputTokensPerModelPerDay-FreeTier", "quotaValue": "250000"},
+    {"quotaId": "GenerateRequestsPerDayPerProjectPerModel-FreeTier", "quotaValue": "20"}]}]}}])
 
 
 def utc(*args):
@@ -77,6 +92,13 @@ class TestRecognition(unittest.TestCase):
         self.assertEqual(daily_limit_in(GOOGLE_MINUTE), (False, None),
                          "a per-minute refusal is not a daily verdict")
         self.assertEqual(daily_limit_in(""), (False, None))
+
+    def test_the_request_cap_not_the_first_number(self):
+        self.assertEqual(daily_limit_in(GOOGLE_TOKENS_FIRST), (True, 20),
+                         "a token cap listed first must not be read as the request cap")
+
+    def test_a_cap_stated_only_in_the_message(self):
+        self.assertEqual(daily_limit_in(GOOGLE_NO_ALLOWANCE), (True, 0))
 
 
 class TestReset(unittest.TestCase):
@@ -131,6 +153,15 @@ class TestBook(unittest.TestCase):
         self.assertFalse(self.book.blocked("google", "m"))
         self.assertEqual(self.book.used("google", "m"), 0)
         self.assertEqual(self.book.remaining("google", "m"), 20, "a learned cap describes the model")
+
+    def test_a_model_with_no_allowance_stays_blocked_after_the_reset(self):
+        """Both arms: cap 0 persists across the reset; cap 20 does not block."""
+        self.book.record_refusal("google", "pro", GOOGLE_NO_ALLOWANCE)
+        self.book.record_refusal("google", "flash", GOOGLE_DAY)
+        self.now[0] = utc(2026, 9, 18, 7)
+        self.assertTrue(self.book.blocked("google", "pro"))
+        self.assertEqual(self.book.remaining("google", "pro"), 0)
+        self.assertFalse(self.book.blocked("google", "flash"))
 
     def test_reading_stores_nothing(self):
         """Measured live: asking about a 58-model roster filled the book."""

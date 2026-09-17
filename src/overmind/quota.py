@@ -13,6 +13,12 @@ WHAT IS RECORDED, AND FROM WHERE:
     evidence is the 429 body: Google names a quota id containing `PerDay`;
     OpenRouter's free-model limit says "per-day". A per-MINUTE 429 is not a
     daily verdict and is never recorded as one - it clears in seconds.
+  · A whole PROVIDER is blocked when it says a MONTHLY credit is spent - a
+    different axis, because the credit is account-wide, not per model.
+    Measured 2026-09-17: Hugging Face returned HTTP 402 "You have depleted
+    your monthly included credits" after 3 of 10 identical calls succeeded -
+    not per-minute noise (it does not clear in seconds) and not per-model
+    (every model on the account is affected). Recorded under model `"*"`.
   · The CAP, when the body states it (`quotaValue`). ⚠️ UNKNOWN STAYS UNKNOWN:
     a model with no recorded cap has no known budget, never an unlimited one.
   · Requests made, per model, per quota day. A count this client made; it
@@ -39,11 +45,22 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
-__all__ = ["QuotaBook", "daily_limit_in", "next_reset", "default_path"]
+__all__ = ["QuotaBook", "daily_limit_in", "monthly_limit_in", "next_reset",
+          "next_month_reset", "default_path", "PROVIDER_WIDE"]
+
+#: The model key under which a PROVIDER-WIDE block is stored, since the account's
+#: credit is shared across every model - never a real model id, so it can never
+#: collide with one.
+PROVIDER_WIDE = "*"
 
 #: A 429 body that means the DAILY allowance is spent.
 _DAILY = re.compile(r"per[-_ ]?day", re.IGNORECASE)
 _QUOTA_VALUE = re.compile(r'"quotaValue"\s*:\s*"?(\d+)')
+#: ⚠️ ONE MEASURED PHRASE, NOT A GUESS AT A CLASS. Hugging Face's own wording,
+#: 2026-09-17. Widen this only against another provider's OWN measured text -
+#: "credit" alone would also match a token-cost line that says nothing about
+#: the account being blocked.
+_MONTHLY = re.compile(r"depleted your monthly included credits", re.IGNORECASE)
 
 #: Providers whose quota day ends at midnight Pacific; everything else, UTC.
 PACIFIC_RESET = frozenset({"google"})
@@ -90,6 +107,16 @@ def daily_limit_in(body: str) -> tuple[bool, int | None]:
     return True, None
 
 
+def monthly_limit_in(body: str) -> bool:
+    """Is this a MONTHLY, account-wide credit refusal (HTTP 402, not 429)?
+
+    Kept separate from `daily_limit_in` rather than folded in: a monthly
+    credit is spent by every model on the account together, so it is recorded
+    under `PROVIDER_WIDE`, not under whichever model happened to ask last.
+    """
+    return bool(body and _MONTHLY.search(body))
+
+
 def _nth_sunday(year: int, month: int, n: int) -> datetime:
     first = datetime(year, month, 1)
     offset = (6 - first.weekday()) % 7          # Monday=0 ... Sunday=6
@@ -122,6 +149,20 @@ def next_reset(provider: str, now: float) -> float:
         return boundary.timestamp()
     midnight = (utc + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
     return midnight.timestamp()
+
+
+def next_month_reset(now: float) -> float:
+    """Epoch seconds of the 1st of next month, UTC.
+
+    ⚠️ NOT A MEASURED RESET TIME. Hugging Face's 402 body names no reset date;
+    this is the ordinary meaning of "monthly", used only as an upper bound so a
+    provider-wide block cannot outlive a month it was never proven to hold for.
+    A block that lifts EARLY costs one wasted request, which re-blocks it; a
+    block that never lifts wastes every model on the account forever.
+    """
+    utc = datetime.fromtimestamp(now, tz=timezone.utc)
+    year, month = (utc.year + 1, 1) if utc.month == 12 else (utc.year, utc.month + 1)
+    return datetime(year, month, 1, tzinfo=timezone.utc).timestamp()
 
 
 def default_path() -> pathlib.Path:
@@ -158,10 +199,14 @@ class QuotaBook:
         now = self.clock()
         key = f"{provider}/{model}"
         entry = self._data.get(key)
+        # PROVIDER_WIDE resets on the CALENDAR MONTH, never at a daily
+        # boundary - the credit it stands for is not a per-day one.
+        reset = next_month_reset(now) if model == PROVIDER_WIDE else next_reset(provider, now)
         if entry is None or now >= entry.get("day_ends", 0):
-            # A new quota day: the count and any block start over; a learned
-            # cap is kept, because it describes the model, not the day.
-            entry = {"day_ends": next_reset(provider, now), "used": 0,
+            # A new quota period: the count and any block start over; a
+            # learned cap is kept, because it describes the model, not the
+            # period.
+            entry = {"day_ends": reset, "used": 0,
                      "blocked": False, "cap": (entry or {}).get("cap")}
             if create or key in self._data:
                 self._data[key] = entry
@@ -172,7 +217,13 @@ class QuotaBook:
         # ⚠️ A CAP OF 0 IS A FACT ABOUT THE MODEL, NOT THE DAY: it has no free
         # allowance, so a new day does not lift it. Measured on Google's Pro
         # models, refused on their first request with `limit: 0`.
-        return bool(entry["blocked"] or entry["cap"] == 0)
+        return bool(entry["blocked"] or entry["cap"] == 0
+                    or self.provider_blocked(provider))
+
+    def provider_blocked(self, provider: str) -> bool:
+        """Is the WHOLE provider spent for the month (an account-wide credit,
+        not any one model's daily allowance)?"""
+        return bool(self._entry(provider, PROVIDER_WIDE)["blocked"])
 
     def used(self, provider: str, model: str) -> int:
         return int(self._entry(provider, model)["used"])
@@ -208,6 +259,19 @@ class QuotaBook:
         self._save()
         return True
 
+    def record_monthly_refusal(self, provider: str, body: str) -> bool:
+        """Record a 402. True when it named a spent MONTHLY credit - the
+        whole provider is then blocked for every model, not just the one
+        that happened to ask. False leaves every model untouched, so a 402
+        for an unrelated reason (a real billing failure, say) does not
+        silently disable a provider forever on a signature it never matched.
+        """
+        if not monthly_limit_in(body):
+            return False
+        self._entry(provider, PROVIDER_WIDE, create=True)["blocked"] = True
+        self._save()
+        return True
+
     def snapshot(self) -> dict:
         return json.loads(json.dumps(self._data))
 
@@ -220,8 +284,12 @@ class QuotaBook:
                 continue
             provider, _, model = key.partition("/")
             entry = self._entry(provider, model)
-            left = self.remaining(provider, model)
             ends = datetime.fromtimestamp(entry["day_ends"], tz=timezone.utc)
+            if model == PROVIDER_WIDE:
+                lines.append(f"{key:60} {'BLOCKED (monthly credit)' if entry['blocked'] else 'ok'}  "
+                            f"resets {ends:%Y-%m-%d %H:%MZ}")
+                continue
+            left = self.remaining(provider, model)
             lines.append(f"{key:60} used {entry['used']:>3}  "
                          f"cap {entry['cap'] if entry['cap'] is not None else 'UNKNOWN':>7}  "
                          f"left {left if left is not None else 'UNKNOWN':>7}"

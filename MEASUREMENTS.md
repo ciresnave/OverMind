@@ -1890,3 +1890,29 @@ That puts §23's table in a new light: OpenRouter 50/day, Google 20/day for its 
 - Then **process creation failed host-wide**: `git` exited `3221225794` = `0xC0000142 STATUS_DLL_INIT_FAILED`. Every later run failed at worktree creation. It happened twice today, both times after a harness notice reading *"killed: system is running low on memory"*, while free RAM read 28 GiB. At the time the host ran 446 processes, including 61 `conhost` and 21 `OpenConsole`. **Desktop-heap exhaustion is the hypothesis; it is not proven.**
 - **Both harness "kills" stopped only the wrapper shell.** The Python benchmark kept running underneath, which is §5b's rule measured again: check the process table before concluding that the work died.
 - **All five local results were host errors, and they are discarded rather than recorded.** Retry plan: one model at a time, at a context capped low enough to stay in VRAM, once the throttled lanes have stood down.
+
+---
+
+## 29. ⏸️ LOCAL MODELS ON THE §27 BENCHMARK — partial, then STOPPED by direction
+
+**Observed 2026-09-17 on runner `610a050f` (after #37–#39), via `probe/p1_bench.py`.** Each model's context was capped at 16,384 tokens through an added Ollama tag (`PARAMETER num_ctx 16384`; the base model is untouched). Models ran one at a time on an RTX 4070 Laptop GPU (8 GB). Nothing was published. Both controls passed on every task.
+
+| model (16k context) | loaded / in VRAM | number-substring | timeout-escapes | glob-crosses-dirs | max-of-nothing | fixed |
+|---|---|---|---|---|---|---|
+| `qwen3.5-4b-agentic-coder` Q6_K | 3.8 / 3.8 GiB | NO_CHANGE (output cap) | NO_CHANGE | NO_CHANGE | ✅ PASS · 13 steps · 69 s | **1/4** |
+| `Qwen3.5-9B` Q4_K_M | 6.3 / 5.1 GiB | INCOMPLETE (repeated call) | NO_CHANGE | NO_CHANGE | NO_CHANGE | **0/4** |
+| `Qwen3.8-9B` Q4_K_M | — | ✅ PASS · 8 · 82 s (+13/−1) | NO_CHANGE (output cap) | INCOMPLETE | ✅ PASS · 7 · 45 s | **2/4** |
+| `qwen3:8b` | 7.3 / 5.9 GiB | NO_CHANGE (output cap), 1,491 s | NO_CHANGE (output cap), 831 s | NO_CHANGE, 1,565 s | — stopped | **0/3** |
+| `gemma-4-12B-agentic` Q3_K_M | — | — not run | | | | — |
+
+**For comparison, §27 on the free tiers:** Google `gemini-3.5-flash-lite` fixed 4/4, and every other provider 0.
+
+### What this shows, and what it does not
+
+- **Variance between identical runs is real.** An earlier run of the 4B coder, on the runner before #37–#39, fixed 2/4; this run fixed 1/4. Its earlier `number-substring` pass became an output-cap stop here. One run per cell is not a rate.
+- **#39 did its job:** on the earlier runner, the 4B coder's `glob-crosses-dirs` run replaced all 626 lines of `lanework.py` with a fragment. On this runner, the same task ended as NO_CHANGE with the file intact.
+- **The 16k cap probably truncated late steps.** Long runs reported up to ~171k prompt tokens over 16 steps, an average of ~10.7k a call, so the last calls likely exceeded 16,384. The transcript context mode grows every step; §25's ledger mode would keep it flat, and it is **unmeasured here.**
+- **Thinking models hit the 8,192-token output budget** repeatedly (`finish_reason='length'`).
+- **Partial offload is slow:** `qwen3:8b` took 14–26 minutes per task.
+
+**Stopped 2026-09-17 by CireSnave's direction: "For right now, we're solely working toward using free tiers only."** Local models, and paid tiers, are to be reconsidered once OverMind and Synapse are complete enough for their planned features. These rows are kept so that reconsideration starts from a measurement rather than a memory.

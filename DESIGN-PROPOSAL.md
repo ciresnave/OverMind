@@ -312,3 +312,41 @@ the message - Synapse's own recommendation, and consistent with never asking the
 what they may do. Wiring should wait for replay suppression and sealing to reach Synapse's `main`
 regardless, since a verified-but-replayable, verified-but-readable message is not yet a safe basis for
 one.
+
+### 7.2 Update, same day — an account-holder introduction app is planned, and where it does and does not help
+
+**CireSnave told me directly** that he and the Synapse lane have been designing a web app for
+introducing account holders (humans) to each other so the services they each control can be properly
+authenticated before authorizing anything, with a free public instance planned first on his
+ThinkersJournal.com. He asked whether this could help OverMind's model/provider authentication
+question. Checked against Synapse's own spec on their local `feat/replay-suppression` branch (§9,
+`docs/superpowers/specs/2026-09-17-replay-suppression-design.md`) and their direct answer, not taken
+on either source alone:
+
+- **What it mints.** Nothing in the message path itself. Two account holders each sign in with their
+  own OIDC provider; the app is the single registered client at each, holds no secrets, and is used
+  once, at introduction, exchanging **account public keys**. Both sides' local software shows the
+  other's key fingerprint, so a substituted key is visible. The durable artifact is an **agent
+  certificate**: the account key signs a statement binding an agent's signing/sealing key
+  fingerprints, a label, a validity window, **coarse named permissions**, and a serial - so a receiver
+  pins one key per account holder, not per agent. This is **slice f** in Synapse's plan (widened today
+  from bare key rotation, because rotation is a certificate re-signing), scheduled after slice e
+  (replay, in progress) and before TOFU discovery. The app itself is a separate, unbuilt project - not
+  part of Synapse or any one website - designed after slice f lands.
+- **What it does for a model provider.** Less than the analogy first suggests. OpenAI, Anthropic and
+  Google will not participate in this scheme, so nothing here can cryptographically vouch that a
+  remote endpoint *is* a given provider - that is what TLS and the provider's own API key already do,
+  and a certificate from this scheme adds nothing to it. What it *can* authenticate is **the local
+  side**: an OverMind adapter process for provider X becomes an agent under an account holder's
+  account key, carrying a certificate saying "this key may act as a model-provider adapter for X, with
+  these permissions." A peer authorizing that adapter to run inference is then trusting a **known
+  account holder's own agent**, not a claim about the remote provider. Provider attestation proper is
+  out of scope for this scheme; provider credentials stay in their own TLS/API-key channel, outside
+  the fabric.
+- **Status.** Decided in outline 2026-09-17, nothing built. Order: slice e (replay) is in progress now;
+  slice f (account keys + agent certificates + rotation/revocation) next; then TOFU discovery; then the
+  introduction app itself, its own project and repo. Treat this as **future work**, not something to
+  design `dispatch.py`/`lanework.py` wiring against yet - when slice f lands, it replaces §7.1's
+  hand-maintained "map verified id to a role in OverMind's own config" with "this agent's certificate,
+  signed by a pinned account key, carries permission P," without changing anything else in §7.1's
+  plan.

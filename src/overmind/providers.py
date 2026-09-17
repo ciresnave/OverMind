@@ -48,15 +48,18 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from typing import Any, Iterable, Mapping, Sequence
+
+from .quota import QuotaBook, daily_limit_in
 
 __all__ = [
     "Provider", "PROVIDERS", "ProviderClient", "ChatResult", "Usage", "ProviderError",
     "RateLimited", "NoUsableModel", "read_secret", "normalise_for_echo",
-    "select_models",
+    "select_models", "RoutedClient",
 ]
 
-USER_AGENT = "OverMind/0.1 (+https://github.com/ciresnave/OverMind)"
+USER_AGENT = "OverMind/0.2 (+https://github.com/ciresnave/OverMind)"
 
 
 class ProviderError(RuntimeError):
@@ -347,13 +350,15 @@ class ProviderClient:
 
     def __init__(self, provider: str | Provider, *, timeout: float = 90.0,
                  max_tokens: int = 512, model: str | None = None,
-                 opener: Any | None = None) -> None:
+                 opener: Any | None = None, quota: QuotaBook | None = None) -> None:
         self.provider = PROVIDERS[provider] if isinstance(provider, str) else provider
         self.timeout = timeout
         self.max_tokens = max_tokens
         self.pinned_model = model
         self._roster: list[str] | None = None
         self._known_bad: set[str] = set()
+        #: Daily free-tier allowances, shared across runs. None = not tracked.
+        self.quota = quota
         # injectable purely so tests need no network
         self._open = opener or self._urlopen
 
@@ -421,9 +426,17 @@ class ProviderClient:
     def candidates(self, limit: int = 4) -> list[str]:
         if self.pinned_model:
             return [self.pinned_model]
-        picked = select_models(self.roster(), self.provider.prefer, limit=limit)
+        roster = self.roster()
+        if self.quota is not None:
+            # ⚠️ FILTER BEFORE SELECTING, so an exhausted model does not take a
+            # slot that a model with allowance left could have had.
+            roster = [m for m in roster
+                      if not self.quota.blocked(self.provider.key, m)]
+        picked = select_models(roster, self.provider.prefer, limit=limit)
         for extra in self.provider.fallback_models:
-            if extra not in picked:
+            # ⚠️ The fallbacks too: appending them unfiltered handed a spent
+            # model back the slot the roster filter had just taken from it.
+            if extra not in picked and extra in roster:
                 picked.append(extra)
         return [m for m in picked if m not in self._known_bad][:limit + 2]
 
@@ -451,6 +464,9 @@ class ProviderClient:
                             for m in messages]
         attempts: list[tuple[str, str]] = []
         for model in self.candidates():
+            if self.quota is not None and self.quota.blocked(self.provider.key, model):
+                attempts.append((model, "daily quota spent (recorded)"))
+                continue
             payload: dict[str, Any] = {
                 "model": model,
                 "messages": payload_messages,
@@ -464,9 +480,19 @@ class ProviderClient:
 
             for attempt in range(retries_on_429 + 1):
                 started = time.time()
+                if self.quota is not None:
+                    self.quota.record_request(self.provider.key, model)
                 try:
                     body = self._request("/chat/completions", payload)
                 except RateLimited as exc:
+                    # ⚠️ A DAILY REFUSAL IS NOT RETRIED. Waiting two seconds does
+                    # not bring back a day's allowance, and each retry is
+                    # another request against a key that has none left.
+                    daily = (self.quota.record_refusal(self.provider.key, model, exc.body)
+                             if self.quota is not None else daily_limit_in(exc.body)[0])
+                    if daily:
+                        attempts.append((model, "daily quota spent"))
+                        break
                     if attempt < retries_on_429:
                         time.sleep(2 ** attempt)
                         continue
@@ -493,6 +519,37 @@ class ProviderClient:
                     finish_reason=choices[0].get("finish_reason"),
                     raw=body,
                 )
+        raise NoUsableModel(self.provider.key, attempts)
+
+
+class RoutedClient:
+    """Several providers behind one `chat`, tried in order.
+
+    ⚠️ ONE FREE TIER IS A HANDFUL OF TASKS A DAY (MEASUREMENTS §27). Routing
+    across providers is how their allowances add up, and each client's
+    QuotaBook keeps a spent provider from being asked again today.
+    """
+
+    def __init__(self, clients: Sequence[ProviderClient]) -> None:
+        if not clients:
+            raise ValueError("RoutedClient needs at least one client")
+        self.clients = list(clients)
+        # Attribution for a run that never reached a model.
+        self.provider = SimpleNamespace(
+            key="+".join(c.provider.key for c in self.clients))
+        self.pinned_model = None
+
+    def chat(self, messages: Sequence[Mapping[str, Any]], **kwargs: Any) -> ChatResult:
+        attempts: list[tuple[str, str]] = []
+        for client in self.clients:
+            try:
+                return client.chat(messages, **kwargs)
+            except NoUsableModel as exc:
+                attempts.extend((f"{exc.provider}/{m}", why) for m, why in exc.attempts)
+            except ProviderError as exc:
+                # A configuration error (a missing account id) skips that
+                # provider; it must not stop the others from being asked.
+                attempts.append((exc.provider, f"not usable: {exc}"[:200]))
         raise NoUsableModel(self.provider.key, attempts)
 
 

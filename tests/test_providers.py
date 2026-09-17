@@ -15,8 +15,8 @@ import urllib.error
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from overmind.providers import (  # noqa: E402
-    NoUsableModel, Provider, ProviderClient, RateLimited, Usage, normalise_for_echo,
-    select_models,
+    PROVIDERS, NoUsableModel, Provider, ProviderClient, RateLimited, Usage,
+    normalise_for_echo, select_models,
 )
 
 
@@ -84,6 +84,42 @@ class TestEchoNormalisation(unittest.TestCase):
                      {"role": "tool", "tool_call_id": "1", "name": "f", "content": "r"}])
         sent = t.calls[-1]["payload"]["messages"]
         self.assertEqual(sent[1]["content"], "", "content:null was echoed back verbatim")
+
+
+class TestMistralAndHuggingFace(unittest.TestCase):
+    """§12 continued, 2026-09-17: two more free-tier providers, measured live
+    (verified separately, outside the suite - no network here) before wiring.
+
+    ⚠️ NOT EVERY MODEL ON A PAID PROVIDER'S ROSTER IS FREE. `codestral-latest`
+    and `mistral-code-latest` answered every call measured; `mistral-medium-
+    latest` and `mistral-small-latest` 429'd on every call in the same run,
+    including after a pause - a per-model gate, not a transient limit. The
+    control below is what proves `prefer` encodes that: a roster carrying
+    BOTH classes must pick a known-free model first."""
+
+    def test_mistral_prefers_the_known_free_models(self):
+        roster = ["mistral-medium-latest", "mistral-small-latest",
+                  "codestral-latest", "mistral-code-latest"]
+        picked = select_models(roster, PROVIDERS["mistral"].prefer)
+        self.assertEqual(picked[0], "codestral-latest")
+        self.assertNotIn("mistral-medium-latest", picked[:2])
+
+    def test_huggingface_prefers_coder_models(self):
+        roster = ["deepseek-ai/DeepSeek-R1", "meta-llama/Llama-3.1-8B",
+                  "Qwen/Qwen3-Coder-480B-A35B-Instruct", "deepseek-ai/DeepSeek-V3.2"]
+        picked = select_models(roster, PROVIDERS["huggingface"].prefer)
+        self.assertEqual(picked[0], "Qwen/Qwen3-Coder-480B-A35B-Instruct")
+
+    def test_the_secret_names_are_distinct_from_every_other_provider(self):
+        names = [p.secret_name for p in PROVIDERS.values()]
+        self.assertEqual(len(names), len(set(names)), "a shared secret name would use one key for two providers")
+
+    def test_mistral_and_huggingface_are_registered(self):
+        for key, base in (("mistral", "https://api.mistral.ai/v1"),
+                          ("huggingface", "https://router.huggingface.co/v1")):
+            self.assertEqual(PROVIDERS[key].base_url, base)
+            self.assertTrue(PROVIDERS[key].fallback_models,
+                            f"{key} needs a fallback for when the roster read fails")
 
 
 class TestModelSelection(unittest.TestCase):

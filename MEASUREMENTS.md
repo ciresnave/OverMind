@@ -1866,3 +1866,27 @@ That puts §23's table in a new light: OpenRouter 50/day, Google 20/day for its 
 - **One run per cell.** 4/4 against 0/4 is a strong separation, but not a rate.
 - **The benchmark was killed once by host memory pressure (other lanes' builds)**, and its Python process kept running after the harness said "killed". Two runs that followed failed to start processes at all (`STATUS_DLL_INIT_FAILED`); they measure the host, not a model, and are excluded.
 - **Groq was dropped after two structural failures**: its per-minute token cap, then HTTP 413 for the request size. It is not a candidate for this runner as configured.
+
+---
+
+## 28. 🟡 LOCAL MODELS — 5 of 6 make a valid tool call; the regression benchmark was blocked by the host, not measured
+
+**Observed 2026-09-17 05:3xZ–06:2xZ on this machine: RTX 4070 Laptop GPU with 8 GB, 63 GB RAM, Ollama with no server overrides.** Verdict off the tool side, as in §12: a real `tool_calls` entry naming the offered tool, with the right argument. One call per model, pinned, with a 400-second allowance for a cold load.
+
+| model | valid tool call | wall, cold |
+|---|---|---|
+| `qwen3:8b` | ✅ | 75 s |
+| `Qwen3.8-9B` Q4_K_M | ✅ | 62 s |
+| `Qwen3.5-9B` Q4_K_M | ✅ | 54 s |
+| `qwen3.5-4b-agentic-coder` Q6_K | ✅ | 32 s |
+| `gemma-4-12B-agentic` Q3_K_M | ✅ | 98 s |
+| `qwen2.5-coder:7b` | ❌ wrote the call as JSON in `content` (the §8.2 shape) | 40 s |
+
+**No silent truncation at 20k tokens:** a 20,026-token prompt to `qwen3:8b` came back with `prompt_tokens = 20026`. The server reported the loaded model's context as 40,960, so §9's halving did not apply at this size. ⚠️ **A THINKING MODEL SPENDS ITS OUTPUT BUDGET BEFORE IT ANSWERS**: with `max_tokens = 64` both replies were empty. The benchmark therefore gives local models 8,192.
+
+### 🔴 The §27 benchmark on local models did NOT produce a measurement
+
+- `qwen3:8b` at a 40,960-token context loaded 10.8 GiB, 5.9 GiB of it in VRAM, and took **1,693 s for three steps**. That is partial offload, not the model's own speed.
+- Then **process creation failed host-wide**: `git` exited `3221225794` = `0xC0000142 STATUS_DLL_INIT_FAILED`. Every later run failed at worktree creation. It happened twice today, both times after a harness notice reading *"killed: system is running low on memory"*, while free RAM read 28 GiB. At the time the host ran 446 processes, including 61 `conhost` and 21 `OpenConsole`. **Desktop-heap exhaustion is the hypothesis; it is not proven.**
+- **Both harness "kills" stopped only the wrapper shell.** The Python benchmark kept running underneath, which is §5b's rule measured again: check the process table before concluding that the work died.
+- **All five local results were host errors, and they are discarded rather than recorded.** Retry plan: one model at a time, at a context capped low enough to stay in VRAM, once the throttled lanes have stood down.

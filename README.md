@@ -21,6 +21,9 @@ imply.
 - **`src/overmind/dispatch.py`** — being dispatched to. An inbound message becomes a task, runs
   through the gate, and the answer goes back. ⚠️ Inbound content is **untrusted** — another
   agent's text becoming this model's instructions — and the gate is what makes accepting it safe.
+- **`src/overmind/lanework.py`** — It runs one piece of a lane's work with a non-Claude model in a
+  fresh git worktree. The harness runs the acceptance check itself, and opens a pull request only
+  if that check passes.
 
 Why it exists, in one measured sentence: **a model that states a prohibition perfectly violates it
 4 to 7 times out of 8 when its reasoning is disabled** (`MEASUREMENTS.md` §11, §16) — and

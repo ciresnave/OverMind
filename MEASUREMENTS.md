@@ -1993,3 +1993,15 @@ by it this run, but the mechanism can't currently tell the two apart if one of t
   different model, different provider account, not a comparable run) only in outcome, not in method.
 - **One run per cell, as in §27/§30. Not a rate.** A single timeout on `glm-5.3` and a single blocked
   cell on the OpenRouter model each need a rerun, not a verdict, before either counts against the model.
+
+### §32 control run — glm-5.3's `number-substring` timeout, rerun
+
+**Observed 2026-09-17, same branch/task/pin as above, one more run.** `nvidia/z-ai/glm-5.3` timed
+out again on `number-substring`, stopping at the same step (4 of a possible 16), 259 s this time
+against 224 s the first time - both under the client's 180 s per-request timeout, so the model itself
+is holding a single request open past that bound, not the harness's overall budget. **Two independent
+runs landing on the identical step is no longer a one-off transport blip** - call this model's
+`number-substring` result a reproducible timeout, not yet resolved into "the model can't solve it" vs
+"this model's fourth call on this task is reliably slow enough to trip a 180 s client timeout." Raising
+the client timeout for this model, not assuming the task is beyond it, is the next thing that would
+tell the two apart - not done here.

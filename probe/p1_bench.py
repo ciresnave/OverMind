@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 import os
 import pathlib
+import re
 import subprocess
 import sys
 import tempfile
@@ -33,7 +34,7 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
 from overmind import lanework as lw                                      # noqa: E402
-from overmind.providers import ChatResult, Usage                         # noqa: E402
+from overmind.providers import ChatResult, ProviderClient, Usage         # noqa: E402
 
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -92,12 +93,26 @@ def bench_branch(name: str, path: str, good: str, bad: str) -> str:
 
 
 def task_for(name: str, path: str, test: str, why: str, base: str, provider: str) -> lw.Task:
+    """`provider` is a key, or `key=model` to pin one model (local runs)."""
+    key, _, model = provider.partition("=")
     goal = (f"This command fails: `python -m unittest {test}` (run it with the run_check tool). "
             f"The bug is in {path}; the tests are correct and you may not change them. "
             f"Find the bug and fix it with the smallest possible change.")
-    return lw.Task(id=f"p1-{name}-{provider}", repo=str(ROOT), goal=goal, base=base, fetch=False,
-                   check=[PY, "-m", "unittest", test], writable=[path], provider=provider,
-                   max_steps=16, check_timeout_s=300)
+    tag = re.sub(r"[^A-Za-z0-9._-]", "-", provider)[-40:]
+    return lw.Task(id=f"p1-{name}-{tag}", repo=str(ROOT), goal=goal, base=base, fetch=False,
+                   check=[PY, "-m", "unittest", test], writable=[path], provider=key,
+                   model=model or None, max_steps=16, check_timeout_s=300,
+                   check_name=f"python -m unittest {test}")
+
+
+def client_for(task: lw.Task) -> ProviderClient:
+    # ⚠️ A local model can spend minutes loading before its first token, so
+    # the runner's 180 s default would score a cold start as a failure.
+    # ⚠️ And a thinking model spends its output budget before it answers:
+    # NVIDIA's gpt-oss-20b was cut off at 4,096 in §27.
+    local = task.provider == "ollama"
+    return ProviderClient(task.provider, timeout=900.0 if local else 180.0,
+                          max_tokens=8192 if local else 4096, model=task.model)
 
 
 class Scripted:
@@ -143,7 +158,8 @@ def main(argv: list[str]) -> int:
                 key = f"{name}/{prov}"
                 if key in results:
                     continue
-                r = lw.run_task(task_for(name, path, test, why, branch, prov))
+                task = task_for(name, path, test, why, branch, prov)
+                r = lw.run_task(task, client_for(task))
                 results[key] = {"main": main_sha, "task": name, "regression": why,
                                 **json.loads(r.to_json())}
                 print(f"  {prov:11} {r.verdict:13} model={r.model} steps={r.steps} "

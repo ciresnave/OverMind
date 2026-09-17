@@ -256,6 +256,22 @@ class TestWriting(RepoCase):
         self.assertIn("bare CR", r.ledger_digest)
         self.assertEqual(r.verdict, "NO_CHANGE")
 
+    def test_search_takes_the_regex_a_model_writes(self):
+        """🔴 A local model searched for `name\\(` and git grep's default basic
+        regex read `\\(` as a group opener: "Unmatched ( or \\(".
+
+        Both arms: an escaped paren finds the call, and a pattern that is
+        invalid in extended syntax is still REPORTED, not read as no match."""
+        (self.repo / "code.py").write_bytes(b"def main():\n    top = max(values)\n")
+        git(self.repo, "add", "code.py")
+        git(self.repo, "commit", "-q", "-m", "code")
+        r = self.run_it(call(("search", {"pattern": "max\\(values\\)"}),
+                             ("search", {"pattern": "max(values"})),
+                        say("done"))
+        self.assertIn("code.py:2:", r.ledger_digest)
+        self.assertIn("search failed", r.ledger_digest,
+                      "an unbalanced group must be reported, not called no match")
+
     def test_a_non_unique_replacement_is_refused(self):
         (self.repo / "b.txt").write_bytes(b"x\nx\n")
         git(self.repo, "add", "b.txt")

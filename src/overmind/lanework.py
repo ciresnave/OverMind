@@ -104,6 +104,9 @@ class Task:
     max_steps: int = 20
     pr_title: str | None = None
     pr_body: str = ""
+    #: How the check is named anywhere PUBLIC - the commit message, the PR
+    #: body, and the brief sent to the provider. Defaults to `check_label`.
+    check_name: str | None = None
 
     @classmethod
     def from_json(cls, data: Mapping[str, Any]) -> "Task":
@@ -421,6 +424,26 @@ def claims_done(text: str) -> bool:
     return claims_success(text) or bool(_CODE_CLAIM.search(text))
 
 
+def _public_arg(arg: str) -> str:
+    if re.match(r"^[A-Za-z]:[\\/]", arg) or arg.startswith(("/", "\\")):
+        return re.split(r"[\\/]", arg.rstrip("\\/"))[-1]
+    return arg
+
+
+def check_label(task: Task) -> str:
+    """The check as it may be shown publicly.
+
+    🔴 NOT THE ARGV. The first agent-made PR (OverMind#31) wrote the check's
+    absolute paths - the interpreter and a scratch directory, username and
+    all - into public history, because the commit message quoted the command
+    verbatim. Caught at the gate. An absolute path is reduced to its last
+    component; `check_name` overrides the whole label.
+    """
+    if task.check_name:
+        return task.check_name
+    return " ".join(_public_arg(a) for a in task.check)
+
+
 def _verdict(check_exit: int, changed: list[str], stop_reason: str) -> str:
     if not changed:
         return "NO_CHANGE"
@@ -470,8 +493,9 @@ def run_task(task: Task, client: Any = None, *, publish: bool = False, keep: boo
         executor = GatedExecutor(gate, ws.tools())
         client = client or ProviderClient(task.provider, timeout=180.0, max_tokens=4096,
                                           model=task.model)
+        label = check_label(task)
         brief = (f"GOAL:\n{task.goal}\n\nFILES YOU MAY WRITE (globs): {task.writable}\n"
-                 f"ACCEPTANCE CHECK (run with the run_check tool): {' '.join(task.check)}")
+                 f"ACCEPTANCE CHECK (run with the run_check tool): {label}")
         run = run_agent(client, executor, schemas(), brief, system=SYSTEM,
                         max_steps=task.max_steps, offer="permitted")
 
@@ -500,12 +524,12 @@ def run_task(task: Task, client: Any = None, *, publish: bool = False, keep: boo
             _git(root, "-c", f"user.name={AGENT_NAME}", "-c", f"user.email={AGENT_EMAIL}",
                  "commit", "-q", "-m", task.pr_title or f"agent: {task.id}", "-m",
                  f"Made by {run.provider}/{run.model} through OverMind; the harness ran "
-                 f"`{' '.join(task.check)}` itself and it exited 0.")
+                 f"`{label}` itself and it exited 0.")
             _git(root, "push", "-q", "origin", branch)
             body = (f"{task.pr_body}\n\n---\n**Made by a non-Claude model through OverMind.**\n\n"
                     f"- model: `{run.provider}/{run.model}` · steps {run.steps} · "
                     f"refused calls {run.denied_count}\n"
-                    f"- the harness ran `{' '.join(task.check)}` itself: exit {check_exit}\n"
+                    f"- the harness ran `{label}` itself: exit {check_exit}\n"
                     f"- changed (added removed path): {'; '.join(result.diff_numstat)}\n")
             base_branch = task.base.split("/", 1)[1] if task.base.startswith("origin/") else task.base
             result.branch = branch

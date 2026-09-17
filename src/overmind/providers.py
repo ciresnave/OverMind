@@ -38,6 +38,13 @@ WHAT WAS MEASURED, AND WHAT EACH FACT COSTS IF IGNORED:
   · ⚠️ KEYS LIVE UNDER NON-CONVENTIONAL NAMES, AND A LONG-RUNNING PROCESS DOES
     NOT INHERIT ONES SET AFTER IT STARTED. The environment a process holds is a
     snapshot, not a reading - so the registry is consulted first on Windows.
+
+  · ⚠️ NOT EVERY MODEL ON A PAID PROVIDER'S ROSTER IS FREE. Measured 2026-09-17:
+    Mistral's `codestral-latest` and `mistral-code-latest` answer; `mistral-
+    medium-latest` and `mistral-small-latest` 429 on every call, including
+    after a pause, while the first two keep answering in the same run - a
+    per-model gate, not a transient rate limit. `prefer` is ordered to try the
+    known-free models first.
 """
 
 from __future__ import annotations
@@ -201,6 +208,30 @@ PROVIDERS: dict[str, Provider] = {
         secret_name="OLLAMA_API_KEY",   # ignored by Ollama; kept for shape
         prefer=("qwen3", "llama3.2"),
         fallback_models=("qwen3:8b", "llama3.2:3b"),
+    ),
+    "mistral": Provider(
+        key="mistral",
+        base_url="https://api.mistral.ai/v1",
+        secret_name="MISTRAL_API_TOKEN",
+        # ⚠️ codestral / mistral-code answered every call measured 2026-09-17,
+        # with headers showing 125 req/min and 625,000 tokens/min - well above
+        # every other free tier measured. mistral-medium/-small 429 on every
+        # call; excluded from `prefer` so they are never tried first.
+        prefer=("codestral", "mistral-code"),
+        fallback_models=("codestral-latest", "mistral-code-latest"),
+    ),
+    "huggingface": Provider(
+        key="huggingface",
+        base_url="https://router.huggingface.co/v1",
+        secret_name="HUGGINGFACE_API_TOKEN",
+        # ⚠️ Qwen2.5-Coder-32B-Instruct 400s ("UNSUPPORTED_OPENAI_PARAMS") on
+        # this router; Qwen3-Coder-480B and DeepSeek-V3.2 answered, measured
+        # 2026-09-17. Free account, cannot be billed (`canPay: false`); the
+        # account-wide monthly credit is the limit, not a per-model daily one -
+        # UNKNOWN to this client, since it has no body shape of its own yet.
+        prefer=("qwen3-coder", "deepseek-v3"),
+        fallback_models=("Qwen/Qwen3-Coder-480B-A35B-Instruct",
+                         "deepseek-ai/DeepSeek-V3.2"),
     ),
 }
 

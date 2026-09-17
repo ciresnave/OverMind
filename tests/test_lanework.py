@@ -170,6 +170,20 @@ class TestConfinement(RepoCase):
         self.assertEqual(r.changed_files, ["a.txt"])
         self.assertEqual((self.repo / "Cargo.toml").read_bytes(), b'version = "0.1.0"\n')
 
+    def test_ci_and_tool_config_are_refused_even_when_declared_writable(self):
+        """⚠️ An agent branch runs its workflows with the repository's secrets.
+        `writable=["**"]` is the most permissive declaration there is, and the
+        control write in the same run proves it really is that permissive."""
+        r = self.run_it(call(("write_file", {"path": ".github/workflows/ci.yml", "content": "x: 1\n"}),
+                             ("write_file", {"path": ".GitHub/evil.yml", "content": "x: 1\n"}),
+                             ("write_file", {"path": "sub/.cargo/config.toml", "content": "x\n"}),
+                             ("write_file", {"path": ".gitattributes", "content": "* -text\n"}),
+                             ("write_file", {"path": "a.txt", "content": "fixed\n"})),
+                        say("done"), writable=["**"])
+        self.assertEqual(r.denied_calls, 4, r.ledger_digest)
+        self.assertEqual(r.changed_files, ["a.txt"])
+        self.assertEqual(r.verdict, "PASS")
+
     def test_escapes_and_dot_git_are_refused(self):
         r = self.run_it(call(("read_file", {"path": "../outside.txt"}),
                              ("read_file", {"path": ".git/config"}),

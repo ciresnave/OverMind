@@ -240,6 +240,9 @@ class WorkspaceConfined:
     """Every path inside the worktree; every WRITE inside `writable`."""
     root: pathlib.Path
     writable: Sequence[str]
+    #: Paths tracked at the task's base, casefolded. `write_file` may not
+    #: replace any of them.
+    tracked: frozenset[str] = frozenset()
     name: str = "workspace-confined"
 
     def applies_to(self, call: ToolCall) -> bool:
@@ -265,6 +268,16 @@ class WorkspaceConfined:
                 return Decision.deny(
                     f"{rel} is not writable for this task; declared writable: "
                     f"{list(self.writable)}", self.name)
+            # ⚠️ A TRACKED FILE IS CHANGED BY EXACT REPLACEMENT, NEVER
+            # REWRITTEN WHOLE. Measured twice: a whole-file rewrite dropped
+            # a README's final newline (§26), and a local model replaced all
+            # 626 lines of lanework.py with a 7-line fragment. The prompt
+            # already said to use replace_in_file; a rule in a prompt is a
+            # suggestion.
+            if call.name == "write_file" and rel.casefold() in self.tracked:
+                return Decision.deny(
+                    f"{rel} already exists: change it with replace_in_file. "
+                    f"write_file only creates new files", self.name)
         return Decision.allow("inside the workspace", self.name)
 
 
@@ -416,7 +429,8 @@ def schemas() -> list[dict[str, Any]]:
         fn("search", "Search tracked files for an extended regular expression "
                      "(git grep -E; escape a literal paren as \\( ).",
            {"pattern": s, "path": s}, ("pattern",)),
-        fn("write_file", "Replace a file's entire content. Only paths the task declares writable.",
+        fn("write_file", "Create a NEW file. An existing file must be changed with "
+                         "replace_in_file. Only paths the task declares writable.",
            {"path": s, "content": s}, ("path", "content")),
         fn("replace_in_file", "Replace one exact, unique occurrence of `old` with `new`.",
            {"path": s, "old": s, "new": s}, ("path", "old", "new")),
@@ -541,7 +555,9 @@ def run_task(task: Task, client: Any = None, *, publish: bool = False, keep: boo
         _git(repo, "worktree", "add", "-q", "--detach", str(root), task.base)
         _git(root, "switch", "-q", "-c", branch)
         ws = Workspace(root, task)
-        gate = Gate([WorkspaceConfined(root, task.writable),
+        tracked = frozenset(n.casefold() for n in
+                            _git(root, "ls-files", "-z").split("\0") if n)
+        gate = Gate([WorkspaceConfined(root, task.writable, tracked),
                      DenyUnlessDeclared(reversible=frozenset(TOOL_NAMES))],
                     facts=StaticFacts(), ledger=Ledger())
         executor = GatedExecutor(gate, ws.tools())

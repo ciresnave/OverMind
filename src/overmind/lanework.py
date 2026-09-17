@@ -71,6 +71,31 @@ __all__ = ["Task", "LaneResult", "WorkspaceConfined", "run_task", "main"]
 #: `DenyUnlessDeclared`, whatever the model asks for.
 READ_TOOLS = ("list_files", "read_file", "search")
 WRITE_TOOLS = ("write_file", "replace_in_file")
+
+#: Paths no task may write, whatever `writable` says. Matched on ANY path
+#: segment, case-insensitively.
+#:
+#: ⚠️ AN AGENT BRANCH IS PUSHED TO THE SAME REPOSITORY, SO ITS WORKFLOWS RUN
+#: WITH THAT REPOSITORY'S SECRETS (raised by the PM at the P0 gate). A task
+#: that mis-declares `writable` - `**`, say - must still not be able to edit
+#: CI. The rest are the same hazard by other routes: `.cargo/config.toml` can
+#: replace the linker or the test runner, so it reaches the harness's own
+#: check; editor and devcontainer settings run commands on whoever opens the
+#: tree; `.gitattributes` and `.gitmodules` change what git itself does.
+PROTECTED = frozenset(s.lower() for s in (
+    ".github", ".gitlab-ci.yml", ".gitlab", ".circleci", ".travis.yml", ".buildkite",
+    "azure-pipelines.yml", "Jenkinsfile", ".woodpecker", ".drone.yml",
+    ".cargo", ".pre-commit-config.yaml", ".husky",
+    ".vscode", ".idea", ".devcontainer",
+    ".gitattributes", ".gitmodules",
+))
+
+
+def protected_segment(rel: str) -> str | None:
+    for seg in rel.replace("\\", "/").split("/"):
+        if seg.lower() in PROTECTED:
+            return seg
+    return None
 TOOL_NAMES = READ_TOOLS + WRITE_TOOLS + ("run_check",)
 
 #: Tool output is truncated to this many characters. ⚠️ Groq's free tier
@@ -228,6 +253,11 @@ class WorkspaceConfined:
             return Decision.deny(str(exc), self.name)
         if call.name in WRITE_TOOLS:
             rel = target.relative_to(self.root.resolve()).as_posix()
+            hit = protected_segment(rel)
+            if hit:
+                return Decision.deny(
+                    f"{rel} is under {hit!r}, which no task may write, whatever it "
+                    f"declares writable", self.name)
             if not any(glob_match(rel, p) for p in self.writable):
                 return Decision.deny(
                     f"{rel} is not writable for this task; declared writable: "

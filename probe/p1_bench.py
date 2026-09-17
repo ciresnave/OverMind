@@ -35,6 +35,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from overmind import lanework as lw                                      # noqa: E402
 from overmind.providers import ChatResult, ProviderClient, Usage         # noqa: E402
+from overmind.quota import QuotaBook, default_path                        # noqa: E402
 
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -112,7 +113,8 @@ def client_for(task: lw.Task) -> ProviderClient:
     # NVIDIA's gpt-oss-20b was cut off at 4,096 in §27.
     local = task.provider == "ollama"
     return ProviderClient(task.provider, timeout=900.0 if local else 180.0,
-                          max_tokens=8192 if local else 4096, model=task.model)
+                          max_tokens=8192 if local else 4096, model=task.model,
+                          quota=None if local else QuotaBook(path=default_path()))
 
 
 class Scripted:
@@ -142,7 +144,12 @@ def main(argv: list[str]) -> int:
     main_sha = git("rev-parse", "--short=8", "origin/main")
     branches = []
     try:
+        # P1_TASKS=name,name limits the run - a free tier's daily allowance
+        # covers about two tasks per model (MEASUREMENTS §27).
+        wanted = [n for n in os.environ.get("P1_TASKS", "").split(",") if n]
         for name, path, good, bad, test, why in TASKS:
+            if wanted and name not in wanted:
+                continue
             branch = bench_branch(name, path, good, bad)
             branches.append(branch)
             null = lw.run_task(task_for(name, path, test, why, branch, "control"), Scripted([]))

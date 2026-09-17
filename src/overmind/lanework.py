@@ -35,8 +35,11 @@ THE SHAPE, AND WHY EACH PART IS WHERE IT IS:
      narrow is the other half of that control - a task that lets the model
      edit build scripts or tests has handed it code execution on this host.
 
-Result verdicts: PASS · CHECK_FAILED · NO_CHANGE · ERROR. A PR is opened only
-on PASS and only with `--publish`.
+Result verdicts: PASS · CHECK_FAILED · NO_CHANGE · INCOMPLETE · ERROR. A PR is
+opened only on PASS and only with `--publish`.
+
+`provider` may name several providers, comma-separated; they are tried in order,
+and every client shares one per-user quota book (`python -m overmind.quota`).
 """
 
 from __future__ import annotations
@@ -63,7 +66,8 @@ from .gate import (
     StaticFacts, ToolCall,
 )
 from .outcome import claims_success
-from .providers import ProviderClient
+from .providers import PROVIDERS, ProviderClient, RoutedClient
+from .quota import QuotaBook, default_path
 
 __all__ = ["Task", "LaneResult", "WorkspaceConfined", "run_task", "main"]
 
@@ -96,6 +100,8 @@ def protected_segment(rel: str) -> str | None:
         if seg.lower() in PROTECTED:
             return seg
     return None
+
+
 TOOL_NAMES = READ_TOOLS + WRITE_TOOLS + ("run_check",)
 
 #: Tool output is truncated to this many characters. ⚠️ Groq's free tier
@@ -150,7 +156,19 @@ class Task:
             raise ValueError("`check` must be a non-empty argv list of strings")
         if not re.fullmatch(r"[A-Za-z0-9._-]{1,60}", task.id):
             raise ValueError("`id` must be 1-60 chars of [A-Za-z0-9._-]")
+        keys = task.provider_keys()
+        unknown = [k for k in keys if k not in PROVIDERS]
+        if not keys or unknown:
+            raise ValueError(f"`provider` must name known providers; unknown: {unknown}")
+        if task.model and len(keys) > 1:
+            # A model id belongs to one provider; pinning it across a route
+            # would send it to providers that have never heard of it.
+            raise ValueError("`model` pins one provider; it cannot pin a route")
         return task
+
+    def provider_keys(self) -> list[str]:
+        """`provider` is one key, or several separated by commas, tried in order."""
+        return [k.strip() for k in self.provider.split(",") if k.strip()]
 
 
 @dataclass
@@ -540,6 +558,20 @@ def gh_pr_create(root: pathlib.Path, branch: str, base: str, title: str, body: s
     return proc.stdout.decode("utf-8", "replace").strip().splitlines()[-1]
 
 
+def build_client(task: Task, quota: QuotaBook | None = None) -> Any:
+    """One client for one provider, or a RoutedClient across several.
+
+    ⚠️ EVERY CLIENT SHARES ONE QUOTA BOOK, kept per user rather than per run,
+    so a model whose day is spent is not asked again by the next task - the
+    free tiers allow a handful of tasks a day (MEASUREMENTS §27).
+    """
+    quota = quota if quota is not None else QuotaBook(path=default_path())
+    clients = [ProviderClient(key, timeout=180.0, max_tokens=4096, model=task.model,
+                              quota=quota)
+               for key in task.provider_keys()]
+    return clients[0] if len(clients) == 1 else RoutedClient(clients)
+
+
 def run_task(task: Task, client: Any = None, *, publish: bool = False, keep: bool = False,
              pr_creator: Callable[..., str] = gh_pr_create) -> LaneResult:
     started = time.time()
@@ -561,8 +593,7 @@ def run_task(task: Task, client: Any = None, *, publish: bool = False, keep: boo
                      DenyUnlessDeclared(reversible=frozenset(TOOL_NAMES))],
                     facts=StaticFacts(), ledger=Ledger())
         executor = GatedExecutor(gate, ws.tools())
-        client = client or ProviderClient(task.provider, timeout=180.0, max_tokens=4096,
-                                          model=task.model)
+        client = client or build_client(task)
         label = check_label(task)
         brief = (f"GOAL:\n{task.goal}\n\nFILES YOU MAY WRITE (globs): {task.writable}\n"
                  f"ACCEPTANCE CHECK (run with the run_check tool): {label}")

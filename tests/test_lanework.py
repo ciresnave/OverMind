@@ -444,6 +444,46 @@ class TestPieces(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertFalse(lw.claims_done(text))
 
+    def test_a_route_is_built_and_shares_one_quota_book(self):
+        from overmind.providers import ProviderClient, RoutedClient
+        from overmind.quota import QuotaBook
+        book = QuotaBook()
+        single = lw.build_client(lw.Task(id="x", repo=".", goal="g", check=["c"],
+                                         writable=[], provider="google"), book)
+        self.assertIsInstance(single, ProviderClient)
+        routed = lw.build_client(lw.Task(id="x", repo=".", goal="g", check=["c"],
+                                         writable=[], provider="google, openrouter"), book)
+        self.assertIsInstance(routed, RoutedClient)
+        self.assertEqual([c.provider.key for c in routed.clients], ["google", "openrouter"])
+        self.assertTrue(all(c.quota is book for c in routed.clients),
+                        "a spent model must be spent for every client")
+
+    def test_the_default_book_is_the_per_user_one(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp) / "quota.json"
+            old = os.environ.get("OVERMIND_QUOTA_FILE")
+            os.environ["OVERMIND_QUOTA_FILE"] = str(path)
+            try:
+                client = lw.build_client(lw.Task(id="x", repo=".", goal="g", check=["c"],
+                                                 writable=[]))
+            finally:
+                if old is None:
+                    del os.environ["OVERMIND_QUOTA_FILE"]
+                else:
+                    os.environ["OVERMIND_QUOTA_FILE"] = old
+            self.assertEqual(client.quota.path, path)
+
+    def test_provider_names_are_checked(self):
+        good = dict(id="ok", repo=".", goal="g", check=["x"], writable=[])
+        self.assertEqual(lw.Task.from_json(dict(good, provider="google,openrouter"))
+                         .provider_keys(), ["google", "openrouter"])
+        for bad in (dict(good, provider="gogle"), dict(good, provider=" , "),
+                    dict(good, provider="google,openrouter", model="gemini-x")):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                lw.Task.from_json(bad)
+        self.assertEqual(lw.Task.from_json(dict(good, model="gemini-x")).model, "gemini-x",
+                         "control: a model pins a single provider fine")
+
     def test_secret_names_are_scrubbed(self):
         os.environ["SOME_API_KEY"] = "x"
         os.environ["GH_TOKEN_X"] = "x"

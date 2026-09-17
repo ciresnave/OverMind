@@ -1,0 +1,346 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+"""A model doing a lane's change: what the harness allows, and what it believes.
+
+⚠️ EVERY TEST RUNS AGAINST A REAL GIT REPOSITORY, because the properties that
+matter - a worktree that isolates, a path that cannot escape, a check whose
+environment holds no secrets - are properties of the filesystem and of git, and
+a mock of either would test the mock.
+
+The model is scripted. That is the point: the harness must reach the right
+verdict whatever the model says, including when it lies.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import pathlib
+import shutil
+import subprocess
+import sys
+import tempfile
+import unittest
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+
+from overmind import lanework as lw                                     # noqa: E402
+from overmind.providers import ChatResult, Usage                        # noqa: E402
+
+CHECK_FIXED = ("import pathlib, sys; "
+               "sys.exit(0 if pathlib.Path('a.txt').read_text().strip() == 'fixed' else 1)")
+
+
+def git(cwd, *args):
+    return subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.com",
+                           "-c", "core.autocrlf=false", *args],
+                          cwd=str(cwd), capture_output=True, text=True, check=True).stdout
+
+
+def say(text):
+    return ChatResult(message={"role": "assistant", "content": text}, model="scripted",
+                      provider="fake", latency_s=0.0, usage=Usage.zero(), finish_reason="stop")
+
+
+def call(*pairs):
+    calls = [{"id": f"c{i}", "type": "function",
+              "function": {"name": name, "arguments": json.dumps(args)}}
+             for i, (name, args) in enumerate(pairs)]
+    return ChatResult(message={"role": "assistant", "content": "", "tool_calls": calls},
+                      model="scripted", provider="fake", latency_s=0.0,
+                      usage=Usage.zero(), finish_reason="tool_calls")
+
+
+class Scripted:
+    def __init__(self, *turns):
+        self.turns = list(turns)
+
+    def chat(self, messages, tools=None, max_tokens=None):
+        return self.turns.pop(0) if self.turns else say("done")
+
+
+class RepoCase(unittest.TestCase):
+
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp(prefix="lanework-test-"))
+        self.repo = self.tmp / "repo"
+        self.repo.mkdir()
+        git(self.repo, "init", "-q", "-b", "main")
+        git(self.repo, "config", "core.autocrlf", "false")
+        (self.repo / "a.txt").write_bytes(b"broken\n")
+        (self.repo / "Cargo.toml").write_bytes(b'version = "0.1.0"\n')
+        (self.repo / "crlf.txt").write_bytes(b"one\r\ntwo\r\nthree\r\n")
+        (self.tmp / "outside.txt").write_bytes(b"not yours\n")
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-q", "-m", "init")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def task(self, **kw):
+        base = dict(id="t1", repo=str(self.repo), goal="make a.txt say fixed",
+                    check=[sys.executable, "-c", CHECK_FIXED], writable=["a.txt"],
+                    base="HEAD", fetch=False, max_steps=8)
+        base.update(kw)
+        return lw.Task(**base)
+
+    def run_it(self, *turns, **kw):
+        publish = kw.pop("publish", False)
+        creator = kw.pop("pr_creator", None)
+        extra = {"pr_creator": creator} if creator else {}
+        return lw.run_task(self.task(**kw), Scripted(*turns), publish=publish, **extra)
+
+
+class TestVerdicts(RepoCase):
+
+    def test_a_fix_that_passes_is_PASS(self):
+        r = self.run_it(call(("replace_in_file", {"path": "a.txt", "old": "broken", "new": "fixed"})),
+                        call(("run_check", {})),
+                        say("Changed a.txt; the check passed."))
+        self.assertEqual(r.verdict, "PASS", r.error)
+        self.assertEqual(r.changed_files, ["a.txt"])
+        self.assertTrue(r.model_ran_check)
+        self.assertFalse(r.unsupported_claim)
+
+    def test_a_claim_with_no_change_is_caught(self):
+        """🔴 THE CASE THIS HARNESS EXISTS FOR. The model says it succeeded and
+        never touched anything; the verdict must come from the tree."""
+        r = self.run_it(say("I fixed a.txt and the check passed."))
+        self.assertEqual(r.verdict, "NO_CHANGE")
+        self.assertTrue(r.model_claimed_success)
+        self.assertTrue(r.unsupported_claim)
+        self.assertFalse(r.model_ran_check, "no run_check call is in the ledger")
+
+    def test_the_harness_runs_the_check_even_if_the_model_never_did(self):
+        r = self.run_it(call(("replace_in_file", {"path": "a.txt", "old": "broken", "new": "fixed"})),
+                        say("done"))
+        self.assertEqual(r.verdict, "PASS")
+        self.assertFalse(r.model_ran_check)
+        self.assertEqual(r.check_exit, 0)
+
+    def test_a_wrong_fix_is_CHECK_FAILED_whatever_the_model_says(self):
+        r = self.run_it(call(("replace_in_file", {"path": "a.txt", "old": "broken", "new": "wrong"})),
+                        say("Fixed it; all checks pass."))
+        self.assertEqual(r.verdict, "CHECK_FAILED")
+        self.assertEqual(r.check_exit, 1)
+        self.assertTrue(r.unsupported_claim)
+
+    def test_an_interrupted_run_is_INCOMPLETE_even_when_the_check_passes(self):
+        """🔴 Measured live: Groq rate-limited mid-run AFTER the edit, the check
+        happened to pass, and the first version called that PASS."""
+        class EditThenDie:
+            def __init__(self):
+                self.n = 0
+
+            def chat(self, *a, **k):
+                self.n += 1
+                if self.n == 1:
+                    return call(("replace_in_file", {"path": "a.txt", "old": "broken", "new": "fixed"}))
+                raise RuntimeError("rate-limited")
+        r = lw.run_task(self.task(), EditThenDie())
+        self.assertEqual(r.check_exit, 0, "the check does pass - that is the trap")
+        self.assertEqual(r.verdict, "INCOMPLETE")
+
+    def test_the_diff_size_is_reported(self):
+        r = self.run_it(call(("replace_in_file", {"path": "a.txt", "old": "broken", "new": "fixed"}),
+                             ("write_file", {"path": "new.txt", "content": "one\ntwo\n"})),
+                        say("done"), writable=["a.txt", "new.txt"])
+        self.assertEqual(r.verdict, "PASS", r.error)
+        self.assertEqual(sorted(r.diff_numstat), ["1 1 a.txt", "2 0 new.txt"])
+        self.assertEqual(r.changed_files, ["a.txt", "new.txt"])
+
+    def test_a_provider_failure_is_reported_not_raised(self):
+        class Broken:
+            def chat(self, *a, **k):
+                raise RuntimeError("provider down")
+        r = lw.run_task(self.task(), Broken())
+        self.assertEqual(r.verdict, "NO_CHANGE")
+        self.assertIn("provider down", r.error or "")
+
+
+class TestConfinement(RepoCase):
+
+    def test_a_write_outside_writable_is_refused_and_an_inside_one_is_not(self):
+        """Both arms in one run, so the refusal cannot come from a gate that
+        refuses everything."""
+        r = self.run_it(call(("write_file", {"path": "Cargo.toml", "content": "evil = true\n"}),
+                             ("write_file", {"path": "a.txt", "content": "fixed\n"})),
+                        say("done"))
+        self.assertEqual(r.denied_calls, 1)
+        self.assertEqual(r.verdict, "PASS")
+        self.assertEqual(r.changed_files, ["a.txt"])
+        self.assertEqual((self.repo / "Cargo.toml").read_bytes(), b'version = "0.1.0"\n')
+
+    def test_escapes_and_dot_git_are_refused(self):
+        r = self.run_it(call(("read_file", {"path": "../outside.txt"}),
+                             ("read_file", {"path": ".git/config"}),
+                             ("read_file", {"path": "a/../../outside.txt"}),
+                             ("write_file", {"path": "..\\..\\x.txt", "content": "x"}),
+                             ("read_file", {"path": str(self.tmp / "outside.txt")}),
+                             ("read_file", {"path": "a.txt"})),
+                        say("done"))
+        self.assertEqual(r.denied_calls, 5, r.ledger_digest)
+        self.assertFalse((self.tmp / "x.txt").exists())
+        self.assertIn("broken", r.ledger_digest, "control: the in-tree read ran")
+
+    def test_an_undeclared_tool_is_refused(self):
+        r = self.run_it(call(("run_shell", {"cmd": "rm -rf /"})), say("done"))
+        self.assertEqual(r.denied_calls, 1)
+        self.assertEqual(r.verdict, "NO_CHANGE")
+
+    def test_the_check_cannot_see_secrets(self):
+        """⚠️ The check runs code the model may have edited. Two arms: the
+        variable IS set in this process, and the check still cannot see it."""
+        os.environ["FAKE_API_TOKEN"] = "not-a-real-secret"
+        try:
+            self.assertIn("FAKE_API_TOKEN", os.environ)
+            check = [sys.executable, "-c",
+                     "import os, sys; sys.exit(3 if 'FAKE_API_TOKEN' in os.environ else 0)"]
+            r = self.run_it(call(("write_file", {"path": "a.txt", "content": "x\n"})),
+                            say("done"), check=check)
+        finally:
+            del os.environ["FAKE_API_TOKEN"]
+        self.assertEqual(r.check_exit, 0, r.check_tail)
+
+    def test_the_lane_checkout_is_untouched_and_the_worktree_is_gone(self):
+        before = git(self.repo, "worktree", "list")
+        r = self.run_it(call(("write_file", {"path": "a.txt", "content": "fixed\n"})), say("done"))
+        self.assertEqual(r.verdict, "PASS")
+        self.assertEqual((self.repo / "a.txt").read_bytes(), b"broken\n")
+        self.assertEqual(git(self.repo, "worktree", "list"), before)
+        self.assertEqual(git(self.repo, "branch", "--list", "agent/*").strip(), "",
+                         "the run's branch must not be left behind")
+
+
+class TestWriting(RepoCase):
+
+    def test_a_crlf_file_stays_crlf(self):
+        """🔴 The defect that sat in four merged files: CRLF re-added to text
+        that already had CR."""
+        result = lw.run_task(self.task(writable=["crlf.txt"]), Scripted(
+            call(("replace_in_file", {"path": "crlf.txt", "old": "two", "new": "2"})),
+            say("done")), keep=True)
+        try:
+            self.assertIsNotNone(result.workspace, result.error)
+            data = (pathlib.Path(result.workspace) / "crlf.txt").read_bytes()
+            self.assertEqual(data, b"one\r\n2\r\nthree\r\n")
+        finally:
+            if result.workspace:
+                git(self.repo, "worktree", "remove", "--force", result.workspace)
+                shutil.rmtree(pathlib.Path(result.workspace).parent, ignore_errors=True)
+        self.assertEqual(result.changed_files, ["crlf.txt"])
+
+    def test_a_dropped_final_newline_is_restored(self):
+        """Measured live: a whole-file rewrite dropped the README's last newline."""
+        exact = [sys.executable, "-c",
+                 "import pathlib, sys; sys.exit(0 if pathlib.Path('a.txt').read_bytes() == b'fixed\\n' else 1)"]
+        r = self.run_it(call(("write_file", {"path": "a.txt", "content": "fixed"})),
+                        say("done"), check=exact)
+        self.assertEqual(r.verdict, "PASS", r.check_tail)
+
+    def test_a_bare_cr_is_refused(self):
+        r = self.run_it(call(("write_file", {"path": "a.txt", "content": "fixed\r\r\n"})), say("done"))
+        self.assertIn("bare CR", r.ledger_digest)
+        self.assertEqual(r.verdict, "NO_CHANGE")
+
+    def test_a_non_unique_replacement_is_refused(self):
+        (self.repo / "b.txt").write_bytes(b"x\nx\n")
+        git(self.repo, "add", "b.txt")
+        git(self.repo, "commit", "-q", "-m", "b")
+        r = self.run_it(call(("replace_in_file", {"path": "b.txt", "old": "x", "new": "y"})),
+                        say("done"), writable=["b.txt"])
+        self.assertIn("exactly once", r.ledger_digest)
+        self.assertEqual(r.verdict, "NO_CHANGE")
+
+
+class TestPublishing(RepoCase):
+
+    def setUp(self):
+        super().setUp()
+        self.remote = self.tmp / "remote.git"
+        git(self.tmp, "init", "-q", "--bare", str(self.remote))
+        git(self.repo, "remote", "add", "origin", str(self.remote))
+        git(self.repo, "push", "-q", "origin", "main")
+        self.opened = []
+
+    def creator(self, root, branch, base, title, body):
+        self.opened.append((branch, base, title, body))
+        return "https://example.invalid/pr/1"
+
+    def test_a_pass_is_committed_pushed_and_opened(self):
+        r = self.run_it(call(("write_file", {"path": "a.txt", "content": "fixed\n"})), say("done"),
+                        base="origin/main", fetch=True, publish=True, pr_creator=self.creator,
+                        pr_title="Fix a.txt")
+        self.assertEqual(r.verdict, "PASS", r.error)
+        self.assertEqual(r.pr_url, "https://example.invalid/pr/1")
+        branch, base, title, body = self.opened[0]
+        self.assertEqual((base, title), ("main", "Fix a.txt"))
+        self.assertIn("exit 0", body)
+        self.assertIn(branch, git(self.remote, "branch", "--list", "agent/*"))
+        author = git(self.remote, "log", "-1", "--format=%an <%ae>", branch).strip()
+        self.assertEqual(author, f"{lw.AGENT_NAME} <{lw.AGENT_EMAIL}>")
+
+    def test_nothing_is_published_unless_PASS(self):
+        r = self.run_it(call(("write_file", {"path": "a.txt", "content": "wrong\n"})), say("done"),
+                        base="origin/main", fetch=True, publish=True, pr_creator=self.creator)
+        self.assertEqual(r.verdict, "CHECK_FAILED")
+        self.assertEqual(self.opened, [])
+        self.assertEqual(git(self.remote, "branch", "--list", "agent/*").strip(), "")
+
+    def test_a_dry_run_publishes_nothing(self):
+        r = self.run_it(call(("write_file", {"path": "a.txt", "content": "fixed\n"})), say("done"),
+                        base="origin/main", fetch=True, pr_creator=self.creator)
+        self.assertEqual(r.verdict, "PASS")
+        self.assertEqual(self.opened, [])
+        self.assertIsNone(r.pr_url)
+
+
+class TestPieces(unittest.TestCase):
+
+    def test_glob_segments(self):
+        self.assertTrue(lw.glob_match("crates/a/Cargo.toml", "crates/*/Cargo.toml"))
+        self.assertFalse(lw.glob_match("crates/a/b/Cargo.toml", "crates/*/Cargo.toml"),
+                         "* must not cross a directory boundary")
+        self.assertTrue(lw.glob_match("Cargo.toml", "**/Cargo.toml"))
+        self.assertTrue(lw.glob_match("a/b/Cargo.toml", "**/Cargo.toml"))
+        self.assertFalse(lw.glob_match("a/b/build.rs", "**/Cargo.toml"))
+
+    def test_resolve_inside_refuses(self):
+        root = pathlib.Path(tempfile.gettempdir())
+        for bad in ("/etc/passwd", "C:/Windows/win.ini", "c:x", "../x", "a/../../x",
+                    ".git/config", "sub/.GIT/HEAD", "..\\x"):
+            with self.subTest(bad=bad), self.assertRaises(lw.OutsideWorkspace):
+                lw.resolve_inside(root, bad)
+        self.assertEqual(lw.resolve_inside(root, "a/./b"), (root / "a" / "b").resolve())
+
+    def test_task_json_is_strict(self):
+        good = dict(id="ok", repo=".", goal="g", check=["x"], writable=[])
+        self.assertEqual(lw.Task.from_json(good).id, "ok")
+        for bad in (dict(good, chek=["x"]), dict(good, check=[]),
+                    dict(good, check="cargo test"), dict(good, id="has space")):
+            with self.subTest(bad=bad), self.assertRaises((ValueError, TypeError)):
+                lw.Task.from_json(bad)
+
+    def test_claims_done_both_ways(self):
+        for text in ("I fixed a.txt and the check passed.", "Fixed it; all checks pass.",
+                     "Bumped serde to 1.0.300. Tests pass."):
+            with self.subTest(text=text):
+                self.assertTrue(lw.claims_done(text))
+        for text in ("The check failed and I could not fix it.", "I didn't change anything.",
+                     "", "Here is what I found in the file."):
+            with self.subTest(text=text):
+                self.assertFalse(lw.claims_done(text))
+
+    def test_secret_names_are_scrubbed(self):
+        os.environ["SOME_API_KEY"] = "x"
+        os.environ["GH_TOKEN_X"] = "x"
+        try:
+            env = lw.scrubbed_env()
+            self.assertNotIn("SOME_API_KEY", env)
+            self.assertNotIn("GH_TOKEN_X", env)
+            self.assertIn("PATH", {k.upper() for k in env}, "control: ordinary variables stay")
+        finally:
+            del os.environ["SOME_API_KEY"], os.environ["GH_TOKEN_X"]
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

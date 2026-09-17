@@ -1791,3 +1791,28 @@ harder, and looking harder is what found the broken metric.** Without the predic
 would have narrated the result as confirmation. **The prediction stays in `probe/ledger_context.py`,
 wrong, with the correction below it: a pre-registration revised after the fact is a narration with
 better formatting.**
+
+---
+
+## 26. 🟡 FIRST LIVE RUNS OF THE LANE-TASK RUNNER — three providers, one README edit
+
+**Observed 2026-09-17 ~04:0xZ, at `origin/main` `0145fdff`, via `src/overmind/lanework.py` as first written (dry runs, nothing published).** The task: add one bullet for `lanework.py` to README's `## What is built` list. `writable = ["README.md"]`. The check asserts that the section contains `lanework` and that the heading still occurs exactly once. **Control:** the check exits 1 on main's README and 0 with a bullet added.
+
+| provider / model | verdict (as first computed) | steps | wall | tokens (reported) | model ran the check | edit quality, read by hand |
+|---|---|---|---|---|---|---|
+| Google `gemini-3.6-flash` | PASS | 7 | 27.4 s | 29,522 | yes | ✅ one bullet, correct style, correct place, wrapped like its neighbours |
+| Cloudflare `llama-3.3-70b-instruct-fp8-fast` | PASS | 4 | 26.0 s | 9,481 | yes | ⚠️ rewrote the whole file and **dropped its final newline** |
+| Groq (`qwen3.8-27b` → failover) | **PASS** 🔴 | 8 | 49.8 s | 23,331 | no | ⚠️ right text, **indented as a nested bullet**; the run **ended in a provider error** |
+
+### 🔴 Three findings, each now a rule in the runner with a test and a mutation
+
+1. **An interrupted run reported PASS.** Groq's free tier allows 8,000 tokens a *minute*; the run hit it after the model had edited the file, every failover model was rate-limited too, and the loop stopped with `provider-error`. The edit happened to satisfy the check, so the tree-based verdict read PASS. **A partial edit that passes a weak check is precisely what a check cannot see.** → New verdict `INCOMPLETE`: any run whose loop did not complete is never publishable, whatever the check says.
+2. **A whole-file rewrite dropped the final newline**, a change the task said not to make and the check could not see. → `write_file` keeps an existing file's final newline (as it already kept CRLF), and the system prompt steers edits to `replace_in_file`.
+3. **Each run left a local `agent/*` branch in the repository**, because removing a worktree keeps its branch. → Cleanup deletes the branch too.
+
+### ⚠️ What this does and does not show
+
+- **The check passed three times and the edit was right once.** Style and whitespace are outside what that check asserts, so **the result now reports `diff_numstat`**, and the PR body carries it; a reviewer uses the diff size to see what the check cannot. For P1 the checks must assert more than presence.
+- **Groq's per-minute token cap binds on a multi-step run at ~20k tokens.** It is usable for small contexts or with waiting, not as a default for this runner. Every other provider's daily cap is still UNKNOWN (§23).
+- **One task, one run per provider.** This is a smoke test of the pipeline, not a capability measurement; P1 measures that, per provider, over task classes with mechanical checks.
+- **Nothing claimed and not done:** in all three runs `model_ran_check` agreed with the ledger, and the one model that claimed success had in fact run the check.

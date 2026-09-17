@@ -1916,3 +1916,31 @@ That puts §23's table in a new light: OpenRouter 50/day, Google 20/day for its 
 - **Partial offload is slow:** `qwen3:8b` took 14–26 minutes per task.
 
 **Stopped 2026-09-17 by CireSnave's direction: "For right now, we're solely working toward using free tiers only."** Local models, and paid tiers, are to be reconsidered once OverMind and Synapse are complete enough for their planned features. These rows are kept so that reconsideration starts from a measurement rather than a memory.
+
+## 30. 🟢 NINE MORE FREE MODELS ON THE P1 BENCHMARK — four fix both bugs
+
+**Observed 2026-09-17 ~10:1xZ, on `origin/main` `610a050f`, via `probe/p1_bench.py` with `P1_TASKS=timeout-escapes,max-of-nothing` (two of the four §27 tasks, chosen to spend less of each model's daily allowance). Nothing published.** Candidates came from a one-request tool-call survey (`probe/free_capacity.py`) of 18 further free models across Google, OpenRouter, Cloudflare and NVIDIA NIM, run first so the benchmark spent its ten-ish requests per model only on candidates already known to call tools.
+
+| model | timeout-escapes | max-of-nothing | fixed |
+|---|---|---|---|
+| NVIDIA `z-ai/glm-5.3` | ✅ PASS · 10 steps · 200 s | ✅ PASS · 7 · 187 s | **2/2** |
+| NVIDIA `deepseek-v4-flash-0731` | ✅ PASS · 12 · 963 s | ✅ PASS · 7 · 233 s | **2/2**, slow |
+| OpenRouter `nemotron-3-ultra-550b:free` | ✅ PASS · 9 · 122 s | ✅ PASS · 6 · 104 s | **2/2** |
+| Google `gemini-3.1-flash-lite` | ✅ PASS · 11 · 11 s | ✅ PASS · 6 · 11 s | **2/2**, fastest |
+| NVIDIA `nemotron-3.5-lightning-30b` | 🔴 INCOMPLETE, claimed success | ✅ PASS · 7 · 57 s | 1/2 |
+| Google `gemini-3-flash-preview` | NO_CHANGE (provider errors) | INCOMPLETE (provider errors) | 0/2 |
+| Google `gemini-3.8-flash` | NO_CHANGE (HTTP 50x both calls) | NO_CHANGE (HTTP 50x) | 0/2 |
+| Cloudflare `gpt-oss-120b` | NO_CHANGE, 16 steps | NO_CHANGE, 16 steps | 0/2 |
+| OpenRouter `cohere/north-mini-code:free` | NO_CHANGE, 16 steps | NO_CHANGE (provider error) | 0/2 |
+
+**Four new fixers**, none of them Google's preferred model: `glm-5.3`, `deepseek-v4-flash-0731`, `nemotron-3-ultra-550b` (OpenRouter, free, no known cap) and `gemini-3.1-flash-lite`, which was also the fastest model measured yet on this bench - 11 s a task, against 55-235 s for the other three.
+
+⚠️ **`gemini-3.8-flash` and `gemini-3-flash-preview` failed on TRANSPORT, not capability** - both returned HTTP 50x on nearly every call (`quota book` after the run: 7 and 28 requests recorded, all against models with no learned cap, because a 5xx is not a quota refusal and records only as usage). These are server-side, not a verdict on the model.
+
+### What this adds to §27/§29
+
+- **Free-tier capacity is wider than the four original providers**, once candidates are screened for a working tool call first. Four more models fix real bugs; three of them are not Google's default choice, so they draw on independent daily allowances.
+- **DeepSeek's fix was slow (963 s) despite `PASS`.** A working answer is not necessarily a fast one; wall time belongs beside the verdict when picking a default.
+- ⚠️ **One run per cell, as in §27.** Not a rate.
+
+Full four-task benchmark on the *default* model of each of these providers is unrun; the two tasks here were chosen to conserve daily allowance while screening breadth.

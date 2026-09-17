@@ -270,3 +270,45 @@ not a fact I can measure:**
 
 **Until one of these is answered, `dispatch.py` and `lanework.py` stay unconnected.** The gap README
 names is real; wiring it the obvious way would open a different one.
+
+### 7.1 Update, same day — question 2 has a real answer, on Synapse's `main`, verified against the code
+
+**CireSnave asked whether Synapse's own engineering work could close this, and pointed me at the
+Synapse lane.** Their answer, checked directly against `origin/main` `ee1bf8c` in that repo rather
+than taken on their word:
+
+- `src/sender_auth.rs` exists. `canonical_input` builds a length-prefixed byte string from a domain
+  tag, `message_id`, `from`/`to`, a microsecond timestamp, the security level, the signer's key id
+  and a hash of the encrypted content - confirmed by reading the function. `TrustStore::verify`
+  checks a real Ed25519 signature (`UnparsedPublicKey::verify`) against a **pinned** key and returns
+  `SenderVerdict::{Verified{key_id}, Unverifiable{reason}, Contradicted{reason}}` - confirmed by
+  reading the match arms. `TrustStore` exposes only `pin`/`pin_pem`; there is no discovery and no
+  trust-on-first-use path anywhere in the file - confirmed by grep. `TransportManager::receive_messages`
+  calls `store.verify(&incoming.message)` for every received message and attaches the verdict -
+  confirmed at the exact call site.
+- ⚠️ **§20's finding about `auth_integration.rs::verify_message_sender` is UNCHANGED and still true**
+  on this same ref: it fetches a profile for the message's *claimed* `from_global_id` and checks
+  `trust_level`, never touching `sender_proof` - confirmed by reading it. **Two functions coexist in
+  the same codebase, one real and one that looks real and isn't; the fix is to call `TrustStore::verify`,
+  never `verify_message_sender`.**
+
+**What Synapse states plainly it will NOT give, by design:** a `Verified` verdict answers *which
+pinned key signed this*, never *is this sender allowed to run this command*. That authorization
+policy has to live in OverMind, matching this file's own §2.4 invariant that a rule enforced by
+asking the sender is not enforced.
+
+**Two gaps Synapse itself calls blocking for command dispatch, both in flight, neither on `main` yet:**
+replay (a captured Verified message can be resent and re-verifies - no `message_id`/timestamp check
+exists yet) and confidentiality (message bodies on `main` are readable by anyone holding the bytes
+until sealing lands). **A `Verified` message today is not yet safe to treat as a one-shot
+authorization**, independent of anything OverMind builds.
+
+**Revised target, so this stops being an open question with no shape:** verified sender identity is
+usable *today*. Question 1 (may `check` ever be dispatch-supplied, or only selected from a fixed set)
+and question 3 (does `Task` need its own gate policy) are unaffected by this and still open. Question
+2 becomes: require `SenderVerdict::Verified`, map the verified global id to a role through OverMind's
+own config (never through Synapse), and hold `check` to a host-side allowlist regardless of who sent
+the message - Synapse's own recommendation, and consistent with never asking the sender to vouch for
+what they may do. Wiring should wait for replay suppression and sealing to reach Synapse's `main`
+regardless, since a verified-but-replayable, verified-but-readable message is not yet a safe basis for
+one.

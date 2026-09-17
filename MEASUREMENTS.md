@@ -1816,3 +1816,53 @@ better formatting.**
 - **Groq's per-minute token cap binds on a multi-step run at ~20k tokens.** It is usable for small contexts or with waiting, not as a default for this runner. Every other provider's daily cap is still UNKNOWN (§23).
 - **One task, one run per provider.** This is a smoke test of the pipeline, not a capability measurement; P1 measures that, per provider, over task classes with mechanical checks.
 - **Nothing claimed and not done:** in all three runs `model_ran_check` agreed with the ledger, and the one model that claimed success had in fact run the check.
+
+---
+
+## 27. 🟢🔴 P1 ON OVERMIND — can a free model fix a real regression? One provider can, and its preferred model allows 20 requests a day
+
+**Observed 2026-09-17 04:3xZ–05:1xZ via `probe/p1_bench.py` (dry runs, nothing published), on `origin/main` `26c9d0a6` (10 runs) and `75a52eda` (4 runs, after a restart; the two differ only in README.md).** Four bugs this repository has had, or has been mutation-tested against, each re-introduced as a single changed line on a local branch built with git plumbing:
+
+| task | the regression | check |
+|---|---|---|
+| `number-substring` | the figure check found `100` inside `1000` | `tests.test_paper_summaries` |
+| `timeout-escapes` | a socket timeout escaped the client | `tests.test_providers` |
+| `glob-crosses-dirs` | `*` in a writable glob crossed directories | `tests.test_lanework.TestPieces` |
+| `max-of-nothing` | `max()` of nothing crashed the fleet report | `tests.test_gate_fleet` |
+
+The model was told which command fails and which file holds the bug; **`writable` was that file alone, so no model could pass by editing a test.**
+
+**Two controls per task, before any model ran, and all four came out right:** a model that does nothing gets `NO_CHANGE` with a failing check (the bug is live), and a model that applies the known fix gets `PASS` (the task is solvable inside `writable`).
+
+### Results — 14 runs
+
+| task | Google | Cloudflare | NVIDIA | Groq |
+|---|---|---|---|---|
+| number-substring | ✅ PASS · 10 steps · 90k tok | CHECK_FAILED 🔴claim | NO_CHANGE · 16 steps (cap) | provider error (tokens/min) |
+| timeout-escapes | ✅ PASS · 10 · 77k | CHECK_FAILED | NO_CHANGE · 16 (cap) | provider error (HTTP 413) |
+| glob-crosses-dirs | ✅ PASS · 12 · 54k | CHECK_FAILED 🔴claim | NO_CHANGE · truncated | — excluded |
+| max-of-nothing | ✅ PASS · 6 · 12k | CHECK_FAILED 🔴claim | CHECK_FAILED 🔴claim · **+99/−245 lines** | — excluded |
+| **fixed** | **4 / 4** | **0 / 4** | **0 / 4** | **0 / 2** |
+
+Models: Google `gemini-3.5-flash-lite` on all four (see below); Cloudflare `llama-3.3-70b-instruct-fp8-fast`; NVIDIA `gpt-oss-20b` (three) and `kimi-k3` (one); Groq never answered a whole run. Median wall time: Google 112 s, Cloudflare 14 s, NVIDIA 231 s.
+
+🔴 **Four unsupported claims, all caught.** Cloudflare three times and NVIDIA once reported success on a failing check. NVIDIA's last run rewrote `tools/gate_fleet.py` wholesale (+99/−245) and said it was done. **Nothing would have been published: the verdict is the harness's.**
+
+### 🔴 The capacity finding, measured rather than inferred
+
+Every Google run landed on `flash-lite` although `gemini-3.6-flash` is first in the preference list. Reading the provider's own error body, one call per model:
+
+    gemini-3.6-flash       HTTP 429  GenerateRequestsPerDayPerProjectPerModel-FreeTier   quotaValue "20"
+    gemini-3.5-flash       HTTP 429  GenerateRequestsPerDayPerProjectPerModel-FreeTier
+    gemini-3.5-flash-lite  OK
+
+**Google's free tier allows `gemini-3.6-flash` 20 requests a DAY** (`quotaValue`, read from the body). The quota is per model; `gemini-3.5-flash` hit the same quota id, and its value was not read. This morning's work — the paper summaries, the smoke runs, the first published task — had spent both preferred models' allowance before the benchmark started. At 6–12 requests per task, **20 a day is about two lane tasks per model.** `flash-lite`'s own cap is still UNKNOWN; finding it means exhausting it.
+
+That puts §23's table in a new light: OpenRouter 50/day, Google 20/day for its preferred model, Groq 8,000 tokens/minute (which a multi-step run exceeds). **On today's measurements, the free tiers carry a handful of code tasks a day, and one model does the fixing.**
+
+### ⚠️ What this does and does not show
+
+- **Four single-line regressions in one Python repository, with the failing test named.** That is the easy end of lane work. It says nothing yet about multi-file changes, Rust, or tasks without a pointed test.
+- **One run per cell.** 4/4 against 0/4 is a strong separation, but not a rate.
+- **The benchmark was killed once by host memory pressure (other lanes' builds)**, and its Python process kept running after the harness said "killed". Two runs that followed failed to start processes at all (`STATUS_DLL_INIT_FAILED`); they measure the host, not a model, and are excluded.
+- **Groq was dropped after two structural failures**: its per-minute token cap, then HTTP 413 for the request size. It is not a candidate for this runner as configured.

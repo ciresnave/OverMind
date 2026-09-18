@@ -182,7 +182,15 @@ impl StateLock {
                 .open(&lock_path)
             {
                 Ok(_) => return Ok(Self { path: lock_path }),
-                Err(e) if e.kind() == ErrorKind::AlreadyExists => {
+                // ⚠️ WINDOWS: a `create_new` racing a concurrent `remove_file` (another
+                // holder's `Drop`, running right now) can surface as `PermissionDenied`
+                // instead of `AlreadyExists` while the file is mid-deletion - found live
+                // in CI, not assumed. Both mean the same thing here: someone else has
+                // this lock busy right now, retry.
+                Err(e)
+                    if e.kind() == ErrorKind::AlreadyExists
+                        || e.kind() == ErrorKind::PermissionDenied =>
+                {
                     if let Ok(meta) = std::fs::metadata(&lock_path) {
                         if let Ok(age) = SystemTime::now()
                             .duration_since(meta.modified().unwrap_or(SystemTime::now()))

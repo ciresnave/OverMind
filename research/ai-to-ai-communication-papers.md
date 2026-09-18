@@ -8,7 +8,7 @@ For each paper: the problem; the mechanism; the **access** it needs (`api-tokens
 
 | Item | Flag |
 |---|---|
-| **#8 Gibberlink spec (Scribd)** | **Not fetched.** Scribd served only its landing page. **A copy is needed.** |
+| **#8 Gibberlink spec (Scribd)** | **DROPPED (CireSnave, 2026-09-18, via the PM):** no full copy became available; not pursued further. Kept below, not deleted, as the record of why. |
 | **#3 doi:10.1080/01691864.2026.2661958** | The publisher refused the fetch (HTTP 403). Summarised from the **arXiv preprint 2501.00226**, matched by Crossref title and all five authors. The journal version may differ. |
 | **#4 arXiv:2503.17407** | **STRUCK (CireSnave, 2026-09-18, verbatim):** *"I agree with your earlier statement that ArXiV 2503.17407v2 was likely not a good fit as a paper covering something relating directly to LLM-to-LLM language. Consider that one stricken."* Resolves to *A Comprehensive Survey on Long Context Language Modeling*, not agent communication - the ID flag below is what he's confirming. |
 | **#15 recursivemas.github.io** | A project page; summarised from the paper it links, arXiv:2604.25917. |
@@ -26,7 +26,7 @@ Summarised by `models/gemini-3.5-flash`, `models/gemini-3.6-flash` (Google AI St
 | 5 | [arXiv:2609.01491 (GlossoGen; listed via alphaxiv)](https://arxiv.org/abs/2609.01491) | `token` | api-tokens |
 | 6 | [arXiv:2503.01063](https://arxiv.org/abs/2503.01063) | `token` | api-tokens |
 | 7 | [arXiv:2505.12741](https://arxiv.org/abs/2505.12741) | `latent` | model-internals, training |
-| 8 | [Gibberlink Mode Protocol spec (Scribd 972509569)](https://www.scribd.com/document/972509569) | **not summarised** | - |
+| 8 | ~~[Gibberlink Mode Protocol spec (Scribd 972509569)](https://www.scribd.com/document/972509569)~~ **DROPPED** | **not summarised** | - |
 | 9 | [arXiv:2606.29354](https://arxiv.org/abs/2606.29354) | `token` | api-tokens |
 | 10 | [EMNLP 2025 main, paper 518](https://aclanthology.org/2025.emnlp-main.518/) | `latent` | model-internals |
 | 11 | [arXiv:2606.19135](https://arxiv.org/abs/2606.19135) | `neither` | api-tokens |
@@ -139,10 +139,13 @@ Summarised by `models/gemini-3.5-flash`, `models/gemini-3.6-flash` (Google AI St
 - **Limitations:** LMNet increases parameter count and per-token inference latency compared to a single LLM node. It requires direct access to model internals and parameter optimization, preventing its use with black-box API models, and its dense vector communications lack human interpretability. Furthermore, end-to-end auto-regressive decoding does not yet realize inner-auto-regressive sentence-level message passing.
 - **Tier:** `latent`
 
-## 8. Gibberlink Mode Protocol spec (Scribd 972509569)
+## 8. ~~Gibberlink Mode Protocol spec (Scribd 972509569)~~ DROPPED
 
 [Gibberlink Mode Protocol spec (Scribd 972509569)](https://www.scribd.com/document/972509569)
 
+> 🔴 **DROPPED (CireSnave, 2026-09-18, via the PM):** no full copy of the spec became available;
+> not pursued further. Kept below, not deleted, as the record of why.
+>
 > ⚠️ NOT FETCHED. Scribd served only its landing page (HTTP 200, 3,151 characters of page chrome): a 23-page document uploaded by a Scribd user, with a description Scribd itself labels 'AI-enhanced'. No specification text was available, so nothing is summarised. A copy is needed.
 
 **Not summarised.**

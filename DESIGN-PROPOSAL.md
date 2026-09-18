@@ -350,3 +350,39 @@ on either source alone:
   hand-maintained "map verified id to a role in OverMind's own config" with "this agent's certificate,
   signed by a pinned account key, carries permission P," without changing anything else in §7.1's
   plan.
+
+### 7.3 Update, same day — a DIFFERENT unattended channel was decided and built: an MCP tool, not `dispatch.py`
+
+**CireSnave chose a different path into `lanework.py` than the one this whole section has been
+analysing.** Not `dispatch.py`/FAM, and not waiting on Synapse's slices - an MCP tool
+(`dispatch_lane_task`, `src/overmind/dispatch_mcp.py`) that any agent (Claude, GPT, or another
+provider entirely) calls directly with a repo and a prompt. Built and shipped (OverMind#48), on the
+same reasoning this section already established, applied to the actual design he asked for:
+
+- **Question 1 answered, for this channel:** `check` is never caller-supplied. It comes from
+  `repo_probe.py`'s fixed, host-owned table, keyed by a marker file present in the target repo
+  (`Cargo.toml` → `cargo test`, `pyproject.toml`/`setup.py` → `python -m pytest`, `package.json` →
+  `npm test`, `go.mod` → `go test ./...`). A repo with none of those markers gets no check at all
+  (`NoCheckInferred`) - refused, not guessed.
+- ⚠️ **Reading a repo's own CI config to CHOOSE the check would have reopened exactly the hole this
+  section warned about** - that config is content the repo's own author controls, and an arbitrary
+  dispatched repo is precisely the "don't otherwise trust it" case. CireSnave's own distinction,
+  stated plainly when asked: CI config, an in-repo standards file, and a caller's own extra
+  requirements (text or a `https://`-only URL to them) are all safe to fold in richly, because none
+  of them becomes the check - they only become more TEXT in the goal, read by a model still confined
+  by `WorkspaceConfined` and still verified against the host-chosen check regardless of what that
+  text said.
+- **Question 3 answered, narrowly, for this channel:** `dispatch_mcp.py` never operates on a
+  caller-named path directly - every repo is `git clone`d fresh into a scratch directory before
+  anything else happens, so this tool cannot `fetch`/`worktree add` against a checkout another lane
+  is using. That is `Task`'s own validation for this entry point; it does not answer question 3 in
+  general for a future `dispatch.py` wiring, which stays exactly as open as §7's original text left
+  it.
+- **`capabilities` is accepted and recorded, not yet routed on** - there is no per-capability
+  measured data (the P1 bench is all one capability, tool-calling code edits), and pretending it
+  changed provider selection today would itself be the §2.4 failure this whole file exists to name.
+
+**`dispatch.py`/FAM remains exactly where §7 and §7.1 left it - unconnected to `lanework.py`,
+questions 1 (for THAT channel) and 3 (in general) still open.** This section is about a second,
+independent unattended path that reaches the same runner more narrowly, not a resolution of the
+FAM question.

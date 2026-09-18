@@ -252,6 +252,19 @@ NON_CHAT = ("guard", "safety", "embed", "rerank", "reward", "ocr", "moderation",
             "classifier", "parse", "nemoretriever", "nvclip")
 
 
+def canonical_model(model: str) -> str:
+    """The id a quota key and a chat request both use for the same model.
+
+    ⚠️ MEASURED 2026-09-17 (MEASUREMENTS.md §32): Google's roster lists some
+    ids as `models/<name>`, the same model a pin names without the prefix -
+    `google/gemini-3.1-flash-lite` and `google/models/gemini-3.1-flash-lite`
+    ended up as two un-reconciled quota-book entries for one model. Strip it
+    at both entry points (roster ingestion and a caller's pinned model) so
+    every caller agrees on one key.
+    """
+    return model[len("models/"):] if model.startswith("models/") else model
+
+
 def select_models(roster: Iterable[str], prefer: Sequence[str],
                   limit: int = 4) -> list[str]:
     """Ordered candidates. ⚠️ A LIST, never a single guess - see the roster note."""
@@ -385,7 +398,7 @@ class ProviderClient:
         self.provider = PROVIDERS[provider] if isinstance(provider, str) else provider
         self.timeout = timeout
         self.max_tokens = max_tokens
-        self.pinned_model = model
+        self.pinned_model = canonical_model(model) if model else model
         self._roster: list[str] | None = None
         self._known_bad: set[str] = set()
         #: Daily free-tier allowances, shared across runs. None = not tracked.
@@ -449,7 +462,7 @@ class ProviderClient:
             body = self._request(self.provider.models_path)
             data = body.get("data") or body.get("models") or []
             ids = [d.get("id") or d.get("name") for d in data if isinstance(d, dict)]
-            self._roster = [i for i in ids if i] or list(self.provider.fallback_models)
+            self._roster = [canonical_model(i) for i in ids if i] or list(self.provider.fallback_models)
         except ProviderError:
             self._roster = list(self.provider.fallback_models)
         return self._roster

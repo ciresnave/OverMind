@@ -83,6 +83,13 @@ class TestInferCheck(unittest.TestCase):
             result = infer_check(root)
             self.assertEqual(result.check, ["go", "test", "./..."])
 
+    def test_makefile_selects_make_test(self):
+        with TempRepo() as root:
+            write(root, "Makefile", "test:\n\tpytest\n")
+            check, name = infer_check(root)
+            self.assertEqual(check, ["make", "test"])
+            self.assertEqual(name, "make test")
+
     def test_cargo_wins_over_package_json_by_table_order(self):
         """A Rust project with a JS-based doc site still gets `cargo test`."""
         with TempRepo() as root:

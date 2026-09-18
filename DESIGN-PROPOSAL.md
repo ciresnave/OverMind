@@ -221,3 +221,168 @@ problem* — running routine work on non-Claude providers is, and that needs §2
 🔴 **Not proven: that any of this does a lane's work.** Two tool calls is not a day, and the one
 model that holds the context does not reliably obey it. **Everything above is capability. None of
 it is yet capacity.**
+
+
+---
+
+## 7. ⚠️ 2026-09-17 addendum — wiring `lanework.py` to a live dispatch channel is a security decision, not an engineering one
+
+**Written before building it, not after finding a problem in it.** README's "What is not" names the
+runner's transport as a CLI invocation, and closing that gap looks at first like plumbing:
+`dispatch.py` already receives live inbound messages and runs them through `run_agent`; making it
+build a `lanework.Task` from the message and call `run_task(..., publish=True)` instead looks like a
+few lines.
+
+⚠️ **`dispatch.py` IS BUILT AGAINST FAM, NOT SYNAPSE.** It has zero references to Synapse anywhere in
+its code - every mechanism it names (the reply tool, the system-notice shape, the sealed-envelope
+shape) is FAM's. It is a different, independent transport from the one §20 measured; nothing here
+routes through Synapse or bypasses it, because it was never on that path.
+
+🔴 **IT IS NOT PLUMBING. `Task.check` IS AN ARGV THIS HOST EXECUTES AS A REAL SUBPROCESS**, with
+secrets scrubbed from its environment (`lanework.py`'s own docstring) but with no other confinement -
+no container, no chroot, full access to this machine outside the git worktree. Today that argv comes
+from a file a human or a lane operator writes, which is the entire trust boundary the design has ever
+had: `lanework.py`'s own CLI usage assumes whoever wrote `task.json` is trusted. `dispatch.py`'s
+design assumes the opposite of its input - "**THE INBOUND CONTENT IS UNTRUSTED**" is stated in its own
+docstring - and its own `Dispatch.vouched` property reads a `sender_vouched` flag FAM supplies. ⚠️ **THE
+ONE LIVE MEASUREMENT OF IT (§18, not §20) FOUND IT `false`** - a real dispatch through the live FAM
+server, where the sender's identity was, in FAM's own terms, "the relay's word," not a
+cryptographically verified account key. One observation, not a survey; whether FAM has a path to a
+`true` value at all is unmeasured here. Connecting `dispatch.py` to `lanework.py` verbatim means an
+unvouched FAM message chooses the command this host runs.
+
+⚠️ **THE EXISTING GATE DOES NOT COVER THIS.** `WorkspaceConfined` governs `write_file` and
+`replace_in_file` - the MODEL's six tools inside the worktree. `run_check` is not gated the same way:
+it always runs the task's own declared `check`, and the gate has no policy over what that argv *is*.
+A dispatch-supplied `Task` reaches `check` before the model ever calls a tool.
+
+**Not decided here, because it is a policy about how much the fabric is allowed to make this host do,
+not a fact I can measure:**
+
+1. **Does a dispatched task ever get to supply `check` at all**, or must `check` always come from a
+   host-side, pre-registered set of known-safe commands, with the dispatch only selecting one by name?
+2. **If `check` may be dispatch-supplied, what proves the sender may be trusted with it** - `vouched`
+   alone, given the one measurement of it (§18) came back false? Whether FAM has a working path to a
+   verified `true` at all is unmeasured here, and a stronger identity check would need to exist
+   *before* this, not be assumed by it.
+3. **Does this need a second gate policy**, parallel to `WorkspaceConfined`, that inspects `Task`
+   itself (not just tool calls made *during* the run) before `run_task` ever starts a subprocess?
+
+**Until one of these is answered, `dispatch.py` and `lanework.py` stay unconnected.** The gap README
+names is real; wiring it the obvious way would open a different one.
+
+### 7.1 Update, same day — question 2 has a real answer, on Synapse's `main`, verified against the code
+
+**CireSnave asked whether Synapse's own engineering work could close this, and pointed me at the
+Synapse lane.** Their answer, checked directly against `origin/main` `ee1bf8c` in that repo rather
+than taken on their word:
+
+- `src/sender_auth.rs` exists. `canonical_input` builds a length-prefixed byte string from a domain
+  tag, `message_id`, `from`/`to`, a microsecond timestamp, the security level, the signer's key id
+  and a hash of the encrypted content - confirmed by reading the function. `TrustStore::verify`
+  checks a real Ed25519 signature (`UnparsedPublicKey::verify`) against a **pinned** key and returns
+  `SenderVerdict::{Verified{key_id}, Unverifiable{reason}, Contradicted{reason}}` - confirmed by
+  reading the match arms. `TrustStore` exposes only `pin`/`pin_pem`; there is no discovery and no
+  trust-on-first-use path anywhere in the file - confirmed by grep. `TransportManager::receive_messages`
+  calls `store.verify(&incoming.message)` for every received message and attaches the verdict -
+  confirmed at the exact call site.
+- ⚠️ **§20's finding about `auth_integration.rs::verify_message_sender` is UNCHANGED and still true**
+  on this same ref: it fetches a profile for the message's *claimed* `from_global_id` and checks
+  `trust_level`, never touching `sender_proof` - confirmed by reading it. **Two functions coexist in
+  the same codebase, one real and one that looks real and isn't; the fix is to call `TrustStore::verify`,
+  never `verify_message_sender`.**
+
+**What Synapse states plainly it will NOT give, by design:** a `Verified` verdict answers *which
+pinned key signed this*, never *is this sender allowed to run this command*. That authorization
+policy has to live in OverMind, matching this file's own §2.4 invariant that a rule enforced by
+asking the sender is not enforced.
+
+**Two gaps Synapse itself calls blocking for command dispatch, both in flight, neither on `main` yet:**
+replay (a captured Verified message can be resent and re-verifies - no `message_id`/timestamp check
+exists yet) and confidentiality (message bodies on `main` are readable by anyone holding the bytes
+until sealing lands). **A `Verified` message today is not yet safe to treat as a one-shot
+authorization**, independent of anything OverMind builds.
+
+**Revised target, so this stops being an open question with no shape:** verified sender identity is
+usable *today*. Question 1 (may `check` ever be dispatch-supplied, or only selected from a fixed set)
+and question 3 (does `Task` need its own gate policy) are unaffected by this and still open. Question
+2 becomes: require `SenderVerdict::Verified`, map the verified global id to a role through OverMind's
+own config (never through Synapse), and hold `check` to a host-side allowlist regardless of who sent
+the message - Synapse's own recommendation, and consistent with never asking the sender to vouch for
+what they may do. Wiring should wait for replay suppression and sealing to reach Synapse's `main`
+regardless, since a verified-but-replayable, verified-but-readable message is not yet a safe basis for
+one.
+
+### 7.2 Update, same day — an account-holder introduction app is planned, and where it does and does not help
+
+**CireSnave told me directly** that he and the Synapse lane have been designing a web app for
+introducing account holders (humans) to each other so the services they each control can be properly
+authenticated before authorizing anything, with a free public instance planned first on his
+ThinkersJournal.com. He asked whether this could help OverMind's model/provider authentication
+question. Checked against Synapse's own spec on their local `feat/replay-suppression` branch (§9,
+`docs/superpowers/specs/2026-09-17-replay-suppression-design.md`) and their direct answer, not taken
+on either source alone:
+
+- **What it mints.** Nothing in the message path itself. Two account holders each sign in with their
+  own OIDC provider; the app is the single registered client at each, holds no secrets, and is used
+  once, at introduction, exchanging **account public keys**. Both sides' local software shows the
+  other's key fingerprint, so a substituted key is visible. The durable artifact is an **agent
+  certificate**: the account key signs a statement binding an agent's signing/sealing key
+  fingerprints, a label, a validity window, **coarse named permissions**, and a serial - so a receiver
+  pins one key per account holder, not per agent. This is **slice f** in Synapse's plan (widened today
+  from bare key rotation, because rotation is a certificate re-signing), scheduled after slice e
+  (replay, in progress) and before TOFU discovery. The app itself is a separate, unbuilt project - not
+  part of Synapse or any one website - designed after slice f lands.
+- **What it does for a model provider.** Less than the analogy first suggests. OpenAI, Anthropic and
+  Google will not participate in this scheme, so nothing here can cryptographically vouch that a
+  remote endpoint *is* a given provider - that is what TLS and the provider's own API key already do,
+  and a certificate from this scheme adds nothing to it. What it *can* authenticate is **the local
+  side**: an OverMind adapter process for provider X becomes an agent under an account holder's
+  account key, carrying a certificate saying "this key may act as a model-provider adapter for X, with
+  these permissions." A peer authorizing that adapter to run inference is then trusting a **known
+  account holder's own agent**, not a claim about the remote provider. Provider attestation proper is
+  out of scope for this scheme; provider credentials stay in their own TLS/API-key channel, outside
+  the fabric.
+- **Status.** Decided in outline 2026-09-17, nothing built. Order: slice e (replay) is in progress now;
+  slice f (account keys + agent certificates + rotation/revocation) next; then TOFU discovery; then the
+  introduction app itself, its own project and repo. Treat this as **future work**, not something to
+  design `dispatch.py`/`lanework.py` wiring against yet - when slice f lands, it replaces §7.1's
+  hand-maintained "map verified id to a role in OverMind's own config" with "this agent's certificate,
+  signed by a pinned account key, carries permission P," without changing anything else in §7.1's
+  plan.
+
+### 7.3 Update, same day — a DIFFERENT unattended channel was decided and built: an MCP tool, not `dispatch.py`
+
+**CireSnave chose a different path into `lanework.py` than the one this whole section has been
+analysing.** Not `dispatch.py`/FAM, and not waiting on Synapse's slices - an MCP tool
+(`dispatch_lane_task`, `src/overmind/dispatch_mcp.py`) that any agent (Claude, GPT, or another
+provider entirely) calls directly with a repo and a prompt. Built and shipped (OverMind#48), on the
+same reasoning this section already established, applied to the actual design he asked for:
+
+- **Question 1 answered, for this channel:** `check` is never caller-supplied. It comes from
+  `repo_probe.py`'s fixed, host-owned table, keyed by a marker file present in the target repo
+  (`Cargo.toml` → `cargo test`, `pyproject.toml`/`setup.py` → `python -m pytest`, `package.json` →
+  `npm test`, `go.mod` → `go test ./...`). A repo with none of those markers gets no check at all
+  (`NoCheckInferred`) - refused, not guessed.
+- ⚠️ **Reading a repo's own CI config to CHOOSE the check would have reopened exactly the hole this
+  section warned about** - that config is content the repo's own author controls, and an arbitrary
+  dispatched repo is precisely the "don't otherwise trust it" case. CireSnave's own distinction,
+  stated plainly when asked: CI config, an in-repo standards file, and a caller's own extra
+  requirements (text or a `https://`-only URL to them) are all safe to fold in richly, because none
+  of them becomes the check - they only become more TEXT in the goal, read by a model still confined
+  by `WorkspaceConfined` and still verified against the host-chosen check regardless of what that
+  text said.
+- **Question 3 answered, narrowly, for this channel:** `dispatch_mcp.py` never operates on a
+  caller-named path directly - every repo is `git clone`d fresh into a scratch directory before
+  anything else happens, so this tool cannot `fetch`/`worktree add` against a checkout another lane
+  is using. That is `Task`'s own validation for this entry point; it does not answer question 3 in
+  general for a future `dispatch.py` wiring, which stays exactly as open as §7's original text left
+  it.
+- **`capabilities` is accepted and recorded, not yet routed on** - there is no per-capability
+  measured data (the P1 bench is all one capability, tool-calling code edits), and pretending it
+  changed provider selection today would itself be the §2.4 failure this whole file exists to name.
+
+**`dispatch.py`/FAM remains exactly where §7 and §7.1 left it - unconnected to `lanework.py`,
+questions 1 (for THAT channel) and 3 (in general) still open.** This section is about a second,
+independent unattended path that reaches the same runner more narrowly, not a resolution of the
+FAM question.

@@ -41,8 +41,8 @@ snapshot fetched from outside.
   "pid": 48213,
   "cwd": "C:/Projects/OverMind",
   "name": "overmind",                    // session name, if set (--name / /rename)
-  "model": "claude-sonnet-5",
-  "permission_mode": "prompting",
+  "model": "claude-sonnet-5",            // absent (null) until a hook payload actually carries it - §10.3
+  "permission_mode": "prompting",        // absent (null) until a hook payload actually carries it - §10.3
   "remote_control": true,
   "busy": false,                         // see the event mapping below
   "subagents_running": 0,                // incremented on SubagentStart, decremented on SubagentStop
@@ -303,6 +303,17 @@ A subcommand of this same crate (`crates/lane-restart/src/lane_state_writer.rs`)
 script. Common hook input JSON comes on stdin, exactly as `hooks.md` documents; the event name is
 passed on the command line (§10.4 - as a shell-form string, not `args`, per that section's own
 finding).
+
+⚠️ **REVISED (PM finding, 2026-09-18, third interactive retest): only `hook_event_name`,
+`session_id`, and `cwd` are required from that JSON - everything else is `Option<T>`, absent rather
+than guessed when missing.** A real `SessionStart` payload does not include `permission_mode` -
+parsing it as required failed against live input, not a hypothetical (`missing field
+'permission_mode'`). "In the documented common-fields table" was never the same claim as "present on
+every event, always"; `hooks.md`'s own table doesn't promise that, and this design's first draft
+read it as if it did. `permission_mode` now follows the same rule `model` already did: `None` until a
+real payload carries it, preserved across a later `SessionStart` that doesn't repeat it, never
+invented. The relaunch command (§5) omits `--permission-mode` when it's `None`, the same way it
+already omits `--model`.
 
 ⚠️ **REVISED (PM finding, 2026-09-18): the acceptance check for this whole design is a real state
 WRITE, not just the parent-chain diagnostic.** §11.1's first retest confirmed the parent chain

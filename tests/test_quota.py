@@ -244,6 +244,17 @@ class TestClientUsesTheBook(unittest.TestCase):
         self.assertEqual(fresh.candidates(limit=1), ["a", "b", "c"],
                          "control: with no book, every fallback is offered")
 
+    def test_a_pinned_prefixed_model_shares_the_unprefixed_key(self):
+        """§32 - the exact failure: a pin spelled `models/x` must record and
+        read the same quota entry as every caller who spells it plain `x`,
+        or a daily block on one spelling never protects the other."""
+        self.book.record_refusal("google", "a", GOOGLE_DAY)
+        pinned = ProviderClient(provider(models=()), model="models/a", quota=self.book)
+        self.assertTrue(pinned.candidates() == ["a"] and self.book.blocked("google", "a"),
+                        "control: the block is really recorded under 'a'")
+        with self.assertRaises(NoUsableModel):
+            pinned.chat([{"role": "user", "content": "hi"}])
+
     def test_a_pinned_model_that_is_spent_is_not_asked(self):
         """A pinned model skips the candidate filter, so this is the only path
         on which the per-request check is what stops the wasted call."""

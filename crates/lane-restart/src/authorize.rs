@@ -8,7 +8,7 @@
 //! when one condition is mis-negated. `decide` never kills or launches
 //! anything; it only says whether the caller may, and in which mode.
 
-use crate::facts::SystemFacts;
+use crate::facts::{ProcessIdentity, SystemFacts};
 use crate::state::{self, LaneState};
 use std::path::Path;
 use std::time::Duration;
@@ -108,12 +108,16 @@ impl std::fmt::Display for Refusal {
 #[derive(Debug, PartialEq)]
 pub struct Plan {
     pub state: LaneState,
+    /// Recorded at decision time, re-checked immediately before the real
+    /// kill signal - PM finding, 2026-09-18: a PID alone can be recycled in
+    /// the window between deciding and acting.
+    pub identity: ProcessIdentity,
     /// The restart tool must ACT (kill + relaunch) rather than only print,
     /// exactly when this is true.
     pub will_act: bool,
 }
 
-fn identify(state: &LaneState, facts: &dyn SystemFacts) -> Result<(), Refusal> {
+fn identify(state: &LaneState, facts: &dyn SystemFacts) -> Result<ProcessIdentity, Refusal> {
     let age = facts.now().signed_duration_since(state.updated_at);
     let age_secs = age.num_seconds();
     if age_secs < 0 || age_secs as u64 > STALE_STATE_AFTER.as_secs() {
@@ -153,7 +157,12 @@ fn identify(state: &LaneState, facts: &dyn SystemFacts) -> Result<(), Refusal> {
         )));
     }
 
-    Ok(())
+    facts.process_identity(state.pid).ok_or_else(|| {
+        Refusal::ProcessNotIdentified(format!(
+            "{}: could not read a process identity for pid {} to record",
+            state.role, state.pid
+        ))
+    })
 }
 
 /// §1a: BOTH signals, refuse if either shows activity or can't be checked.
@@ -189,7 +198,7 @@ pub fn decide(req: &Request, facts: &dyn SystemFacts, state_dir: &Path) -> Resul
         }
     })?;
 
-    identify(&state, facts)?;
+    let identity = identify(&state, facts)?;
 
     if req.target.is_other() {
         idle_and_shell_free(&state, facts)?;
@@ -200,7 +209,11 @@ pub fn decide(req: &Request, facts: &dyn SystemFacts, state_dir: &Path) -> Resul
         Target::Other { .. } => !req.dry_run && req.confirmed,
     };
 
-    Ok(Plan { state, will_act })
+    Ok(Plan {
+        state,
+        identity,
+        will_act,
+    })
 }
 
 #[cfg(test)]
@@ -222,6 +235,11 @@ mod tests {
         cwds: HashMap<u32, PathBuf>,
         shells: HashMap<u32, Result<bool, ShellCheckError>>,
         transcripts_recent: RefCell<bool>,
+        /// Returned by `process_identity` at decide()-time, and again by
+        /// `kill_verified` - a test that wants to simulate PID reuse
+        /// between those two calls uses `RefCell` to change this between
+        /// its own two calls into the fake.
+        identities: RefCell<HashMap<u32, ProcessIdentity>>,
     }
 
     impl FakeFacts {
@@ -232,10 +250,18 @@ mod tests {
                 cwds: HashMap::new(),
                 shells: HashMap::new(),
                 transcripts_recent: RefCell::new(true),
+                identities: RefCell::new(HashMap::new()),
             }
         }
         fn alive(mut self, pid: u32) -> Self {
             self.alive_claude.insert(pid, true);
+            self.identities.borrow_mut().insert(
+                pid,
+                ProcessIdentity {
+                    start_time_secs: 1000,
+                    exe: Some(PathBuf::from("claude.exe")),
+                },
+            );
             self
         }
         fn dead(mut self, pid: u32) -> Self {
@@ -281,8 +307,15 @@ mod tests {
         fn now(&self) -> chrono::DateTime<Utc> {
             self.now
         }
-        fn kill(&self, _pid: u32) -> Result<(), String> {
-            panic!("decide() must never call kill() - it only decides")
+        fn process_identity(&self, pid: u32) -> Option<ProcessIdentity> {
+            self.identities.borrow().get(&pid).cloned()
+        }
+        fn kill_verified(
+            &self,
+            _pid: u32,
+            _expected: &ProcessIdentity,
+        ) -> Result<(), crate::facts::KillError> {
+            panic!("decide() must never call kill_verified() - it only decides")
         }
     }
 
@@ -655,6 +688,24 @@ mod tests {
         };
         let plan = decide(&req, &healthy_facts(), dir.path()).unwrap();
         assert!(plan.will_act);
+    }
+
+    #[test]
+    fn the_plan_carries_the_process_identity_recorded_at_decide_time() {
+        // ⚠️ main.rs's kill step relies on THIS identity, not a fresh read
+        // of its own - decide() must actually capture and hand it back.
+        let dir = tempdir().unwrap();
+        write_state(dir.path(), "overmind", |_| {});
+        let req = Request {
+            target: Target::Myself {
+                role: "overmind".into(),
+            },
+            confirmed: false,
+            dry_run: false,
+        };
+        let plan = decide(&req, &healthy_facts(), dir.path()).unwrap();
+        assert_eq!(plan.identity.start_time_secs, 1000);
+        assert_eq!(plan.identity.exe, Some(PathBuf::from("claude.exe")));
     }
 
     #[test]

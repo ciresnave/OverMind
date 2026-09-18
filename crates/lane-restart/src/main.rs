@@ -130,11 +130,18 @@ fn main() -> ExitCode {
         }
         Ok(plan) if !plan.will_act => {
             println!(
-                "lane-restart: DRY RUN - would kill pid {} and relaunch \
-                 `claude --resume {} --name {} \"read {} HANDOFF and continue\"` in {}",
+                "lane-restart: DRY RUN - would kill pid {} and relaunch a FRESH session: \
+                 `claude --name {} --model {} --permission-mode {}{} \"read {} HANDOFF and \
+                 continue\"` in {}",
                 plan.state.pid,
-                plan.state.session_id,
                 plan.state.name.as_deref().unwrap_or(&plan.state.role),
+                plan.state.model,
+                plan.state.permission_mode,
+                if plan.state.remote_control {
+                    " --remote-control"
+                } else {
+                    ""
+                },
                 plan.state.role,
                 plan.state.cwd
             );
@@ -143,17 +150,17 @@ fn main() -> ExitCode {
         }
         Ok(plan) => {
             eprintln!(
-                "lane-restart: killing pid {} and relaunching...",
+                "lane-restart: killing pid {} and relaunching a fresh session...",
                 plan.state.pid
             );
-            match facts::kill_and_relaunch(&facts, &plan.state) {
+            match relaunch::kill_and_relaunch(&facts, &plan.state, &plan.identity) {
                 Ok(()) => {
                     log_outcome(
                         requested_by,
                         &args.role,
                         &format!(
-                            "killed pid {} and relaunched via claude --resume {}",
-                            plan.state.pid, plan.state.session_id
+                            "killed pid {} and relaunched a fresh session (continuity via HANDOFF only)",
+                            plan.state.pid
                         ),
                         true,
                     );
@@ -187,44 +194,221 @@ fn log_outcome(requested_by: &str, role: &str, outcome: &str, acted: bool) {
     }
 }
 
-/// Kept as its own module so `main`'s match arms stay readable - this is
-/// glue over `SysinfoFacts::kill` and a real process spawn, deliberately
-/// NOT unit tested (see `facts.rs`'s own docs on why).
-mod facts {
-    use lane_restart::facts::SystemFacts;
+/// The only place a real kill signal or a real process spawn happens.
+/// Deliberately NOT covered by `authorize.rs`'s tests (which never touch a
+/// real process) - `valid_identifier` and the argv SHAPE are unit tested
+/// here; the actual OS calls are exercised by `--dry-run` against real
+/// lanes before `--yes` is ever used for real.
+mod relaunch {
+    use lane_restart::facts::{KillError, ProcessIdentity, SystemFacts};
     use lane_restart::state::LaneState;
 
-    pub fn kill_and_relaunch(facts: &dyn SystemFacts, state: &LaneState) -> Result<(), String> {
-        facts.kill(state.pid)?;
+    /// PM finding, 2026-09-18: `role` and `name` come from a file the
+    /// TARGET LANE wrote about itself, and reached a `cmd.exe /C start`
+    /// command line - which parses metacharacters (`& | ^ % < >`) that
+    /// Rust's own argv-passing quoting does not protect against, because
+    /// it's cmd.exe doing a SECOND round of parsing on already-quoted
+    /// arguments. Two independent fixes, not one: this validator refuses
+    /// anything that isn't a plain identifier, AND (below) the launch no
+    /// longer goes through cmd.exe at all - `CREATE_NEW_CONSOLE` spawns
+    /// `claude.exe` directly with a real argv array, which Windows'
+    /// `CreateProcess` never hands to a shell for re-parsing. Either fix
+    /// alone would have closed this; both together don't depend on staying
+    /// right about which one actually mattered.
+    pub fn valid_identifier(s: &str) -> bool {
+        !s.is_empty()
+            && s.len() <= 64
+            && s.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+    }
+
+    #[derive(Debug)]
+    pub enum RelaunchError {
+        InvalidIdentifier(String),
+        Kill(KillError),
+        Spawn(String),
+    }
+
+    impl std::fmt::Display for RelaunchError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            match self {
+                RelaunchError::InvalidIdentifier(what) => {
+                    write!(f, "refusing to launch - not a plain identifier: {what}")
+                }
+                RelaunchError::Kill(e) => write!(f, "kill refused: {e}"),
+                RelaunchError::Spawn(e) => write!(f, "could not launch the relaunch command: {e}"),
+            }
+        }
+    }
+
+    /// ⚠️ NEVER `--resume`. PM finding, 2026-09-18: resuming reloads the
+    /// whole prior transcript, carrying the full context back in - exactly
+    /// the per-turn cost a restart exists to cut. This launches a FRESH
+    /// session; the only continuity is the lane's own HANDOFF file, read
+    /// by the first prompt. `state.session_id` is used only by
+    /// `authorize::decide`'s identity check (RESTART-TOOL-DESIGN.md §2),
+    /// never here.
+    pub fn kill_and_relaunch(
+        facts: &dyn SystemFacts,
+        state: &LaneState,
+        identity: &ProcessIdentity,
+    ) -> Result<(), RelaunchError> {
+        let name = state.name.as_deref().unwrap_or(&state.role);
+        if !valid_identifier(&state.role) {
+            return Err(RelaunchError::InvalidIdentifier(format!(
+                "role {:?}",
+                state.role
+            )));
+        }
+        if !valid_identifier(name) {
+            return Err(RelaunchError::InvalidIdentifier(format!("name {name:?}")));
+        }
+
+        facts
+            .kill_verified(state.pid, identity)
+            .map_err(RelaunchError::Kill)?;
         // Give the OS a moment to finish tearing the process down before a
-        // new `claude` process claims the same session lock.
+        // new `claude` process claims the same working directory's lock.
         std::thread::sleep(std::time::Duration::from_millis(500));
 
-        let name = state.name.as_deref().unwrap_or(&state.role);
         let prompt = format!("read {} HANDOFF and continue", state.role);
+        let mut cmd = std::process::Command::new("claude");
+        cmd.args(["--name", name]);
+        cmd.args(["--model", &state.model]);
+        cmd.args(["--permission-mode", &state.permission_mode]);
+        if state.remote_control {
+            cmd.arg("--remote-control");
+        }
+        cmd.arg(&prompt);
+        cmd.current_dir(&state.cwd);
 
-        // Windows: a visible new terminal window, per RESTART-TOOL-DESIGN.md §5.
+        // ⚠️ NO SHELL. `claude.exe` is spawned directly with a real argv
+        // array; `CREATE_NEW_CONSOLE` gives it the visible window
+        // RESTART-TOOL-DESIGN.md §5 asks for without cmd.exe ever parsing
+        // anything a lane wrote about itself.
         #[cfg(windows)]
         {
-            std::process::Command::new("cmd")
-                .args(["/C", "start", "", "claude"])
-                .args(["--resume", &state.session_id])
-                .args(["--name", name])
-                .arg(&prompt)
-                .current_dir(&state.cwd)
-                .spawn()
-                .map_err(|e| format!("could not launch the relaunch command: {e}"))?;
+            use std::os::windows::process::CommandExt;
+            const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
+            cmd.creation_flags(CREATE_NEW_CONSOLE);
         }
-        #[cfg(not(windows))]
-        {
-            std::process::Command::new("claude")
-                .args(["--resume", &state.session_id])
-                .args(["--name", name])
-                .arg(&prompt)
-                .current_dir(&state.cwd)
-                .spawn()
-                .map_err(|e| format!("could not launch the relaunch command: {e}"))?;
-        }
+
+        cmd.spawn()
+            .map_err(|e| RelaunchError::Spawn(e.to_string()))?;
         Ok(())
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn a_plain_role_name_is_valid() {
+            assert!(valid_identifier("overmind"));
+            assert!(valid_identifier("pm-2"));
+            assert!(valid_identifier("lane_42"));
+        }
+
+        #[test]
+        fn shell_metacharacters_are_refused() {
+            assert!(!valid_identifier("a&calc"));
+            assert!(!valid_identifier("a|calc"));
+            assert!(!valid_identifier("a^calc"));
+            assert!(!valid_identifier("a%PATH%"));
+            assert!(!valid_identifier("a<calc"));
+            assert!(!valid_identifier("a>calc"));
+            assert!(!valid_identifier("a;calc"));
+            assert!(!valid_identifier("a calc"));
+        }
+
+        #[test]
+        fn empty_and_oversized_are_refused() {
+            assert!(!valid_identifier(""));
+            assert!(!valid_identifier(&"x".repeat(65)));
+            assert!(valid_identifier(&"x".repeat(64)));
+        }
+
+        #[test]
+        fn dots_and_slashes_are_refused_too() {
+            // Not shell metacharacters, but still not a plain identifier -
+            // a role/name is never expected to need them.
+            assert!(!valid_identifier("a.b"));
+            assert!(!valid_identifier("a/b"));
+            assert!(!valid_identifier("../etc"));
+        }
+
+        struct NeverCalled;
+        impl SystemFacts for NeverCalled {
+            fn is_alive_claude_process(&self, _: u32) -> bool {
+                panic!("must not be reached")
+            }
+            fn cwd_of(&self, _: u32) -> Option<std::path::PathBuf> {
+                panic!("must not be reached")
+            }
+            fn has_live_shell_descendant(
+                &self,
+                _: u32,
+            ) -> Result<bool, lane_restart::facts::ShellCheckError> {
+                panic!("must not be reached")
+            }
+            fn transcript_is_recent(&self, _: &str, _: &str, _: std::time::Duration) -> bool {
+                panic!("must not be reached")
+            }
+            fn now(&self) -> chrono::DateTime<chrono::Utc> {
+                panic!("must not be reached")
+            }
+            fn process_identity(&self, _: u32) -> Option<ProcessIdentity> {
+                panic!("must not be reached")
+            }
+            fn kill_verified(&self, _: u32, _: &ProcessIdentity) -> Result<(), KillError> {
+                panic!(
+                    "kill_and_relaunch must refuse an invalid role/name BEFORE ever \
+                     attempting to kill anything"
+                )
+            }
+        }
+
+        fn state_with_role(role: &str) -> LaneState {
+            LaneState {
+                role: role.to_string(),
+                session_id: "s".to_string(),
+                pid: 1,
+                cwd: "C:/x".to_string(),
+                name: None,
+                model: "claude-sonnet-5".to_string(),
+                permission_mode: "prompting".to_string(),
+                remote_control: false,
+                busy: false,
+                subagents_running: 0,
+                no_background_shells: Some(true),
+                updated_at: chrono::Utc::now(),
+                updated_by_event: "Stop".to_string(),
+            }
+        }
+
+        fn dummy_identity() -> ProcessIdentity {
+            ProcessIdentity {
+                start_time_secs: 0,
+                exe: None,
+            }
+        }
+
+        #[test]
+        fn kill_and_relaunch_refuses_an_invalid_role_before_touching_the_process() {
+            // ⚠️ THE MUTATION THIS TEST EXISTS TO CATCH: it is not enough
+            // for `valid_identifier` to be correct in isolation if
+            // `kill_and_relaunch` doesn't actually call it as a gate.
+            let state = state_with_role("a&calc");
+            let result = kill_and_relaunch(&NeverCalled, &state, &dummy_identity());
+            assert!(matches!(result, Err(RelaunchError::InvalidIdentifier(_))));
+        }
+
+        #[test]
+        fn kill_and_relaunch_refuses_an_invalid_name_before_touching_the_process() {
+            let mut state = state_with_role("overmind");
+            state.name = Some("a|calc".to_string());
+            let result = kill_and_relaunch(&NeverCalled, &state, &dummy_identity());
+            assert!(matches!(result, Err(RelaunchError::InvalidIdentifier(_))));
+        }
     }
 }

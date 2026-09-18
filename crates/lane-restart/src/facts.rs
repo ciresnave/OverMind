@@ -27,6 +27,43 @@ pub enum ShellCheckError {
     EnumerationFailed(String),
 }
 
+/// What identifies a PID as "the same process" across two points in time,
+/// so a kill can be refused if the PID has since been recycled. PM finding,
+/// 2026-09-18: a PID alone is not enough between `decide()` recording it and
+/// the actual kill running moments later - a vanishingly unlikely but real
+/// window in which the original process could exit and the PID be reused by
+/// something else entirely before the signal is sent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProcessIdentity {
+    pub start_time_secs: u64,
+    pub exe: Option<PathBuf>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum KillError {
+    /// The PID is no longer running at all.
+    NoLongerRunning,
+    /// A live process exists at this PID, but its start time (or exe path,
+    /// when both sides have one) no longer matches what was recorded at
+    /// `decide()` time - the PID was almost certainly recycled. Refused,
+    /// never killed.
+    IdentityChanged,
+    SignalRejected(String),
+}
+
+impl std::fmt::Display for KillError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            KillError::NoLongerRunning => write!(f, "the process is no longer running"),
+            KillError::IdentityChanged => write!(
+                f,
+                "the pid's identity changed since it was checked - refusing, likely PID reuse"
+            ),
+            KillError::SignalRejected(m) => write!(f, "the kill signal was rejected: {m}"),
+        }
+    }
+}
+
 pub trait SystemFacts {
     /// Is `pid` alive right now, and is its own image name `claude` (or
     /// `claude.exe`)? A dead PID, or a live one that isn't Claude Code
@@ -50,9 +87,16 @@ pub trait SystemFacts {
 
     fn now(&self) -> DateTime<Utc>;
 
-    /// Sends the real kill. Only ever called after `authorize::decide`
-    /// returns `Ok`, and only in non-dry-run mode.
-    fn kill(&self, pid: u32) -> Result<(), String>;
+    /// The identity to record at `decide()` time, for `kill_verified` to
+    /// re-check right before acting. `None` if the pid isn't alive.
+    fn process_identity(&self, pid: u32) -> Option<ProcessIdentity>;
+
+    /// Sends the real kill - but ONLY if `pid`'s identity, re-read right
+    /// now, still matches `expected`. Refuses (never signals) on any
+    /// mismatch, including the process simply no longer existing. Only
+    /// ever called after `authorize::decide` returns `Ok`, and only in
+    /// non-dry-run mode.
+    fn kill_verified(&self, pid: u32, expected: &ProcessIdentity) -> Result<(), KillError>;
 }
 
 pub struct SysinfoFacts {
@@ -143,18 +187,42 @@ impl SystemFacts for SysinfoFacts {
         Utc::now()
     }
 
-    fn kill(&self, pid: u32) -> Result<(), String> {
+    fn process_identity(&self, pid: u32) -> Option<ProcessIdentity> {
         let mut sys = System::new();
         sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
-        match sys.process(Pid::from_u32(pid)) {
-            Some(p) => {
-                if p.kill() {
-                    Ok(())
-                } else {
-                    Err(format!("kill signal to pid {pid} was not accepted"))
-                }
+        sys.process(Pid::from_u32(pid)).map(|p| ProcessIdentity {
+            start_time_secs: p.start_time(),
+            exe: p.exe().map(|e| e.to_path_buf()),
+        })
+    }
+
+    fn kill_verified(&self, pid: u32, expected: &ProcessIdentity) -> Result<(), KillError> {
+        // ⚠️ RE-READ, DO NOT TRUST `expected` ALONE. The whole point is that
+        // time has passed since `expected` was recorded; a fresh read is
+        // what makes this a check rather than a formality.
+        let mut sys = System::new();
+        sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
+        let process = sys
+            .process(Pid::from_u32(pid))
+            .ok_or(KillError::NoLongerRunning)?;
+        let current = ProcessIdentity {
+            start_time_secs: process.start_time(),
+            exe: process.exe().map(|e| e.to_path_buf()),
+        };
+        if current.start_time_secs != expected.start_time_secs {
+            return Err(KillError::IdentityChanged);
+        }
+        if let (Some(a), Some(b)) = (&current.exe, &expected.exe) {
+            if a != b {
+                return Err(KillError::IdentityChanged);
             }
-            None => Err(format!("pid {pid} is not running")),
+        }
+        if process.kill() {
+            Ok(())
+        } else {
+            Err(KillError::SignalRejected(format!(
+                "kill signal to pid {pid} was not accepted"
+            )))
         }
     }
 }
@@ -171,5 +239,70 @@ mod tests {
             SysinfoFacts::project_dir_name("C:/Projects/OverMind"),
             "C--Projects-OverMind"
         );
+    }
+
+    /// ⚠️ THE ONE REAL-PROCESS TEST IN THIS MODULE. Safe because it only
+    /// ever spawns and kills a child THIS TEST OWNS - never touches
+    /// anything else on the system. PM finding, 2026-09-18: `kill_verified`
+    /// must re-read the pid's identity and refuse if it no longer matches
+    /// what was recorded, so a recycled pid can't be killed by mistake.
+    #[test]
+    fn kill_verified_refuses_on_a_mismatched_identity_and_succeeds_on_a_matching_one() {
+        let mut child = spawn_sleep_child();
+        let pid = child.id();
+        let facts = SysinfoFacts::new(std::env::temp_dir());
+
+        // Give sysinfo a moment to see the freshly-spawned process.
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let real_identity = facts
+            .process_identity(pid)
+            .expect("the freshly spawned child must be observable");
+
+        let wrong_identity = ProcessIdentity {
+            start_time_secs: real_identity.start_time_secs + 999_999,
+            exe: real_identity.exe.clone(),
+        };
+        let refused = facts.kill_verified(pid, &wrong_identity);
+        assert_eq!(refused, Err(KillError::IdentityChanged));
+
+        // The child must still be alive - the mismatched call must not
+        // have killed it.
+        assert!(
+            child.try_wait().unwrap().is_none(),
+            "a refused kill must not have touched the process"
+        );
+
+        let accepted = facts.kill_verified(pid, &real_identity);
+        assert_eq!(accepted, Ok(()));
+        let _ = child.wait();
+    }
+
+    #[test]
+    fn kill_verified_refuses_a_pid_that_is_no_longer_running() {
+        let mut child = spawn_sleep_child();
+        let pid = child.id();
+        let facts = SysinfoFacts::new(std::env::temp_dir());
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let identity = facts.process_identity(pid).unwrap();
+
+        child.kill().unwrap();
+        let _ = child.wait();
+        std::thread::sleep(std::time::Duration::from_millis(200));
+
+        assert_eq!(
+            facts.kill_verified(pid, &identity),
+            Err(KillError::NoLongerRunning)
+        );
+    }
+
+    fn spawn_sleep_child() -> std::process::Child {
+        #[cfg(windows)]
+        let child = std::process::Command::new("ping")
+            .args(["-n", "30", "127.0.0.1"])
+            .stdout(std::process::Stdio::null())
+            .spawn();
+        #[cfg(not(windows))]
+        let child = std::process::Command::new("sleep").arg("30").spawn();
+        child.expect("could not spawn a throwaway child process for this test")
     }
 }

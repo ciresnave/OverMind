@@ -34,6 +34,7 @@ from dataclasses import dataclass
 CHECK_TABLE: tuple[tuple[str, tuple[str, ...], str], ...] = (
     ("Cargo.toml", ("cargo", "test"), "cargo test"),
     ("go.mod", ("go", "test", "./..."), "go test ./..."),
+    ("Makefile", ("make", "test"), "make test"),
     ("pyproject.toml", ("python", "-m", "pytest"), "python -m pytest"),
     ("setup.py", ("python", "-m", "pytest"), "python -m pytest"),
     ("package.json", ("npm", "test"), "npm test"),

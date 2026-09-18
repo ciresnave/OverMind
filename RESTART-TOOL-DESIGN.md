@@ -344,13 +344,27 @@ settings separately, for no benefit this design needs. Still CireSnave's call.
 The binary itself needs to exist at one fixed, absolute path every lane can reach (built once, not
 per-project) - proposed as `C:/Projects/.claude-hooks/lane-restart.exe`, a sibling of `.lane-state/`
 for the same reason: portfolio-wide runtime tooling, kept out of every git repo. Exec form (`args`)
-is used throughout, so no shell ever parses anything:
+is used throughout, so no shell ever parses anything.
+
+⚠️ **REVISED (PM finding, 2026-09-18): `~/.claude/settings.json` already has a `hooks` key.**
+Confirmed by reading the file directly, not assumed: it holds a `SessionStart` entry running
+`run_wrap_hidden.vbs` - CireSnave's own, unrelated to this proposal. **This MERGES into that file,
+appending to each event's array - it never replaces the `hooks` key, and `SessionStart`'s existing
+entry stays exactly where it is.** The block below shows the merged result for the one event that
+already had something (`SessionStart`) and the new entries alone for the rest:
 
 ```json
 {
   "hooks": {
-    "SessionStart": [{ "hooks": [{ "type": "command",
-      "command": "C:/Projects/.claude-hooks/lane-restart.exe", "args": ["state", "SessionStart"] }] }],
+    "SessionStart": [
+      {
+        "hooks": [
+          { "type": "command", "command": "wscript.exe \"C:\\Users\\cires\\.claude\\scripts\\run_wrap_hidden.vbs\"" }
+        ]
+      },
+      { "hooks": [{ "type": "command",
+        "command": "C:/Projects/.claude-hooks/lane-restart.exe", "args": ["state", "SessionStart"] }] }
+    ],
     "UserPromptSubmit": [{ "hooks": [{ "type": "command",
       "command": "C:/Projects/.claude-hooks/lane-restart.exe", "args": ["state", "UserPromptSubmit"] }] }],
     "PreToolUse": [{ "hooks": [{ "type": "command",
@@ -368,6 +382,9 @@ is used throughout, so no shell ever parses anything:
   }
 }
 ```
+
+Every OTHER top-level key in that file (`env`, `permissions`, `model`, `deniedMcpServers`, `worktree`,
+`enabledPlugins`, ...) is untouched by this - only `hooks` is merged into, and only by appending.
 
 `LANE_ROLE` (§10.2) is set once per lane, wherever that lane's own launch environment is configured -
 not part of this settings.json block, which is identical across every lane.
@@ -437,11 +454,16 @@ repeated here to avoid two copies drifting.
 
 ### 11.5 Rollback
 
-**Remove the `hooks` key (or just its eight event entries) from `settings.json`.** Hooks simply stop
-firing; `.lane-state/*.json` files stop updating and, per §2's four-part identification, quickly read
-as stale and get refused by `lane-restart` rather than trusted - the tool fails closed on its own, not
-because rollback does anything special. No lane-side change is needed to roll back; the binary and
-`.lane-state/` directory can be left in place inert, or deleted, either is safe.
+**REVISED (PM finding, 2026-09-18): `~/.claude/settings.json` already has a `hooks` key** - a
+`SessionStart` entry running `run_wrap_hidden.vbs`, CireSnave's own, unrelated to this proposal.
+Confirmed directly by reading the file, not assumed. Removing the whole `hooks` key would delete
+that too. **Rollback is: remove only the entries whose `command` is `lane-restart.exe`, from each
+event's array, leaving every other hook (including that one) untouched.** Once removed, hooks simply
+stop firing; `.lane-state/*.json` files stop updating and, per §2's four-part identification, quickly
+read as stale and get refused by `lane-restart` rather than trusted - the tool fails closed on its
+own, not because rollback does anything special beyond removing its own entries. No lane-side change
+is needed; the binary and `.lane-state/` directory can be left in place inert, or deleted, either is
+safe.
 
 ### 11.6 Sequencing
 

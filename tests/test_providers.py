@@ -16,7 +16,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from overmind.providers import (  # noqa: E402
     PROVIDERS, NoUsableModel, Provider, ProviderClient, RateLimited, Usage,
-    normalise_for_echo, select_models,
+    canonical_model, normalise_for_echo, select_models,
 )
 
 
@@ -144,6 +144,37 @@ class TestModelSelection(unittest.TestCase):
 
     def test_unpreferred_models_still_offered_as_fallback(self):
         self.assertEqual(select_models(["zzz"], ("nomatch",)), ["zzz"])
+
+
+class TestModelKeyCanonicalization(unittest.TestCase):
+    """§32 - Google's roster names a model `models/<id>`; a pin names the same
+    model without the prefix. Both must reach one quota key, or the same
+    model gets tracked twice and neither entry's block protects the other."""
+
+    def test_canonical_model_strips_the_prefix(self):
+        self.assertEqual(canonical_model("models/gemini-3.1-flash-lite"),
+                         "gemini-3.1-flash-lite")
+
+    def test_canonical_model_leaves_an_unprefixed_id_alone(self):
+        self.assertEqual(canonical_model("gemini-3.1-flash-lite"),
+                         "gemini-3.1-flash-lite")
+
+    def test_a_prefixed_roster_id_is_stripped_before_use(self):
+        prov = Provider(key="google", base_url="http://x", secret_name="NOPE",
+                        fallback_models=("gemini-3.1-flash-lite",), models_path="/models")
+        t = FakeTransport({"models": {"data": [{"id": "models/gemini-3.1-flash-lite"}]},
+                          "gemini-3.1-flash-lite": chat_body("ok")})
+        client = ProviderClient(prov, opener=t)
+        self.assertEqual(client.roster(), ["gemini-3.1-flash-lite"])
+        self.assertEqual(client.chat([{"role": "user", "content": "hi"}]).content, "ok")
+
+    def test_a_prefixed_pin_matches_the_roster_derived_key(self):
+        """A caller who pins the roster's own spelling still lands on one key."""
+        prov = Provider(key="google", base_url="http://x", secret_name="NOPE",
+                        fallback_models=(), models_path=None)
+        client = ProviderClient(prov, model="models/gemini-3.1-flash-lite")
+        self.assertEqual(client.pinned_model, "gemini-3.1-flash-lite")
+        self.assertEqual(client.candidates(), ["gemini-3.1-flash-lite"])
 
 
 class TestFailover(unittest.TestCase):

@@ -1944,3 +1944,98 @@ That puts §23's table in a new light: OpenRouter 50/day, Google 20/day for its 
 - ⚠️ **One run per cell, as in §27.** Not a rate.
 
 Full four-task benchmark on the *default* model of each of these providers is unrun; the two tasks here were chosen to conserve daily allowance while screening breadth.
+
+---
+
+## 31. 🔴 MISTRAL AND HUGGING FACE ON THE FULL §27 BENCHMARK — a valid tool call is not fix capability, and Hugging Face's real limit is a MONTHLY credit
+
+**Observed 2026-09-17, on `origin/main` `81d11e43`, via `probe/p1_bench.py` on all four §27 tasks. Nothing published.** Both controls passed on every task. Default model for each provider (no pin): Mistral `codestral-2508`, Hugging Face `Qwen/Qwen3-Coder-30B-A3B-Instruct`.
+
+| task | Mistral `codestral-2508` | Hugging Face `Qwen3-Coder-30B` |
+|---|---|---|
+| number-substring | NO_CHANGE · 8 steps | 🔴 INCOMPLETE - **check_exit 0** (a real fix), interrupted by HTTP 402 on the wrap-up call |
+| timeout-escapes | NO_CHANGE · 16 | NO_CHANGE · 8 - blocked by 402 |
+| glob-crosses-dirs | INCOMPLETE · 16, check still failing (exit 1) | NO_CHANGE · 7 - blocked by 402 |
+| max-of-nothing | NO_CHANGE · 2 | NO_CHANGE · 0 - blocked before any step |
+| **fixed** | **0/4** | **0/4 counted, 1 real fix discarded by interruption** |
+
+⚠️ **CODESTRAL'S RESULT IS A REAL CAPABILITY MISS, NOT A HARNESS ARTEFACT.** `glob-crosses-dirs` ended INCOMPLETE with `check_exit=1` - the model tried, edited the file, and was still wrong when it ran out of steps (`final_text`: *"The change did not resolve the issue..."*). A tool-call survey (§30 preface) is not evidence of fix capability; this is the first clean four-task read on Mistral's default model and it solved none of them.
+
+### 🔴 The Hugging Face story is a measurement correction, made twice
+
+- **First finding (wrong):** the benchmark run above returned HTTP 402 on `number-substring`'s final call, `timeout-escapes`, and immediately on `max-of-nothing`. A repeat probe right after got 4/4 OK, which read as "transient noise" - **that reading was wrong.**
+- **Second finding (right):** a 10-call sequential probe minutes later got 3 OK then 7 consecutive `402`s, and the body finally gave the real reason: *"You have depleted your monthly included credits."* The account (`canPay: false`, prepaid) has a small monthly free allowance that this session's own probing had been spending down since the survey in §30 - it was not flaky, it was running out in front of the instrument.
+- ⚠️ **THE ONE FIX THAT WAS REAL GOT THROWN AWAY BY THE RUNNER'S OWN SAFETY RULE, CORRECTLY.** `number-substring`'s check passed (`check_exit=0`, a genuine 9-line diff) before the wrap-up call hit the 402 and the run ended `INCOMPLETE` with `stop_reason=provider-error`. This is §26's "an interrupted run is never publishable, even when the check passes" rule, now validated against a real external failure instead of a planted one - the model earned a fix and the harness still refused to count it, exactly as designed.
+
+### The fix, shipped in this same commit
+
+`src/overmind/quota.py` and `providers.py`: an HTTP 402 carrying that exact phrase now blocks the WHOLE provider (every model, since the credit is account-wide) until the first of next UTC month - a different axis from the per-model DAILY block in §27, stored under a `provider/"*"` key. An unrelated 402 (a real billing failure) is not treated as this signature and does not block anything. `RoutedClient` already fails over past a fully blocked provider with no further change.
+
+⚠️ **FOUND WHILE WRITING THIS FIX: `NoUsableModel` COULD RAISE WITH AN EMPTY REASON LIST.** When every candidate is filtered out by the quota book before the per-model loop ever runs, `attempts` stayed empty and the exception read "no usable model" with nothing to say why - the exact failure this class exists to prevent, hiding in its own edge case. Fixed: an empty candidate list now reports against the unfiltered roster instead of raising silently.
+
+**30 new tests, 9 mutations, each red on exactly the predicted tests** (two of my own first predictions were incomplete, not the code - see the commit). Suite 330/330.
+
+### What this changes about §27-§30's picture
+
+- **A one-request tool-call survey screens out non-starters; it does not predict which survivors can fix a bug.** Four tasks separated Codestral (0/4, genuinely tried and failed) from §30's four new fixers cleanly.
+- **Hugging Face's usable capacity today is a small monthly credit, not the daily-reset shape every other provider in §27 measured** - and it was largely spent by this session's own measuring of it before a single benchmark task got a clean run.
+## 32. 🟡 THE OTHER TWO §30 TASKS, ON THE FOUR CONFIRMED FIXERS — one model reaches 4/4, one drops out
+
+**Observed 2026-09-17, on `origin/main` `800fbd1` (pulled at run start; `p1_bench.py` refetches
+`origin/main` itself), via `probe/p1_bench.py` with `P1_TASKS=number-substring,glob-crosses-dirs`,
+pinning the four models §30 found fixing both of its two tasks. Nothing published.** This finishes the
+four-task bench §30 left open ("full four-task benchmark ... is unrun") for `nvidia/z-ai/glm-5.3`,
+`nvidia/deepseek-ai/deepseek-v4-flash-0731`, `openrouter/nvidia/nemotron-3-ultra-550b-a55b:free`, and
+`google/gemini-3.1-flash-lite` — **not** `gemini-3.5-flash-lite`, the different model §27 measured at
+4/4; the two are separate Google models under similar names, confirmed by re-reading §27's and §30's
+own text before running this.
+
+| model | number-substring | glob-crosses-dirs | 4-task total |
+|---|---|---|---|
+| NVIDIA `deepseek-v4-flash-0731` | ✅ PASS · 7 · 195 s | ✅ PASS · 10 · 165 s | **4/4** |
+| NVIDIA `glm-5.3` | 🔴 NO_CHANGE, timed out | ✅ PASS · 12 · 681 s | 3/4 |
+| Google `gemini-3.1-flash-lite` | 🔴 INCOMPLETE · 16 steps | 🔴 NO_CHANGE · 16 steps, no edit | 2/4 |
+| OpenRouter `nemotron-3-ultra-550b:free` | not run - daily-quota BLOCKED | not run - daily-quota BLOCKED | 2/2 tested, 2 untested |
+
+⚠️ **The OpenRouter model's two cells are not a capability finding.** `quota.py` had already recorded
+it `BLOCKED` for the day from §30's own run plus other work today (17 requests against a model with no
+known cap) - `NoUsableModel` fired before any request went out (`steps=0`). Confirms the daily-block
+mechanism did its job (no wasted request against an already-refused model), but it means this model's
+real 4-task total is still unmeasured.
+
+**`deepseek-v4-flash-0731` is the only one of the four to reach 4/4** - slower than `gemini-3.1-flash-lite`
+was on the two tasks it passed (165-195 s a task here, 963 s on `timeout-escapes` in §30), but it
+finished every task it was given today. `glm-5.3` timed out on one call (own tool's error text:
+"timed out") rather than producing a wrong answer - a transport/latency failure, not a demonstrated
+capability gap, same caveat §30 gave `gemini-3.8-flash`'s HTTP 50x cells. `gemini-3.1-flash-lite`
+genuinely regressed from its 2/2 in §30: on `number-substring` it made a 37-line edit and still didn't
+resolve the check inside 16 steps; on `glob-crosses-dirs` it made no edit at all inside 16 steps -
+these look like real capability limits on these two tasks specifically, not transport failures.
+
+⚠️ **Found while reading the quota book afterward, not a capability finding, but worth recording:** the
+book holds `google/gemini-3.1-flash-lite` (32 used, this run's pinned-model key) and
+`google/models/gemini-3.1-flash-lite` (18 used, the roster-derived key from `free_capacity.py`/earlier
+screening) as two separate, un-reconciled entries for what account-side is the same model - Google's
+roster lists ids as `models/<name>`, and a CLI-pinned run that omits the prefix creates a second key a
+roster-based block would never see. Neither entry hit `BLOCKED` today, so nothing was actually miscounted
+by it this run, but the mechanism can't currently tell the two apart if one of them does.
+
+### What this adds to §27/§30
+
+- **`deepseek-v4-flash-0731` is now the strongest confirmed free-tier fixer measured on the full four-task
+  set**, ahead of `gemini-3.1-flash-lite` (2/4) and on par with §27's `gemini-3.5-flash-lite` (4/4, a
+  different model, different provider account, not a comparable run) only in outcome, not in method.
+- **One run per cell, as in §27/§30. Not a rate.** A single timeout on `glm-5.3` and a single blocked
+  cell on the OpenRouter model each need a rerun, not a verdict, before either counts against the model.
+
+### §32 control run — glm-5.3's `number-substring` timeout, rerun
+
+**Observed 2026-09-17, same branch/task/pin as above, one more run.** `nvidia/z-ai/glm-5.3` timed
+out again on `number-substring`, stopping at the same step (4 of a possible 16), 259 s this time
+against 224 s the first time - both under the client's 180 s per-request timeout, so the model itself
+is holding a single request open past that bound, not the harness's overall budget. **Two independent
+runs landing on the identical step is no longer a one-off transport blip** - call this model's
+`number-substring` result a reproducible timeout, not yet resolved into "the model can't solve it" vs
+"this model's fourth call on this task is reliably slow enough to trip a 180 s client timeout." Raising
+the client timeout for this model, not assuming the task is beyond it, is the next thing that would
+tell the two apart - not done here.

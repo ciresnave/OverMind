@@ -247,14 +247,40 @@ anywhere. Verified against `hooks.md`'s documented common input fields and setti
 writing this, not assumed - and that check surfaced two real gaps, honestly flagged below rather than
 worked around with a guess.
 
+**REVISED (PM review, 2026-09-18): the first draft's PowerShell script is replaced by
+`lane-restart state <event>`, a subcommand in this same crate.** Four real issues in the PowerShell
+version, none of them fixed by tweaking that script:
+
+1. **Cost.** `PreToolUse` fires on every tool call, in every lane - spawning `powershell.exe` plus
+   `Get-CimInstance` each time cost ~0.3-1s, a portfolio-wide latency tax. A native binary starts in
+   single-digit milliseconds.
+2. **Races.** Parallel tool calls fire concurrent hooks; an unguarded read-modify-write on one JSON
+   file loses updates - a lost `SubagentStart` makes `subagents_running` too LOW, the unsafe
+   direction (a busy lane could look idle). Fixed with a create-new-file lock (atomic at the OS level)
+   around each read-modify-write cycle, and a stale-lock reclamation so a crashed holder can't wedge
+   every future hook forever. Mutation- and concurrency-tested: 20 real OS threads racing
+   `SubagentStart` against the same file, none lost.
+3. **`Get-Date -AsUTC`** is PowerShell 7 only - moot now; there's no PowerShell in the design at all.
+4. **Role from the cwd leaf gives the PM's own lane `"projects"`** (its cwd is `C:/Projects` itself).
+   Fixed: `LANE_ROLE`, when set, always wins over the cwd-leaf fallback.
+
+**On dropping `PreToolUse` in favour of `UserPromptSubmit` + `Stop` alone (raised as worth
+considering):** not done. `UserPromptSubmit` fires specifically for an interactively-typed prompt;
+whether it also fires for every other way a turn can start - a delivered peer/cross-session message,
+a `/loop`-scheduled prompt, a notification-driven response - isn't confirmed by the documented common
+fields, and getting that wrong means `busy` silently staying `false` during real work. That's the
+unsafe direction for the one thing this check exists to prevent (the PM restarting a lane it wrongly
+believes is idle). `PreToolUse` fires before literally any tool call regardless of what triggered the
+turn, so it's kept - and moving to a native binary is what makes keeping it cheap again.
+
 ### 10.1 Two gaps in what a hook can know, found while designing this
 
 - ⚠️ **No hook receives the running Claude Code process's own PID.** The common input fields
   (`session_id`, `transcript_path`, `cwd`, `permission_mode`, `hook_event_name`, ...) do not include
-  one, and `lane-restart` needs it (§2's identity check signs against `pid`). The script below derives
-  it itself: a hook runs as a CHILD process of the `claude` process, so `(Get-CimInstance
-  Win32_Process -Filter "ProcessId=$PID").ParentProcessId` gets it, with a sanity check that the
-  parent's own image name really is `claude.exe`.
+  one, and `lane-restart` needs it (§2's identity check signs against `pid`). §10.3's subcommand
+  derives it itself: a hook runs as a CHILD process of the `claude` process, so a parent-process
+  lookup (via `sysinfo`) gets it, with a sanity check that the parent's own image name really is
+  `claude`/`claude.exe`.
 - ⚠️ **No hook receives the current model name either**, at `SessionStart` or otherwise, except
   `PostModelSwitch`'s own event (whose payload isn't in the DOCUMENTED common-fields table, so this
   proposal doesn't assume its shape without checking that separately). Consequence: `model` in the
@@ -262,83 +288,38 @@ worked around with a guess.
   otherwise. **Flagged, not worked around** - a wrong guess here would feed a wrong `--model` into a
   future relaunch.
 
-### 10.2 Role: derived from `cwd`, not configured separately
+### 10.2 Role: `LANE_ROLE` override, falling back to the `cwd` leaf
 
-`cwd` IS a common field. Proposal: the role is the lowercased leaf directory name of `cwd`
-(`C:/Projects/OverMind` → `overmind`). No new environment variable, no per-lane settings needed beyond
-the hooks themselves - every lane already runs from its own, distinctly-named project directory. If a
-lane's directory name doesn't match the role name the PM/CireSnave already use for it elsewhere,
-that's a naming mismatch to resolve by renaming, not a reason to add a second source of truth for
-"which role is this."
+**REVISED (PM finding, 2026-09-18):** the cwd-leaf-only version of this proposal gave the PM's own
+lane `"projects"` (its cwd is `C:/Projects` itself, not a per-lane subdirectory) - a real bug, not a
+hypothetical one. Fixed: `LANE_ROLE`, an environment variable set once per lane wherever that lane's
+own launch environment already lives, always wins when present; the lowercased leaf directory name
+of `cwd` (`C:/Projects/OverMind` → `overmind`) remains the fallback for every lane whose directory
+name already IS its role - which is most of them, so most lanes need no new setting at all.
 
-### 10.3 The script (one file, all events dispatch through it)
+### 10.3 The hook command: `lane-restart state <event>`
 
-`C:/Projects/.claude-hooks/lane-state.ps1` (PowerShell - `"shell": "powershell"` is a documented hook
-option, matching this box's own primary shell; a fixed path, not `${CLAUDE_PROJECT_DIR}` - see §10.4):
+A subcommand of this same crate (`crates/lane-restart/src/lane_state_writer.rs`), not a separate
+script. Exec form (`args`, no shell): the event name is a literal argument, common hook input JSON
+comes on stdin, exactly as `hooks.md` documents.
 
-```powershell
-param()
-$input_json = [Console]::In.ReadToEnd() | ConvertFrom-Json
-$event = $input_json.hook_event_name
-$cwd = $input_json.cwd
-$role = (Split-Path $cwd -Leaf).ToLower()
-$stateDir = "C:/Projects/.lane-state"
-$statePath = Join-Path $stateDir "$role.json"
-New-Item -ItemType Directory -Force -Path $stateDir | Out-Null
-
-function Get-ClaudePid {
-    $parent = (Get-CimInstance Win32_Process -Filter "ProcessId=$PID").ParentProcessId
-    $parentProc = Get-CimInstance Win32_Process -Filter "ProcessId=$parent"
-    if ($parentProc.Name -notmatch '^claude(\.exe)?$') {
-        throw "hook's parent process is '$($parentProc.Name)', not claude - refusing to record a wrong pid"
-    }
-    return $parent
-}
-
-$existing = if (Test-Path $statePath) { Get-Content $statePath -Raw | ConvertFrom-Json } else { $null }
-
-switch ($event) {
-    "SessionStart" {
-        $state = @{
-            role = $role
-            session_id = $input_json.session_id
-            pid = (Get-ClaudePid)
-            cwd = $cwd
-            name = $null            # not in common fields; left for a future revision if needed
-            model = $(if ($existing) { $existing.model } else { $null })
-            permission_mode = $input_json.permission_mode
-            remote_control = $(if ($existing) { $existing.remote_control } else { $false })
-            busy = $false
-            subagents_running = 0
-            no_background_shells = $null
-            updated_at = (Get-Date -AsUTC).ToString("o")
-            updated_by_event = $event
-        }
-    }
-    default {
-        if (-not $existing) { exit 0 }   # no SessionStart seen yet - nothing to update
-        $state = $existing | ConvertTo-Json | ConvertFrom-Json  # clone
-        $state.updated_at = (Get-Date -AsUTC).ToString("o")
-        $state.updated_by_event = $event
-        switch ($event) {
-            "UserPromptSubmit" { $state.busy = $true }
-            "PreToolUse"       { $state.busy = $true }
-            "Stop"             { $state.busy = $false }
-            "SubagentStart"    { $state.subagents_running += 1 }
-            "SubagentStop"     { $state.subagents_running = [Math]::Max(0, $state.subagents_running - 1) }
-            "PostModelSwitch"  { $state.model = $input_json.model }  # field name unverified - see §10.1
-            "SessionEnd"       { Remove-Item $statePath -ErrorAction SilentlyContinue; exit 0 }
-        }
-    }
-}
-
-$state | ConvertTo-Json | Set-Content -Path $statePath -Encoding utf8
-```
-
-⚠️ **`no_background_shells` is never set to `true` by this script.** Per RESTART-TOOL-DESIGN.md §1a,
-that claim is the lane's own assertion, written when it writes its own HANDOFF - a deliberate manual
-step in whatever a lane's own restart-request procedure is, not something a lifecycle hook can
-honestly assert on the lane's behalf.
+- **Role**: `LANE_ROLE` env var if set, else `cwd`'s lowercased leaf directory name (§10.2, now with
+  the PM's override).
+- **PID**: this hook process's own parent, looked up via `sysinfo` (the same crate `facts.rs`
+  already depends on) - refused, not guessed, if that parent isn't named `claude`/`claude.exe`.
+- **Concurrency**: a create-new-file lock (`<role>.lock`, atomic at the OS level) held for the whole
+  read-modify-write cycle; a lock older than 5s is treated as abandoned and reclaimed rather than
+  wedging every future hook forever.
+- **Write**: temp file + rename (atomic on the same volume), never a direct overwrite.
+- **Events**: identical mapping to the first draft - `SessionStart` writes fresh (preserving a
+  previously-learned `model`/`remote_control` across a resume, never resetting them to unknown);
+  `UserPromptSubmit`/`PreToolUse` set `busy: true`; `Stop` clears it; `SubagentStart`/`SubagentStop`
+  increment/decrement (floored at 0, `saturating_sub`); `PostModelSwitch` updates `model` when its
+  payload includes one; `SessionEnd` deletes the file. `no_background_shells` is never set `true` by
+  any hook event - per §1a, that claim is the lane's own manual assertion when writing HANDOFF.
+- **Tests**: every branch above is a pure function (`apply_event`) tested without any file I/O, plus
+  a test driving 20 real OS threads at the real locked write path to prove `SubagentStart` is never
+  lost under real concurrency - not just asserted safe in isolation.
 
 ### 10.4 The `settings.json` block (not applied)
 
@@ -347,37 +328,36 @@ under this one user account, and a user-level entry covers every project directo
 each lane's own repo. Per-project would need the identical block added to every lane's project
 settings separately, for no benefit this design needs. Still CireSnave's call.
 
-⚠️ **The script's own path is a fixed, absolute one - deliberately NOT `${CLAUDE_PROJECT_DIR}`.** That
-placeholder resolves per-project ("project root where session started"), which would mean placing an
-identical copy of the script under every lane's own repo just to get one user-level settings edit to
-reach all of them - defeating the point. One script, once, at a location no project's own directory
-structure affects:
+The binary itself needs to exist at one fixed, absolute path every lane can reach (built once, not
+per-project) - proposed as `C:/Projects/.claude-hooks/lane-restart.exe`, a sibling of `.lane-state/`
+for the same reason: portfolio-wide runtime tooling, kept out of every git repo. Exec form (`args`)
+is used throughout, so no shell ever parses anything:
 
 ```json
 {
   "hooks": {
-    "SessionStart": [{ "hooks": [{ "type": "command", "shell": "powershell",
-      "command": "C:/Projects/.claude-hooks/lane-state.ps1" }] }],
-    "UserPromptSubmit": [{ "hooks": [{ "type": "command", "shell": "powershell",
-      "command": "C:/Projects/.claude-hooks/lane-state.ps1" }] }],
-    "PreToolUse": [{ "hooks": [{ "type": "command", "shell": "powershell",
-      "command": "C:/Projects/.claude-hooks/lane-state.ps1" }] }],
-    "Stop": [{ "hooks": [{ "type": "command", "shell": "powershell",
-      "command": "C:/Projects/.claude-hooks/lane-state.ps1" }] }],
-    "SubagentStart": [{ "hooks": [{ "type": "command", "shell": "powershell",
-      "command": "C:/Projects/.claude-hooks/lane-state.ps1" }] }],
-    "SubagentStop": [{ "hooks": [{ "type": "command", "shell": "powershell",
-      "command": "C:/Projects/.claude-hooks/lane-state.ps1" }] }],
-    "PostModelSwitch": [{ "hooks": [{ "type": "command", "shell": "powershell",
-      "command": "C:/Projects/.claude-hooks/lane-state.ps1" }] }],
-    "SessionEnd": [{ "hooks": [{ "type": "command", "shell": "powershell",
-      "command": "C:/Projects/.claude-hooks/lane-state.ps1" }] }]
+    "SessionStart": [{ "hooks": [{ "type": "command",
+      "command": "C:/Projects/.claude-hooks/lane-restart.exe", "args": ["state", "SessionStart"] }] }],
+    "UserPromptSubmit": [{ "hooks": [{ "type": "command",
+      "command": "C:/Projects/.claude-hooks/lane-restart.exe", "args": ["state", "UserPromptSubmit"] }] }],
+    "PreToolUse": [{ "hooks": [{ "type": "command",
+      "command": "C:/Projects/.claude-hooks/lane-restart.exe", "args": ["state", "PreToolUse"] }] }],
+    "Stop": [{ "hooks": [{ "type": "command",
+      "command": "C:/Projects/.claude-hooks/lane-restart.exe", "args": ["state", "Stop"] }] }],
+    "SubagentStart": [{ "hooks": [{ "type": "command",
+      "command": "C:/Projects/.claude-hooks/lane-restart.exe", "args": ["state", "SubagentStart"] }] }],
+    "SubagentStop": [{ "hooks": [{ "type": "command",
+      "command": "C:/Projects/.claude-hooks/lane-restart.exe", "args": ["state", "SubagentStop"] }] }],
+    "PostModelSwitch": [{ "hooks": [{ "type": "command",
+      "command": "C:/Projects/.claude-hooks/lane-restart.exe", "args": ["state", "PostModelSwitch"] }] }],
+    "SessionEnd": [{ "hooks": [{ "type": "command",
+      "command": "C:/Projects/.claude-hooks/lane-restart.exe", "args": ["state", "SessionEnd"] }] }]
   }
 }
 ```
 
-`C:/Projects/.claude-hooks/` is proposed as a sibling of `.lane-state/` for the same reason: portfolio-
-wide runtime tooling, not part of any one project, kept out of every git repo.
+`LANE_ROLE` (§10.2) is set once per lane, wherever that lane's own launch environment is configured -
+not part of this settings.json block, which is identical across every lane.
 
 ### 10.5 Not proposed here
 

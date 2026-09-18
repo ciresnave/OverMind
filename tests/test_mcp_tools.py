@@ -132,17 +132,48 @@ class FakeSession:
 
 
 def source_with(session, tools):
-    """An McpToolSource wired to a fake session, without opening a subprocess."""
+    """An McpToolSource wired to a fake session, without opening a subprocess.
+
+    ⚠️ `src._thread` MUST be set, or `close()`'s own guard (`if self._thread
+    is not None: self._thread.join(...)`) silently skips joining it - found
+    2026-09-18, PM finding on OverMind#46 CI: the un-joined loop+thread from
+    an EARLIER test was left running, and its ProactorEventLoop self-pipe
+    teardown fired asynchronously during an UNRELATED LATER test
+    ("Error on reading from the event loop self pipe", WinError 87),
+    intermittently and non-reproducibly - the exact shape of a leak, not a
+    real defect in whatever test happened to be running when it surfaced.
+    """
     import asyncio
     import threading
     src = McpToolSource(command="unused")
     loop = asyncio.new_event_loop()
-    threading.Thread(target=loop.run_forever, daemon=True).start()
+    thread = threading.Thread(target=loop.run_forever, daemon=True)
+    thread.start()
     src._loop = loop
+    src._thread = thread
     src._session = session
     src._tools = tools
     _, src._issues = convert_tools(tools)
     return src
+
+
+class TestSourceWithCleansUpItsOwnLoop(unittest.TestCase):
+    """⚠️ `source_with` itself was the leak PM found on OverMind#46's Windows
+    CI: `src._thread` was never assigned, so `close()`'s own guard silently
+    skipped joining it, leaving the loop+thread to tear down asynchronously
+    at Python's convenience - during an unrelated LATER test, on Windows,
+    as an intermittent ProactorEventLoop self-pipe error. Tested directly on
+    the fixture that leaked, not just observed as an indirect symptom."""
+
+    def test_close_actually_stops_the_background_loop(self):
+        src = source_with(FakeSession("x"), [])
+        loop, thread = src._loop, src._thread
+        self.assertIsNotNone(thread, "close() cannot join a thread it was never given")
+        self.assertTrue(thread.is_alive())
+        src.close()
+        thread.join(timeout=5)
+        self.assertFalse(thread.is_alive(), "the background loop's thread must have stopped")
+        self.assertFalse(loop.is_running())
 
 
 class TestInvocation(unittest.TestCase):

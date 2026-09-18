@@ -234,3 +234,154 @@ anyone should be committing.
 All four `DECISION NEEDED` points from the earlier draft are now answered (§1a, §4, §6.2, §7). Next:
 fold these into the crate skeleton and CI (already in progress), then build the kill/launch logic
 against this now-settled spec.
+
+**Update, 2026-09-18: the crate is built (OverMind#53).** What's left, per the PM: *"Before the tool
+restarts any real lane, the hooks that write `.lane-state` must exist on every lane... don't install
+them yourself: settings are CireSnave's."* §10 is that proposal - not installed anywhere, and not
+authored to be installed by this lane.
+
+## 10. PROPOSAL, not installed — the hooks that write `.lane-state/<role>.json`
+
+**CireSnave's or the PM's to install, in `settings.json`.** Nothing in this section has been applied
+anywhere. Verified against `hooks.md`'s documented common input fields and settings shape before
+writing this, not assumed - and that check surfaced two real gaps, honestly flagged below rather than
+worked around with a guess.
+
+### 10.1 Two gaps in what a hook can know, found while designing this
+
+- ⚠️ **No hook receives the running Claude Code process's own PID.** The common input fields
+  (`session_id`, `transcript_path`, `cwd`, `permission_mode`, `hook_event_name`, ...) do not include
+  one, and `lane-restart` needs it (§2's identity check signs against `pid`). The script below derives
+  it itself: a hook runs as a CHILD process of the `claude` process, so `(Get-CimInstance
+  Win32_Process -Filter "ProcessId=$PID").ParentProcessId` gets it, with a sanity check that the
+  parent's own image name really is `claude.exe`.
+- ⚠️ **No hook receives the current model name either**, at `SessionStart` or otherwise, except
+  `PostModelSwitch`'s own event (whose payload isn't in the DOCUMENTED common-fields table, so this
+  proposal doesn't assume its shape without checking that separately). Consequence: `model` in the
+  state file starts **unset** for a session that never explicitly switches models, until proven
+  otherwise. **Flagged, not worked around** - a wrong guess here would feed a wrong `--model` into a
+  future relaunch.
+
+### 10.2 Role: derived from `cwd`, not configured separately
+
+`cwd` IS a common field. Proposal: the role is the lowercased leaf directory name of `cwd`
+(`C:/Projects/OverMind` → `overmind`). No new environment variable, no per-lane settings needed beyond
+the hooks themselves - every lane already runs from its own, distinctly-named project directory. If a
+lane's directory name doesn't match the role name the PM/CireSnave already use for it elsewhere,
+that's a naming mismatch to resolve by renaming, not a reason to add a second source of truth for
+"which role is this."
+
+### 10.3 The script (one file, all events dispatch through it)
+
+`C:/Projects/.claude-hooks/lane-state.ps1` (PowerShell - `"shell": "powershell"` is a documented hook
+option, matching this box's own primary shell; a fixed path, not `${CLAUDE_PROJECT_DIR}` - see §10.4):
+
+```powershell
+param()
+$input_json = [Console]::In.ReadToEnd() | ConvertFrom-Json
+$event = $input_json.hook_event_name
+$cwd = $input_json.cwd
+$role = (Split-Path $cwd -Leaf).ToLower()
+$stateDir = "C:/Projects/.lane-state"
+$statePath = Join-Path $stateDir "$role.json"
+New-Item -ItemType Directory -Force -Path $stateDir | Out-Null
+
+function Get-ClaudePid {
+    $parent = (Get-CimInstance Win32_Process -Filter "ProcessId=$PID").ParentProcessId
+    $parentProc = Get-CimInstance Win32_Process -Filter "ProcessId=$parent"
+    if ($parentProc.Name -notmatch '^claude(\.exe)?$') {
+        throw "hook's parent process is '$($parentProc.Name)', not claude - refusing to record a wrong pid"
+    }
+    return $parent
+}
+
+$existing = if (Test-Path $statePath) { Get-Content $statePath -Raw | ConvertFrom-Json } else { $null }
+
+switch ($event) {
+    "SessionStart" {
+        $state = @{
+            role = $role
+            session_id = $input_json.session_id
+            pid = (Get-ClaudePid)
+            cwd = $cwd
+            name = $null            # not in common fields; left for a future revision if needed
+            model = $(if ($existing) { $existing.model } else { $null })
+            permission_mode = $input_json.permission_mode
+            remote_control = $(if ($existing) { $existing.remote_control } else { $false })
+            busy = $false
+            subagents_running = 0
+            no_background_shells = $null
+            updated_at = (Get-Date -AsUTC).ToString("o")
+            updated_by_event = $event
+        }
+    }
+    default {
+        if (-not $existing) { exit 0 }   # no SessionStart seen yet - nothing to update
+        $state = $existing | ConvertTo-Json | ConvertFrom-Json  # clone
+        $state.updated_at = (Get-Date -AsUTC).ToString("o")
+        $state.updated_by_event = $event
+        switch ($event) {
+            "UserPromptSubmit" { $state.busy = $true }
+            "PreToolUse"       { $state.busy = $true }
+            "Stop"             { $state.busy = $false }
+            "SubagentStart"    { $state.subagents_running += 1 }
+            "SubagentStop"     { $state.subagents_running = [Math]::Max(0, $state.subagents_running - 1) }
+            "PostModelSwitch"  { $state.model = $input_json.model }  # field name unverified - see §10.1
+            "SessionEnd"       { Remove-Item $statePath -ErrorAction SilentlyContinue; exit 0 }
+        }
+    }
+}
+
+$state | ConvertTo-Json | Set-Content -Path $statePath -Encoding utf8
+```
+
+⚠️ **`no_background_shells` is never set to `true` by this script.** Per RESTART-TOOL-DESIGN.md §1a,
+that claim is the lane's own assertion, written when it writes its own HANDOFF - a deliberate manual
+step in whatever a lane's own restart-request procedure is, not something a lifecycle hook can
+honestly assert on the lane's behalf.
+
+### 10.4 The `settings.json` block (not applied)
+
+**Recommended scope: user-level `~/.claude/settings.json`**, not per-project - every lane already runs
+under this one user account, and a user-level entry covers every project directory without editing
+each lane's own repo. Per-project would need the identical block added to every lane's project
+settings separately, for no benefit this design needs. Still CireSnave's call.
+
+⚠️ **The script's own path is a fixed, absolute one - deliberately NOT `${CLAUDE_PROJECT_DIR}`.** That
+placeholder resolves per-project ("project root where session started"), which would mean placing an
+identical copy of the script under every lane's own repo just to get one user-level settings edit to
+reach all of them - defeating the point. One script, once, at a location no project's own directory
+structure affects:
+
+```json
+{
+  "hooks": {
+    "SessionStart": [{ "hooks": [{ "type": "command", "shell": "powershell",
+      "command": "C:/Projects/.claude-hooks/lane-state.ps1" }] }],
+    "UserPromptSubmit": [{ "hooks": [{ "type": "command", "shell": "powershell",
+      "command": "C:/Projects/.claude-hooks/lane-state.ps1" }] }],
+    "PreToolUse": [{ "hooks": [{ "type": "command", "shell": "powershell",
+      "command": "C:/Projects/.claude-hooks/lane-state.ps1" }] }],
+    "Stop": [{ "hooks": [{ "type": "command", "shell": "powershell",
+      "command": "C:/Projects/.claude-hooks/lane-state.ps1" }] }],
+    "SubagentStart": [{ "hooks": [{ "type": "command", "shell": "powershell",
+      "command": "C:/Projects/.claude-hooks/lane-state.ps1" }] }],
+    "SubagentStop": [{ "hooks": [{ "type": "command", "shell": "powershell",
+      "command": "C:/Projects/.claude-hooks/lane-state.ps1" }] }],
+    "PostModelSwitch": [{ "hooks": [{ "type": "command", "shell": "powershell",
+      "command": "C:/Projects/.claude-hooks/lane-state.ps1" }] }],
+    "SessionEnd": [{ "hooks": [{ "type": "command", "shell": "powershell",
+      "command": "C:/Projects/.claude-hooks/lane-state.ps1" }] }]
+  }
+}
+```
+
+`C:/Projects/.claude-hooks/` is proposed as a sibling of `.lane-state/` for the same reason: portfolio-
+wide runtime tooling, not part of any one project, kept out of every git repo.
+
+### 10.5 Not proposed here
+
+- Installing any of the above. This section is the design; CireSnave/the PM decide whether, when, and
+  exactly how.
+- A fix for the two gaps in §10.1 - they're recorded as known, current limits of what a hook can
+  report, not solved by guessing at data hooks don't document providing.

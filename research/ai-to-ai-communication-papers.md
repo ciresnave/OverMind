@@ -10,7 +10,7 @@ For each paper: the problem; the mechanism; the **access** it needs (`api-tokens
 |---|---|
 | **#8 Gibberlink spec (Scribd)** | **Not fetched.** Scribd served only its landing page. **A copy is needed.** |
 | **#3 doi:10.1080/01691864.2026.2661958** | The publisher refused the fetch (HTTP 403). Summarised from the **arXiv preprint 2501.00226**, matched by Crossref title and all five authors. The journal version may differ. |
-| **#4 arXiv:2503.17407** | Resolves to *A Comprehensive Survey on Long Context Language Modeling*, which is not about agent communication. **The ID may be wrong.** |
+| **#4 arXiv:2503.17407** | **STRUCK (CireSnave, 2026-09-18, verbatim):** *"I agree with your earlier statement that ArXiV 2503.17407v2 was likely not a good fit as a paper covering something relating directly to LLM-to-LLM language. Consider that one stricken."* Resolves to *A Comprehensive Survey on Long Context Language Modeling*, not agent communication - the ID flag below is what he's confirming. |
 | **#15 recursivemas.github.io** | A project page; summarised from the paper it links, arXiv:2604.25917. |
 
 **How much to trust these summaries.** The bulk reading was done by a non-Claude model, per the cost rule. Its figures were then checked mechanically, not by reading. A ✅ means the claim's numbers appear in a quote, and the quote appears verbatim in the extracted paper text (whitespace-normalised). **The check proves a quote exists; it does not prove the quote supports the claim.** A real sentence attached to the wrong benchmark would still pass. The summariser also assigned the tier and access labels; the reviewer notes at the end list the ones that look questionable.
@@ -22,7 +22,7 @@ Summarised by `models/gemini-3.5-flash`, `models/gemini-3.6-flash` (Google AI St
 | 1 | [arXiv:2410.11905 (Agora)](https://arxiv.org/abs/2410.11905) | `token` | api-tokens |
 | 2 | [arXiv:2412.07646](https://arxiv.org/abs/2412.07646) | `token` | api-tokens, model-internals |
 | 3 | [doi:10.1080/01691864.2026.2661958 (Advanced Robotics)](https://doi.org/10.1080/01691864.2026.2661958) | `neither` | model-internals, training |
-| 4 | [arXiv:2503.17407](https://arxiv.org/abs/2503.17407) | `neither` |  |
+| 4 | ~~[arXiv:2503.17407](https://arxiv.org/abs/2503.17407)~~ **STRUCK** | `neither` |  |
 | 5 | [arXiv:2609.01491 (GlossoGen; listed via alphaxiv)](https://arxiv.org/abs/2609.01491) | `token` | api-tokens |
 | 6 | [arXiv:2503.01063](https://arxiv.org/abs/2503.01063) | `token` | api-tokens |
 | 7 | [arXiv:2505.12741](https://arxiv.org/abs/2505.12741) | `latent` | model-internals, training |
@@ -80,10 +80,15 @@ Summarised by `models/gemini-3.5-flash`, `models/gemini-3.6-flash` (Google AI St
 - **Limitations:** Direct empirical evidence for the collective world model hypothesis remains limited, and the relationship between neural representations in LLMs and human conceptual structures requires further investigation. Additionally, the framework focuses primarily on linguistic structure and meaning rather than pragmatic language use or multi-agent language evolution in open, dynamic environments.
 - **Tier:** `neither`
 
-## 4. A Comprehensive Survey on Long Context Language Modeling
+## 4. ~~A Comprehensive Survey on Long Context Language Modeling~~ STRUCK
 
 [arXiv:2503.17407](https://arxiv.org/abs/2503.17407) · `models/gemini-3.6-flash`
 
+> 🔴 **STRUCK (CireSnave, 2026-09-18, verbatim):** *"I agree with your earlier statement that ArXiV
+> 2503.17407v2 was likely not a good fit as a paper covering something relating directly to LLM-to-LLM
+> language. Consider that one stricken."* Kept below, not deleted, as the record of why it was
+> excluded - this entry no longer counts toward this file's paper list.
+>
 > ⚠️ This ID resolves to 'A Comprehensive Survey on Long Context Language Modeling', which does not look like an agent-communication paper. Check the ID; summarised as it resolves.
 
 - **Problem:** This paper is a survey on long context language modeling and is not about communication between AI agents or models.

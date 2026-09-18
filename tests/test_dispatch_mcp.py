@@ -24,7 +24,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from overmind.dispatch_mcp import (                                     # noqa: E402
     DispatchRequest, NoCheckInferred, UnsafeRequirementsURL, build_goal,
-    build_task, fetch_requirements_text, prepare_clone,
+    build_task, clone_argv, fetch_requirements_text, prepare_clone,
 )
 from overmind.repo_probe import RepoProbe                               # noqa: E402
 
@@ -74,6 +74,40 @@ class TestPrepareClone(GitRepoCase):
         scratch.mkdir()
         with self.assertRaises(RuntimeError):
             prepare_clone(str(self.tmp / "does-not-exist"), scratch)
+
+    def test_the_argv_puts_double_dash_before_the_repo_spec(self):
+        """⚠️ There is no repo-scope allowlist (CireSnave ruled "Any repo",
+        2026-09-18) - this is the ONLY thing standing between a crafted
+        `repo` value and git parsing it as an option instead of a path.
+        Asserted on the argv SHAPE directly, not by watching for a live
+        exploit to fire: that turned out to be environment-dependent while
+        writing this fix (see `clone_argv`'s docstring) - a test that only
+        catches the exploit when it happens to reproduce would be exactly
+        as unreliable as the thing it protects against."""
+        argv = clone_argv("--upload-pack=touch /tmp/pwned", pathlib.Path("/x/clone"))
+        self.assertIn("--", argv)
+        dash_index = argv.index("--")
+        spec_index = argv.index("--upload-pack=touch /tmp/pwned")
+        self.assertLess(dash_index, spec_index,
+                        "-- must come BEFORE repo_spec, or it protects nothing")
+
+    def test_prepare_clone_uses_clone_argv_verbatim(self):
+        """The injected `runner` must see exactly what `clone_argv` built -
+        no separate, divergent argv construction inside `prepare_clone`."""
+        seen = {}
+
+        class FakeProc:
+            returncode = 0
+
+        def fake_runner(argv):
+            seen["argv"] = argv
+            return FakeProc()
+
+        scratch = self.tmp / "scratch"
+        scratch.mkdir()
+        prepare_clone("--upload-pack=touch /tmp/pwned", scratch, runner=fake_runner)
+        self.assertEqual(seen["argv"],
+                         clone_argv("--upload-pack=touch /tmp/pwned", scratch / "clone"))
 
 
 class TestFetchRequirementsText(unittest.TestCase):

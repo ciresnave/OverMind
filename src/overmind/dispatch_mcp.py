@@ -15,8 +15,22 @@ a local path that happens to be a shared working checkout (this repo's own,
 say) - fetching or adding a worktree directly against that path would touch
 state other lanes read. Cloning into a scratch directory first means this
 tool never runs `git fetch`/`git worktree` against anyone else's checkout,
-only against its own throwaway copy. `git clone` accepts a local path as its
-source the same way it accepts a URL, so this is one code path, not two.
+only against its own throwaway copy.
+
+⚠️ THE CHECK ARGV IS FIXED, BUT `cargo test`/`npm test`/`pytest` STILL RUN THE
+TARGET REPO'S OWN CODE - build scripts, test fixtures, package.json's own
+lifecycle hooks. Raised by the PM reviewing this file, 2026-09-17: a
+host-owned check table stops a caller choosing the COMMAND, not the fact
+that a repo's own test suite is, definitionally, code that repo's author
+wrote. **CireSnave ruled on repo scope directly, 2026-09-18 (PM session,
+confirmed on OverMind#48 and matching what he told this lane directly): "Any
+repo."** He accepts that dispatching to a caller-named repo means running
+that repo's own code on this host - no owner allowlist. What's still
+mandatory regardless: `prepare_clone` puts `--` before `repo_spec` in the
+`git clone` argv, so a spec beginning with `-` is read as a (failing)
+repository path, never parsed as an option - confirmed live, writing this
+fix, that without `--` a crafted `--upload-pack=<cmd>` value gets git to
+actually execute `<cmd>` as a real shell command.
 
 ⚠️ CAPABILITY HINTS ARE ACCEPTED AND RECORDED, NOT YET ROUTED ON. There is no
 measured per-capability model data yet (MEASUREMENTS.md's P1 bench is all one
@@ -81,12 +95,30 @@ def _run(argv: Sequence[str], cwd: pathlib.Path | None = None,
                           capture_output=True, timeout=timeout, shell=False, check=False)
 
 
-def prepare_clone(repo_spec: str, scratch: pathlib.Path) -> pathlib.Path:
+def clone_argv(repo_spec: str, clone_dir: pathlib.Path) -> list[str]:
+    """The argv `prepare_clone` runs. Split out so the `--` placement can be
+    asserted directly, without depending on git's actual runtime behaviour
+    for a given repo_spec - that behaviour turned out to be ENVIRONMENT-
+    DEPENDENT while writing this fix (a crafted `--upload-pack=<cmd>` value
+    executed `<cmd>` for real when git was invoked from an MSYS/Git-Bash
+    parent, but not from a native Windows Python parent on the same box,
+    same git binary). `--` is still mandatory - it is git's own documented
+    argument-parsing contract, not something conditional on which shell
+    happened to be running - a test that only watches for the exploit to
+    fire would be exactly as unreliable as the behaviour it's protecting
+    against. This test instead asserts the argv shape itself."""
+    return ["git", "clone", "--quiet", "--", repo_spec, str(clone_dir)]
+
+
+def prepare_clone(repo_spec: str, scratch: pathlib.Path, *, runner=_run) -> pathlib.Path:
     """A fresh, throwaway clone of `repo_spec` (a local path or a URL) under
     `scratch`. ⚠️ NEVER the caller's own path, whatever `repo_spec` names -
-    see the module docstring."""
+    see the module docstring. No repo-scope check runs here or anywhere else
+    in this module: CireSnave ruled "Any repo" (2026-09-18) after being told
+    directly what that means - the target repo's own code runs on this host
+    via its own check command, whichever repo is named."""
     clone_dir = scratch / "clone"
-    proc = _run(["git", "clone", "--quiet", repo_spec, str(clone_dir)])
+    proc = runner(clone_argv(repo_spec, clone_dir))
     if proc.returncode != 0:
         raise RuntimeError(f"clone of {repo_spec!r} failed: "
                            f"{proc.stderr.decode('utf-8', 'replace')[:500]}")

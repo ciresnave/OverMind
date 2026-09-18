@@ -112,7 +112,11 @@ jobs:
           components: rustfmt, clippy
 
       - name: cargo fmt --check
-        run: cargo fmt --workspace --check
+        # ⚠️ `cargo fmt` has no `--workspace` flag (confirmed: CI failed with
+        # "unexpected argument '--workspace' found" on real stable cargo,
+        # even though the flag exists on build/test/clippy) - it formats the
+        # whole workspace from the root by default, no flag needed.
+        run: cargo fmt --check
 
       - name: cargo clippy
         # ⚠️ -D warnings: a clippy lint that's merely printed is a lint nobody

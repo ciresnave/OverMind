@@ -81,7 +81,8 @@ python -m unittest discover -s tests -v
 - **Tested so far: single-file Python fixes with the failing test named.** Nothing here says
   anything yet about multi-file changes, other languages, or a task without a pointed check.
 - **One run per model per task, mostly.** A model's fix rate is a point, not yet a rate.
-- **The transport is a CLI invocation.** `dispatch.py`'s live channel and `mcp_tools.py` exist but
-  are not wired into `lanework.py`; a lane or a human still starts each task by hand.
+- **`dispatch.py`'s live channel (FAM) is still not wired into `lanework.py`** — an unattended path
+  now exists (`dispatch_mcp.py`), but it's a separate MCP tool any agent calls directly, not FAM's
+  inbound-message path; that one still starts each task by hand, per DESIGN-PROPOSAL.md §7.
 - **Capability is not capacity, and capacity is not stable.** A provider's daily allowance can be
   spent by measuring it, and a "clean" run minutes apart can land on an exhausted account (§31).

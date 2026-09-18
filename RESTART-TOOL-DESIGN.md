@@ -1,12 +1,13 @@
 # Session restart tool — design spec
 
-**Status: SPEC, not built.** Written per the task from CireSnave via the PM, 2026-09-18: pulled ahead
-of the throttle ("it is another project that will help us avoid the condition that required the
-throttle in the first place"). Location decided: a Cargo workspace crate in this repo, sharing
-OverMind's version number, with a Rust CI job (fmt, clippy, test) branch protection requires, and
-SPDX `MIT OR Apache-2.0` headers.
+**Status: SPEC, settled — not yet built.** Written per the task from CireSnave via the PM,
+2026-09-18: pulled ahead of the throttle ("it is another project that will help us avoid the
+condition that required the throttle in the first place"). Location decided: a Cargo workspace crate
+in this repo, sharing OverMind's version number, with a Rust CI job (fmt, clippy, test) branch
+protection requires, and SPDX `MIT OR Apache-2.0` headers.
 
-**This spec stops at the points below marked `DECISION NEEDED`.** Everything else is grounded in
+**Every `DECISION NEEDED` point from the first draft is now answered by the PM (2026-09-18,
+CireSnave sees and can override)** - marked `DECIDED` in place below. Everything else is grounded in
 either the task's own stated requirements or Claude Code's documented behaviour, verified directly
 against `code.claude.com/docs` in this session — not assumed, and in one case correcting an initial
 wrong assumption (below).
@@ -27,7 +28,7 @@ interactive Claude Code process "are you busy right now" at all.
 own state, event-driven, via documented hooks - and an external reader (this tool, or the PM) only
 ever reads what a lane already wrote about itself.
 
-## 1. What each lane self-reports: `.overmind/lane-state.json`
+## 1. What each lane self-reports: `C:/Projects/.lane-state/<role>.json` (location per §7)
 
 A small JSON file, one per lane, written by a hook running **inside** that lane's own Claude Code
 process - so it is always describing that process's own, current-moment truth, never a stale
@@ -73,18 +74,21 @@ equivalent pair of events for background shells.
 
 `background_bash_unknown: true` is always set, honestly, rather than pretending this is tracked.
 
-**`DECISION NEEDED` (1):** given this gap, is a restart safe to allow anyway if `busy: false` and
-`subagents_running: 0`, treating a stray background shell as an acceptable residual risk (the
-restarted process's own worktree/shell state isn't preserved across a restart regardless, so a
-running background command in the OLD process is orphaned either way, not corrupted) — or does the
-tool need to REQUIRE the lane to explicitly assert "no background shells I started are still running"
-as part of writing its own HANDOFF, making it a self-reported claim the lane is responsible for
-getting right, the same way `pr_body` claims are on the model and the harness in `lanework.py`?
-**My recommendation: the second one** - an explicit `no_background_shells: true` field the lane sets
-when writing its HANDOFF, checked by the tool, refused if absent - because "unknown, treated as safe"
-is exactly the shape of failure this whole portfolio's measurements keep finding (a claim substituting
-for a check). This still isn't a real check, but it moves the honesty burden onto an explicit
-assertion instead of a silent default.
+**DECIDED (PM, 2026-09-18):** use both signals, and refuse if EITHER shows activity.
+
+1. The self-asserted `no_background_shells: true` claim, written into HANDOFF by the lane itself -
+   the honesty-burden mechanism proposed above.
+2. **Independently**, the tool walks the target `claude` process's own child-process tree (via its
+   PID, using the OS process list, no hook or Claude Code cooperation needed) looking for live shells
+   - `bash`, `pwsh`, `cmd`, and their own children. A backgrounded Bash command is a real OS child
+   process even though no Claude Code hook fires for it, so the process table can see it regardless.
+
+**Unknown counts as unsafe** in both directions: an absent `no_background_shells` claim refuses the
+restart, and a child-process walk that can't enumerate cleanly (permissions, a transient OS error)
+refuses rather than proceeding on the claim alone. Neither signal is trusted by itself - matches this
+portfolio's own "no absence without a positive control" discipline: the claim alone could be wrong,
+and the process walk alone could miss a shell spawned through something that doesn't appear as a
+direct child (a detached process, a service) - together they cover more than either does alone.
 
 ## 2. Process identification — "never kill by name alone"
 
@@ -141,13 +145,15 @@ Session ending: 3f9a...-uuid
 
 ## Anything the next session must NOT re-derive from scratch
 <the load-bearing facts that took real work to establish this session>
+
+## Role-specific
+<optional - free content a role's own CLAUDE.md/role doc may require>
 ```
 
-**`DECISION NEEDED` (2):** is this format acceptable as the standard, or does each lane need
-role-specific sections (e.g. the PM's HANDOFF plausibly wants a "lanes currently tracked" section no
-other lane needs)? I'd default to: this shared skeleton, plus each role's own `CLAUDE.md` or role
-doc may say what else its HANDOFF must include - not specified further here, since that's a
-per-role decision, not a restart-tool one.
+**DECIDED (PM, 2026-09-18):** the shared skeleton above, plus an optional `## Role-specific` section
+with free content. The PM's own section is just a pointer to `C:/Projects/PM-HANDOFF.md`, which stays
+the PM's real, full handoff document - this file doesn't replace it. Nothing else is mandated per
+role for now.
 
 ## 5. Relaunch mechanics
 
@@ -179,30 +185,36 @@ Verified against `sessions.md`:
    self-restart (a lane still shouldn't be able to accidentally target a different process's PID
    through a bug in its own state file).
 2. **Dry-run mode** — `--dry-run` performs every check, prints exactly what it would do (kill PID X,
-   wait, launch `claude --resume ...` in cwd Y), and does neither. Default should arguably be
-   dry-run-unless-confirmed for the PM-initiated path at first, real by default for self-restart
-   (the lane is only ever killing itself). **`DECISION NEEDED` (3):** confirm that asymmetry is
-   correct, or make both paths require an explicit `--yes` always.
-3. **A log of every kill and launch** — append-only, one file (e.g. `.overmind/restart-tool.log`),
+   wait, launch `claude --resume ...` in cwd Y), and does neither. **DECIDED (PM, 2026-09-18):**
+   self-restart is real by default (the agent chose that boundary itself, restarting only its own
+   process). Restarting a DIFFERENT lane is dry-run unless `--yes` is passed - and even with `--yes`,
+   it still refuses unless that lane is idle (§1a's two-signal check) and its state file is fresh
+   (§2's four-part identification).
+3. **A log of every kill and launch** — append-only, at `C:/Projects/.lane-state/restart.log` (§7),
    every entry: timestamp, who requested it (self or PM), the full identification tuple checked, the
    verdict (killed+launched / refused+why), and the exact command line used to relaunch. Never
    overwritten, never rotated silently - this is exactly the kind of artifact this portfolio's own
    evidence culture depends on existing.
 
-## 7. What this spec does NOT decide
+## 7. Where lane state and the log live
+
+**DECIDED (PM, 2026-09-18):** fixed, portfolio-wide, not per-lane:
+
+- `C:/Projects/.lane-state/<role>.json` - one file per lane, matching §1's schema.
+- `C:/Projects/.lane-state/restart.log` - the one append-only log for every lane's kills and
+  launches (§6.3), not split per role, so a single read shows the whole portfolio's restart history.
+
+**Kept out of every git repo**, including this one's own `.portfolio-history.git` (the PM is adding
+`.lane-state/` to its excludes) - this is live, per-process runtime state, not a durable record
+anyone should be committing.
+
+## 8. What this spec still doesn't decide
 
 - **Exact Windows process-kill mechanism** (`taskkill`, `TerminateProcess` via a crate, sending
   Ctrl-C then escalating) - an implementation detail, not a design question, deferred to the build.
-- **Where `.overmind/lane-state.json` and the log physically live** when a lane's `cwd` isn't
-  `C:/Projects/OverMind` itself (every lane has its own project directory) - needs a portfolio-wide
-  convention, not an OverMind-only one. **`DECISION NEEDED` (4):** a fixed location under
-  `C:/Projects` (e.g. `C:/Projects/.lane-state/<role>.json`), or per-lane under each lane's own
-  `cwd`? The former is easier for the PM to scan all lanes at once; the latter keeps each lane's
-  state next to the rest of that lane's own artifacts. I'd lean toward the former for exactly the
-  scanning reason, but this is squarely CireSnave's or the PM's call, not mine.
 
-## 8. What's needed before building starts
+## 9. What's needed before building starts
 
-Four `DECISION NEEDED` points above (§1a, §4, §6.2, §7) - none of them block writing the crate
-skeleton, CI, and the parts of §2/§5/§6.3 that don't depend on the answers, but all four should be
-settled before the tool's first real kill of a live session.
+All four `DECISION NEEDED` points from the earlier draft are now answered (§1a, §4, §6.2, §7). Next:
+fold these into the crate skeleton and CI (already in progress), then build the kill/launch logic
+against this now-settled spec.

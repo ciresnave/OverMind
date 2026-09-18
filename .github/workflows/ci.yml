@@ -92,6 +92,36 @@ jobs:
             exit 1
           fi
 
+  rust:
+    name: rust (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # windows-latest is not decoration here either: lane-restart's own
+        # job is process management on the deployment platform, not a
+        # portable library - a green run on Linux alone says nothing about
+        # whether it can find or signal a real Windows process.
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: cargo fmt --check
+        run: cargo fmt --workspace --check
+
+      - name: cargo clippy
+        # ⚠️ -D warnings: a clippy lint that's merely printed is a lint nobody
+        # reads, the same defect the SPDX gate exists to name above.
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: cargo test
+        run: cargo test --workspace
+
   gate-boundary:
     name: gate boundary is intact
     runs-on: ubuntu-latest

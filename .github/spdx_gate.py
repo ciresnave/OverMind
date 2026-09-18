@@ -44,9 +44,12 @@ LICENCE = "MIT OR Apache-2.0"
 # is the shape of every measurement defect found here tonight: the instrument is
 # the last thing anybody points at itself.
 #
-# `.py` only, verified against `git ls-files` rather than assumed: 47 .py, plus
-# markdown, yaml and toml that are not source.
-EXTENSIONS = (".py", ".ts", ".sh")
+# `.py` and `.ts` verified against `git ls-files` rather than assumed: 47 .py,
+# plus markdown, yaml and toml that are not source. `.rs` added 2026-09-18 with
+# this repo's first Rust crate (lane-restart) - found by the gate's own
+# UNCOVERED EXTENSION check, which exists precisely so a new source language
+# is not this file's blind spot the way `.py`-only once was Python's.
+EXTENSIONS = (".py", ".ts", ".sh", ".rs")
 
 #: How far into a file the header may sit. Measured, not guessed: across 2,100
 #: real .rs files in this portfolio (fuel, kiss-ref, lightbulb, synapse), 851

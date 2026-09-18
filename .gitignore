@@ -21,3 +21,6 @@ comp_*.txt
 matrix_results.txt
 nvidia_ent.txt
 think_iso.txt
+
+# Rust (crates/lane-restart)
+/target/

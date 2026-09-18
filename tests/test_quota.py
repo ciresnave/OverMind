@@ -22,7 +22,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 from overmind.providers import (                                      # noqa: E402
     NoUsableModel, Provider, ProviderClient, ProviderError, RoutedClient,
 )
-from overmind.quota import QuotaBook, daily_limit_in, next_reset       # noqa: E402
+from overmind.quota import (                                          # noqa: E402
+    PROVIDER_WIDE, QuotaBook, daily_limit_in, monthly_limit_in, next_month_reset,
+    next_reset,
+)
 
 # Shapes of real bodies, trimmed. Google's per-day refusal, 2026-09-17:
 GOOGLE_DAY = json.dumps([{"error": {"code": 429, "message": "You exceeded your current quota",
@@ -33,6 +36,13 @@ GOOGLE_MINUTE = json.dumps({"error": {"code": 429, "details": [{"violations": [{
     "quotaId": "GenerateRequestsPerMinutePerProjectPerModel-FreeTier", "quotaValue": "10"}]}]}})
 OPENROUTER_DAY = json.dumps({"error": {"message": "Rate limit exceeded: free-models-per-day",
                                        "code": 429}})
+# Hugging Face's HTTP 402 body, measured 2026-09-17.
+HF_MONTHLY = json.dumps({"error": ("You have depleted your monthly included credits. "
+                                   "Purchase pre-paid credits to continue using Inference "
+                                   "Providers. Alternatively, subscribe to PRO to get 20x "
+                                   "more included usage.")})
+# A 402 for an unrelated reason - must NOT be read as the monthly signature.
+UNRELATED_402 = json.dumps({"error": "Payment method declined."})
 # Google's refusal for a model with NO free allowance (gemini-pro-latest,
 # 2026-09-17): the limit is only in the message; no violation has quotaValue.
 GOOGLE_NO_ALLOWANCE = json.dumps([{"error": {"code": 429, "message": (
@@ -100,6 +110,14 @@ class TestRecognition(unittest.TestCase):
     def test_a_cap_stated_only_in_the_message(self):
         self.assertEqual(daily_limit_in(GOOGLE_NO_ALLOWANCE), (True, 0))
 
+    def test_monthly_bodies(self):
+        """Both arms: the measured signature matches; an unrelated 402 - a
+        real billing failure, say - must NOT be read as it."""
+        self.assertTrue(monthly_limit_in(HF_MONTHLY))
+        self.assertFalse(monthly_limit_in(UNRELATED_402))
+        self.assertFalse(monthly_limit_in(""))
+        self.assertFalse(monthly_limit_in(GOOGLE_DAY), "a 429 body is a different axis")
+
 
 class TestReset(unittest.TestCase):
     """Google resets at midnight Pacific; the rest at midnight UTC."""
@@ -125,6 +143,13 @@ class TestReset(unittest.TestCase):
     def test_utc_providers(self):
         self.assertEqual(next_reset("openrouter", utc(2026, 9, 17, 23, 59, 59)),
                          utc(2026, 9, 18))
+
+    def test_monthly_reset_is_the_first_of_next_month(self):
+        self.assertEqual(next_month_reset(utc(2026, 9, 17, 12)), utc(2026, 10, 1))
+        self.assertEqual(next_month_reset(utc(2026, 9, 30, 23, 59, 59)), utc(2026, 10, 1))
+
+    def test_monthly_reset_crosses_a_year_boundary(self):
+        self.assertEqual(next_month_reset(utc(2026, 12, 17, 12)), utc(2027, 1, 1))
 
 
 class TestBook(unittest.TestCase):
@@ -163,11 +188,39 @@ class TestBook(unittest.TestCase):
         self.assertEqual(self.book.remaining("google", "pro"), 0)
         self.assertFalse(self.book.blocked("google", "flash"))
 
+    def test_a_monthly_refusal_blocks_every_model_on_that_provider(self):
+        """The signature that started this: HF 402'd model A; model B, never
+        asked before, must ALSO read blocked - the credit is the account's,
+        not model A's."""
+        self.assertFalse(self.book.record_refusal("huggingface", "a", HF_MONTHLY),
+                         "control: the 429-shaped reader must not match a 402 body")
+        self.assertTrue(self.book.record_monthly_refusal("huggingface", HF_MONTHLY))
+        self.assertTrue(self.book.blocked("huggingface", "a"))
+        self.assertTrue(self.book.blocked("huggingface", "unasked-model"))
+        self.assertTrue(self.book.provider_blocked("huggingface"))
+
+    def test_an_unrelated_402_blocks_nothing(self):
+        self.assertFalse(self.book.record_monthly_refusal("huggingface", UNRELATED_402))
+        self.assertFalse(self.book.provider_blocked("huggingface"))
+
+    def test_the_monthly_block_does_not_leak_to_another_provider(self):
+        self.book.record_monthly_refusal("huggingface", HF_MONTHLY)
+        self.assertFalse(self.book.provider_blocked("mistral"))
+        self.assertFalse(self.book.blocked("mistral", "codestral"))
+
+    def test_the_monthly_block_lifts_on_the_calendar_month_not_a_daily_reset(self):
+        self.book.record_monthly_refusal("huggingface", HF_MONTHLY)
+        self.now[0] = utc(2026, 9, 18, 7)  # a full day later
+        self.assertTrue(self.book.provider_blocked("huggingface"), "a day is not a month")
+        self.now[0] = utc(2026, 10, 1)
+        self.assertFalse(self.book.provider_blocked("huggingface"))
+
     def test_reading_stores_nothing(self):
         """Measured live: asking about a 58-model roster filled the book."""
         for m in ("a", "b", "c"):
             self.assertFalse(self.book.blocked("google", m))
             self.assertIsNone(self.book.remaining("google", m))
+        self.assertFalse(self.book.provider_blocked("google"))
         self.assertEqual(self.book.snapshot(), {})
         self.book.record_request("google", "b")
         self.assertEqual(list(self.book.snapshot()), ["google/b"], "control: a write stores")
@@ -244,6 +297,22 @@ class TestClientUsesTheBook(unittest.TestCase):
         self.assertEqual(fresh.candidates(limit=1), ["a", "b", "c"],
                          "control: with no book, every fallback is offered")
 
+    def test_no_usable_model_never_carries_an_empty_reason(self):
+        """🔴 Found while adding the 402 tests above: with every candidate
+        filtered out by the quota book, `candidates()` returns [], and the
+        loop that used to build `attempts` never ran once - `NoUsableModel`
+        raised with NOTHING in it, exactly the unreasoned "no usable model"
+        this exception exists to prevent."""
+        self.book.record_refusal("google", "a", GOOGLE_DAY)
+        self.book.record_refusal("google", "b", GOOGLE_DAY)
+        client = ProviderClient(provider(models=("a", "b")), quota=self.book)
+        with self.assertRaises(NoUsableModel) as ctx:
+            client.chat([{"role": "user", "content": "hi"}])
+        self.assertTrue(ctx.exception.attempts, "must not be empty")
+        self.assertEqual(set(ctx.exception.attempts),
+                         {("a", "daily quota spent (recorded)"),
+                          ("b", "daily quota spent (recorded)")})
+
     def test_a_pinned_prefixed_model_shares_the_unprefixed_key(self):
         """§32 - the exact failure: a pin spelled `models/x` must record and
         read the same quota entry as every caller who spells it plain `x`,
@@ -274,6 +343,42 @@ class TestClientUsesTheBook(unittest.TestCase):
             [{"role": "user", "content": "hi"}])
         self.assertEqual(result.model, "a")
 
+    def test_a_402_stops_the_whole_candidate_loop_not_just_this_model(self):
+        """🔴 Measured live on Hugging Face: 3 of 10 identical calls to the
+        SAME model succeeded, so a naive "try the next model" would have kept
+        spending requests against a key with nothing left for any of them."""
+        t = Transport({"a": [http_error(402, HF_MONTHLY)], "b": [ok_body("from b")]})
+        client = ProviderClient(provider("huggingface"), opener=t, quota=self.book)
+        with self.assertRaises(NoUsableModel) as ctx:
+            client.chat([{"role": "user", "content": "hi"}])
+        self.assertEqual(t.calls, ["a"], "model b must never be asked this call")
+        self.assertEqual(ctx.exception.attempts, [("a", "monthly quota spent")])
+        self.assertTrue(self.book.provider_blocked("huggingface"))
+
+    def test_a_402_blocks_a_model_never_asked_this_call_too(self):
+        self.book.record_monthly_refusal("huggingface", HF_MONTHLY)
+        t = Transport({"c": [ok_body()]})
+        client = ProviderClient(provider("huggingface", ("c",)), opener=t, quota=self.book)
+        with self.assertRaises(NoUsableModel) as ctx:
+            client.chat([{"role": "user", "content": "hi"}])
+        self.assertEqual(t.calls, [])
+        self.assertEqual(ctx.exception.attempts, [("c", "monthly quota spent (recorded)")])
+
+    def test_without_a_book_a_402_still_stops_the_loop(self):
+        t = Transport({"a": [http_error(402, HF_MONTHLY)], "b": [ok_body()]})
+        with self.assertRaises(NoUsableModel) as ctx:
+            ProviderClient(provider("huggingface"), opener=t).chat(
+                [{"role": "user", "content": "hi"}])
+        self.assertEqual(t.calls, ["a"], "model b must never be asked without a book either")
+
+    def test_an_unrelated_402_still_fails_over_to_the_next_model(self):
+        """Control: not every 402 is a monthly-credit refusal."""
+        t = Transport({"a": [http_error(402, UNRELATED_402)], "b": [ok_body("from b")]})
+        result = ProviderClient(provider("huggingface"), opener=t, quota=self.book).chat(
+            [{"role": "user", "content": "hi"}])
+        self.assertEqual(result.model, "b")
+        self.assertFalse(self.book.provider_blocked("huggingface"))
+
 
 class TestRouting(unittest.TestCase):
 
@@ -303,6 +408,17 @@ class TestRouting(unittest.TestCase):
         reasons = dict(ctx.exception.attempts)
         self.assertEqual(reasons["google/a"], "daily quota spent")
         self.assertIn("404", reasons["openrouter/x"])
+
+    def test_a_monthly_blocked_provider_hands_over_to_the_next(self):
+        h = Transport({"a": [http_error(402, HF_MONTHLY)]})
+        m = Transport({"c": [ok_body("from mistral")]})
+        routed = RoutedClient([
+            ProviderClient(provider("huggingface", ("a",)), opener=h, quota=self.book),
+            ProviderClient(provider("mistral", ("c",)), opener=m, quota=self.book)])
+        result = routed.chat([{"role": "user", "content": "hi"}])
+        self.assertEqual((result.provider, result.model), ("mistral", "c"))
+        routed.chat([{"role": "user", "content": "hi"}])
+        self.assertEqual(h.calls, ["a"], "huggingface is not asked again this month")
 
     def test_a_misconfigured_provider_is_skipped_not_fatal(self):
         broken = Provider(key="cloudflare", base_url="http://x/{account}", secret_name="NOPE",

@@ -58,7 +58,7 @@ from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any, Iterable, Mapping, Sequence
 
-from .quota import QuotaBook, daily_limit_in
+from .quota import QuotaBook, daily_limit_in, monthly_limit_in
 
 __all__ = [
     "Provider", "PROVIDERS", "ProviderClient", "ChatResult", "Usage", "ProviderError",
@@ -507,9 +507,24 @@ class ProviderClient:
         payload_messages = [normalise_for_echo(m) if m.get("role") == "assistant" else dict(m)
                             for m in messages]
         attempts: list[tuple[str, str]] = []
-        for model in self.candidates():
+        candidates = self.candidates()
+        if not candidates and self.quota is not None:
+            # ⚠️ EVERY CANDIDATE WAS FILTERED OUT BY THE QUOTA BOOK, which
+            # otherwise means `NoUsableModel` carries an EMPTY attempts list -
+            # the exact "no usable model" with no reason this class exists to
+            # avoid. Report against the unfiltered roster instead of raising
+            # silently.
+            why = ("monthly quota spent (recorded)"
+                  if self.quota.provider_blocked(self.provider.key)
+                  else "daily quota spent (recorded)")
+            unfiltered = self.roster() or list(self.provider.fallback_models)
+            raise NoUsableModel(self.provider.key, [(m, why) for m in unfiltered])
+        for model in candidates:
             if self.quota is not None and self.quota.blocked(self.provider.key, model):
-                attempts.append((model, "daily quota spent (recorded)"))
+                why = ("monthly quota spent (recorded)"
+                      if self.quota.provider_blocked(self.provider.key)
+                      else "daily quota spent (recorded)")
+                attempts.append((model, why))
                 continue
             payload: dict[str, Any] = {
                 "model": model,
@@ -546,6 +561,19 @@ class ProviderClient:
                     attempts.append((model, "timed out"))
                     break
                 except ProviderError as exc:
+                    if exc.status == 402:
+                        # ⚠️ A 402 IS ACCOUNT-WIDE, NOT PER-MODEL. Measured on
+                        # Hugging Face: "depleted your monthly included
+                        # credits" after 3 of 10 calls to the SAME model
+                        # succeeded - trying a different model wastes another
+                        # request against a key with nothing left for any of
+                        # them. Stop the whole candidate loop, not just this
+                        # model - with or without a book to record it in.
+                        monthly = (self.quota.record_monthly_refusal(self.provider.key, exc.body)
+                                  if self.quota is not None else monthly_limit_in(exc.body))
+                        if monthly:
+                            attempts.append((model, "monthly quota spent"))
+                            raise NoUsableModel(self.provider.key, attempts) from None
                     # 404 here means "not served to this account" far more often
                     # than "no such model" - either way, try the next candidate.
                     self._known_bad.add(model)

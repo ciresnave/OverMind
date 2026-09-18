@@ -191,8 +191,15 @@ PROVIDERS: dict[str, Provider] = {
         secret_name="NVIDIA_NIM_API_TOKEN",
         # ⚠️ Measured entitled models. 46 of 80 rostered ones 404 for this
         # account, so preference alone is not enough - these are known-served.
-        prefer=("gpt-oss", "nemotron-3.5-lightning", "kimi"),
-        fallback_models=("openai/gpt-oss-20b", "nvidia/nemotron-3.5-lightning-30b-a3b",
+        # ⚠️ Measured 2026-09-17 (MEASUREMENTS.md §30, §32): entitlement is not
+        # fix capability. glm-5.3 and deepseek-v4-flash-0731 are the only two
+        # NVIDIA models confirmed to actually fix regressions on the P1 bench
+        # (3/4 and 4/4) - gpt-oss/nemotron-3.5-lightning/kimi were only ever
+        # confirmed served, never confirmed to fix anything. Preferred first.
+        prefer=("z-ai/glm-5.3", "deepseek-v4-flash-0731",
+               "gpt-oss", "nemotron-3.5-lightning", "kimi"),
+        fallback_models=("z-ai/glm-5.3", "deepseek-ai/deepseek-v4-flash-0731",
+                         "openai/gpt-oss-20b", "nvidia/nemotron-3.5-lightning-30b-a3b",
                          "moonshotai/kimi-k3"),
     ),
     "cloudflare": Provider(

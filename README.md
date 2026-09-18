@@ -24,6 +24,13 @@ imply.
 - **`src/overmind/lanework.py`** — It runs one piece of a lane's work with a non-Claude model in a
   fresh git worktree. The harness runs the acceptance check itself, and opens a pull request only
   if that check passes.
+- **`src/overmind/repo_probe.py`** / **`src/overmind/dispatch_mcp.py`** — the unattended path into
+  `lanework.py`: an MCP tool (`dispatch_lane_task`) any agent can call with a repo and a prompt.
+  ⚠️ The acceptance check is **never** caller-supplied — it's inferred from a fixed, host-owned
+  table keyed by the repo's own marker files (`Cargo.toml` → `cargo test`, ...), never read out of
+  the repo's own CI config. Everything else (CI config text, an in-repo standards file, a caller's
+  extra requirements or a `https://` URL to them) is safe to fold in richly, because none of it
+  becomes a subprocess argv — only informational text the model reads.
 
 Why it exists, in one measured sentence: **a model that states a prohibition perfectly violates it
 4 to 7 times out of 8 when its reasoning is disabled** (`MEASUREMENTS.md` §11, §16) — and

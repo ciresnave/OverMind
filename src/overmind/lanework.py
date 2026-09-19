@@ -550,9 +550,18 @@ def _numstat(root: pathlib.Path) -> list[str]:
     return [line.replace("\t", " ") for line in out.splitlines() if line.strip()]
 
 
-def gh_pr_create(root: pathlib.Path, branch: str, base: str, title: str, body: str) -> str:
-    proc = _run(["gh", "pr", "create", "--head", branch, "--base", base,
-                 "--title", title, "--body", body], root, 120)
+def gh_pr_create(root: pathlib.Path, branch: str, base: str, title: str, body: str,
+                 *, draft: bool = False) -> str:
+    """⚠️ `draft=True` - DESIGN-PROPOSAL.md §7.4's docs-only mode: a draft PR
+    is CireSnave's own approved way to satisfy "never auto-publishes" while
+    still leaving something a human can see and act on, rather than a
+    pushed branch with no PR at all. Never mergeable without an explicit
+    human action to mark it ready first."""
+    argv = ["gh", "pr", "create", "--head", branch, "--base", base,
+            "--title", title, "--body", body]
+    if draft:
+        argv.append("--draft")
+    proc = _run(argv, root, 120)
     if proc.returncode != 0:
         raise RuntimeError(f"gh pr create failed: {proc.stderr.decode('utf-8', 'replace')[:300]}")
     return proc.stdout.decode("utf-8", "replace").strip().splitlines()[-1]

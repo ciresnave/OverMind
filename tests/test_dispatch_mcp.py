@@ -23,9 +23,11 @@ import urllib.error
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from overmind.dispatch_mcp import (                                     # noqa: E402
-    DispatchRequest, NoCheckInferred, UnsafeRequirementsURL, build_goal,
-    build_task, clone_argv, fetch_requirements_text, prepare_clone,
+    DOCS_ONLY_CHECK, DOCS_ONLY_WRITABLE, DispatchRequest, NoCheckInferred,
+    UnsafeRequirementsURL, build_goal, build_task, clone_argv,
+    fetch_requirements_text, prepare_clone, pr_creator_for,
 )
+from overmind.lanework import gh_pr_create                              # noqa: E402
 from overmind.repo_probe import RepoProbe                               # noqa: E402
 
 
@@ -252,6 +254,119 @@ class TestBuildTask(GitRepoCase):
         req = DispatchRequest(repo=str(self.repo), prompt="x")
         task = build_task("t1", self.repo, probe, req)
         self.assertEqual(task.writable, ["**"])
+
+
+class TestDocsOnlyMode(GitRepoCase):
+    """DESIGN-PROPOSAL.md §7.4, CireSnave's own ruling (board item 42,
+    2026-09-19): "On board 42, yes." An explicit, caller-chosen mode for
+    work with no executable check at all - each guard he approved, tested
+    on its own: no executable check runs; writable is forced to docs
+    globs, never caller-overridable; the PR body says plainly that no
+    check ran; the result is ALWAYS a draft, never auto-mergeable.
+    """
+
+    def test_docs_only_defaults_to_false(self):
+        """An EXPLICIT, caller-chosen mode - never a default."""
+        req = DispatchRequest(repo=str(self.repo), prompt="x")
+        self.assertFalse(req.docs_only)
+
+    def test_docs_only_bypasses_no_check_inferred_even_with_no_marker(self):
+        # A repo with genuinely no marker at all still refuses in the
+        # NORMAL path (test_refuses_when_no_marker_was_found) - docs_only
+        # is the one explicit way around that refusal, for exactly the
+        # class of task that has no check to infer in the first place.
+        probe = RepoProbe(check=None, check_name=None, context="",
+                          refused_reason="no known project marker")
+        req = DispatchRequest(repo=str(self.repo), prompt="fix the README",
+                              docs_only=True)
+        task = build_task("t1", self.repo, probe, req)
+        self.assertEqual(task.check, DOCS_ONLY_CHECK)
+
+    def test_docs_only_check_name_says_plainly_that_nothing_ran(self):
+        probe = RepoProbe(check=None, check_name=None, context="")
+        req = DispatchRequest(repo=str(self.repo), prompt="x", docs_only=True)
+        task = build_task("t1", self.repo, probe, req)
+        self.assertIn("no executable check ran", task.check_name)
+
+    def test_docs_only_writable_is_forced_to_docs_globs(self):
+        probe = RepoProbe(check=None, check_name=None, context="")
+        req = DispatchRequest(repo=str(self.repo), prompt="x", docs_only=True,
+                              writable=["**"])
+        task = build_task("t1", self.repo, probe, req)
+        self.assertEqual(task.writable, list(DOCS_ONLY_WRITABLE))
+
+    def test_docs_only_writable_cannot_be_widened_by_the_caller(self):
+        """⚠️ CireSnave's own wording: "so docs-only can't touch code" - a
+        caller passing a wider `writable` must be silently overridden, not
+        honoured, or docs_only would be a way to smuggle in code access."""
+        probe = RepoProbe(check=None, check_name=None, context="")
+        req = DispatchRequest(repo=str(self.repo), prompt="x", docs_only=True,
+                              writable=["**", "src/**/*.py", "Cargo.toml"])
+        task = build_task("t1", self.repo, probe, req)
+        self.assertEqual(task.writable, list(DOCS_ONLY_WRITABLE))
+        self.assertNotIn("**", task.writable)
+
+    def test_docs_only_pr_body_says_plainly_that_no_check_ran(self):
+        probe = RepoProbe(check=None, check_name=None, context="")
+        req = DispatchRequest(repo=str(self.repo), prompt="x", docs_only=True)
+        task = build_task("t1", self.repo, probe, req)
+        self.assertIn("no executable check ran", task.pr_body)
+        self.assertIn("DRAFT", task.pr_body)
+
+    def test_docs_only_capabilities_still_reach_the_pr_body(self):
+        probe = RepoProbe(check=None, check_name=None, context="")
+        req = DispatchRequest(repo=str(self.repo), prompt="x", docs_only=True,
+                              capabilities=("docs",))
+        task = build_task("t1", self.repo, probe, req)
+        self.assertIn("docs", task.pr_body)
+
+    def test_non_docs_only_still_refuses_with_no_marker(self):
+        """The NORMAL path is completely unaffected - docs_only is opt-in,
+        never a fallback `infer_check` or `build_task` reach for on their
+        own."""
+        probe = RepoProbe(check=None, check_name=None, context="",
+                          refused_reason="no known project marker")
+        req = DispatchRequest(repo=str(self.repo), prompt="x")
+        with self.assertRaises(NoCheckInferred):
+            build_task("t1", self.repo, probe, req)
+
+    # -- pr_creator_for: the "never auto-publishes" guard ------------------ #
+
+    def test_docs_only_always_selects_the_draft_pr_creator(self):
+        req = DispatchRequest(repo=str(self.repo), prompt="x", docs_only=True)
+        self.assertNotEqual(pr_creator_for(req), gh_pr_create)
+
+    def test_non_docs_only_selects_the_real_pr_creator(self):
+        req = DispatchRequest(repo=str(self.repo), prompt="x")
+        self.assertIs(pr_creator_for(req), gh_pr_create)
+
+    def test_the_draft_pr_creator_actually_passes_draft_true(self):
+        """The guard is only real if the wrapper actually asks `gh` for a
+        draft - proven against the injectable `_run`, the same way
+        `TestPrepareClone` proves `clone_argv`'s own shape."""
+        from overmind import lanework as lw
+
+        seen = {}
+
+        def fake_run(argv, cwd=None, timeout=120, env=None):
+            seen["argv"] = argv
+
+            class FakeProc:
+                returncode = 0
+                stdout = b"https://github.com/x/y/pull/1\n"
+                stderr = b""
+            return FakeProc()
+
+        original_run = lw._run
+        lw._run = fake_run
+        try:
+            req = DispatchRequest(repo=str(self.repo), prompt="x", docs_only=True)
+            creator = pr_creator_for(req)
+            creator(self.repo, "agent/t1", "main", "docs: x", "body")
+        finally:
+            lw._run = original_run
+
+        self.assertIn("--draft", seen["argv"])
 
 
 if __name__ == "__main__":

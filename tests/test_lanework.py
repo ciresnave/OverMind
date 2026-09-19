@@ -496,5 +496,43 @@ class TestPieces(unittest.TestCase):
             del os.environ["SOME_API_KEY"], os.environ["GH_TOKEN_X"]
 
 
+class TestGhPrCreateDraft(unittest.TestCase):
+    """DESIGN-PROPOSAL.md §7.4: `draft=True` is what `dispatch_mcp`'s
+    docs_only mode relies on to satisfy "never auto-publishes" - proven
+    against the injectable `_run`, not just by reading the argv-building
+    code."""
+
+    def _fake_run(self, seen):
+        def fake_run(argv, cwd=None, timeout=120, env=None):
+            seen["argv"] = argv
+
+            class FakeProc:
+                returncode = 0
+                stdout = b"https://github.com/x/y/pull/1\n"
+                stderr = b""
+            return FakeProc()
+        return fake_run
+
+    def test_draft_false_by_default_omits_the_flag(self):
+        seen = {}
+        original = lw._run
+        lw._run = self._fake_run(seen)
+        try:
+            lw.gh_pr_create(pathlib.Path("."), "b", "main", "t", "body")
+        finally:
+            lw._run = original
+        self.assertNotIn("--draft", seen["argv"])
+
+    def test_draft_true_adds_the_flag(self):
+        seen = {}
+        original = lw._run
+        lw._run = self._fake_run(seen)
+        try:
+            lw.gh_pr_create(pathlib.Path("."), "b", "main", "t", "body", draft=True)
+        finally:
+            lw._run = original
+        self.assertIn("--draft", seen["argv"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

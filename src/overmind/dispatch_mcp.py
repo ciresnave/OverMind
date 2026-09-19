@@ -45,6 +45,7 @@ from __future__ import annotations
 import pathlib
 import re
 import subprocess
+import sys
 import tempfile
 import urllib.error
 import urllib.request
@@ -52,7 +53,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Sequence
 
-from .lanework import Task, build_client, run_task
+from .lanework import Task, build_client, gh_pr_create, run_task
 from .quota import QuotaBook, default_path
 from .repo_probe import RepoProbe
 
@@ -135,6 +136,17 @@ class DispatchRequest:
     writable: Sequence[str] = ("**",)
     provider: str = DEFAULT_PROVIDER_ROUTE
     max_steps: int = 20
+    #: DESIGN-PROPOSAL.md §7.4, approved by CireSnave verbatim on board item
+    #: 42 ("On board 42, yes."): an EXPLICIT, caller-chosen mode for work
+    #: with no executable check at all (a README fix, a markdown file with
+    #: no test suite behind it, not even indirectly) - `infer_check` still
+    #: refuses outright for that class of task, correctly, since it never
+    #: guesses "no check needed" on its own. When `True`: `writable` above
+    #: is IGNORED and forced to `DOCS_ONLY_WRITABLE` (so this mode can never
+    #: touch code, whatever the caller passed), no real check ever runs, and
+    #: the result is ALWAYS a DRAFT PR - never auto-mergeable, always routed
+    #: to a human/the PM gate.
+    docs_only: bool = False
 
 
 def build_goal(prompt: str, probe: RepoProbe, request: DispatchRequest,
@@ -163,19 +175,53 @@ class NoCheckInferred(ValueError):
     finding, 2026-09-19: a marker's bare presence isn't enough; see
     `repo_probe`'s own module docstring). Refuse rather than guess a check -
     an unverified task is not a task this tool runs, and this now refuses
-    BEFORE any model time is spent, not after a run nothing could verify."""
+    BEFORE any model time is spent, not after a run nothing could verify.
+    NOT raised in `docs_only` mode - that mode's whole point is real work
+    with no check at all, per §7.4."""
+
+
+#: DESIGN-PROPOSAL.md §7.4: what `docs_only` runs against, in place of a
+#: REAL check - always exits 0, and never asserts anything about the
+#: change. `check_name` (shown everywhere a check is labelled: the goal
+#: brief, the PR body) says so plainly, on purpose - the point isn't to
+#: LOOK like a check ran, it's to keep `lanework.Task`'s own schema (which
+#: requires a real, non-empty argv) satisfied while making the absence of
+#: real verification impossible to miss.
+DOCS_ONLY_CHECK: list[str] = [sys.executable, "-c", "pass"]
+DOCS_ONLY_CHECK_NAME = "docs-only mode: no executable check ran - unverified, human review required"
+
+#: §7.4, CireSnave's own ruling: NEVER caller-overridable, so a docs_only
+#: request can't smuggle in a wider `writable` (e.g. the default `"**"`)
+#: and edit code under cover of "docs-only."
+DOCS_ONLY_WRITABLE: tuple[str, ...] = ("*.md", "docs/**")
 
 
 def build_task(task_id: str, clone_dir: pathlib.Path, probe: RepoProbe,
                request: DispatchRequest, *, fetch_requirements=fetch_requirements_text) -> Task:
-    if probe.check is None:
-        reason = probe.refused_reason or (
-            f"no known project marker (see repo_probe.CHECK_TABLE) found in {request.repo!r}")
-        raise NoCheckInferred(f"refusing to guess a check: {reason}")
     requirements_text = ""
     if request.requirements_url:
         requirements_text = fetch_requirements(request.requirements_url)
     goal = build_goal(request.prompt, probe, request, requirements_text)
+
+    if request.docs_only:
+        pr_body_lines = [
+            "⚠️ **DOCS-ONLY MODE**: no executable check ran for this change - it is "
+            "NOT verified by any automated test, build, or lint. This PR requires human "
+            "review before merge, and is opened as a DRAFT for exactly that reason.",
+        ]
+        if request.capabilities:
+            pr_body_lines.append(f"Requested capabilities: {', '.join(request.capabilities)}")
+        return Task(
+            id=task_id, repo=str(clone_dir), goal=goal, check=list(DOCS_ONLY_CHECK),
+            writable=list(DOCS_ONLY_WRITABLE), base="origin/HEAD", fetch=False,
+            provider=request.provider, max_steps=request.max_steps,
+            check_name=DOCS_ONLY_CHECK_NAME, pr_body="\n\n".join(pr_body_lines),
+        )
+
+    if probe.check is None:
+        reason = probe.refused_reason or (
+            f"no known project marker (see repo_probe.CHECK_TABLE) found in {request.repo!r}")
+        raise NoCheckInferred(f"refusing to guess a check: {reason}")
     pr_body = ""
     if request.capabilities:
         pr_body = f"Requested capabilities: {', '.join(request.capabilities)}"
@@ -194,6 +240,22 @@ def make_task_id(prefix: str = "dispatch") -> str:
     return f"{prefix}-{uuid.uuid4().hex[:12]}"
 
 
+def _draft_pr_creator(root: pathlib.Path, branch: str, base: str, title: str, body: str) -> str:
+    """§7.4: docs_only's result is ALWAYS a draft, whatever `publish` the
+    caller passed - never auto-mergeable, always routed to a human/the PM
+    gate. Kept as its own function (rather than a lambda) so it can be
+    swapped out in a test the same way `gh_pr_create` already is."""
+    return gh_pr_create(root, branch, base, title, body, draft=True)
+
+
+def pr_creator_for(request: DispatchRequest):
+    """Which `pr_creator` `dispatch` uses - pulled out as its own pure,
+    directly-testable decision (§7.4's "never auto-publishes" guard) rather
+    than an inline conditional only exercisable through a full `dispatch()`
+    run (real clone, real provider client, real `gh`)."""
+    return _draft_pr_creator if request.docs_only else gh_pr_create
+
+
 def dispatch(request: DispatchRequest, *, publish: bool = True,
              quota: QuotaBook | None = None) -> dict:
     """Clone, probe, build the task, run it, report the verdict - the whole
@@ -205,12 +267,12 @@ def dispatch(request: DispatchRequest, *, publish: bool = True,
         task = build_task(make_task_id(), clone_dir, probe, request)
         quota = quota if quota is not None else QuotaBook(path=default_path())
         client = build_client(task, quota)
-        result = run_task(task, client, publish=publish)
+        result = run_task(task, client, publish=publish, pr_creator=pr_creator_for(request))
         return {
             "verdict": result.verdict,
             "provider": result.provider,
             "model": result.model,
-            "check": probe.check_name,
+            "check": task.check_name,
             "pr_url": result.pr_url,
             "steps": result.steps,
             "error": result.error,
@@ -226,18 +288,28 @@ def register(server) -> None:
                            capabilities: list[str] | None = None,
                            extra_requirements: str | None = None,
                            requirements_url: str | None = None,
-                           writable: list[str] | None = None) -> dict:
+                           writable: list[str] | None = None,
+                           docs_only: bool = False) -> dict:
         """Dispatch a piece of real work to a free-tier model.
 
         The acceptance check is never caller-supplied - it is inferred from
         the target repo's own project markers (Cargo.toml, pyproject.toml,
         ...). If no marker is recognised, this refuses rather than guessing.
         A PR is opened only if that check genuinely passes.
+
+        Set docs_only=True for work with NO executable check at all (a
+        README fix, a markdown file with no test suite behind it) -
+        CireSnave-approved (DESIGN-PROPOSAL.md §7.4). In this mode: writable
+        is forced to markdown/docs paths only, whatever `writable` says; no
+        real check ever runs; the PR is ALWAYS opened as a draft, never
+        auto-mergeable - it always needs a human to review and mark it
+        ready.
         """
         request = DispatchRequest(
             repo=repo, prompt=prompt, capabilities=tuple(capabilities or ()),
             extra_requirements=extra_requirements, requirements_url=requirements_url,
             writable=tuple(writable) if writable else ("**",),
+            docs_only=docs_only,
         )
         return dispatch(request)
 

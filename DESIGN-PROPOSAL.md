@@ -386,3 +386,38 @@ same reasoning this section already established, applied to the actual design he
 questions 1 (for THAT channel) and 3 (in general) still open.** This section is about a second,
 independent unattended path that reaches the same runner more narrowly, not a resolution of the
 FAM question.
+
+### 7.4 ⚠️ PROPOSED, not built - an explicit "docs-only / no executable check" mode, needs CireSnave
+
+**PM finding, 2026-09-19, motivated by a real limitation §7.3's own `repo_probe.py` now surfaces
+correctly rather than silently:** `infer_check` refuses (`NoCheckInferred`) whenever a repo has no
+marker file `CHECK_TABLE` recognises, OR a marker's own content doesn't validate (a real fix, not this
+proposal - see `repo_probe.py`'s own module docstring). That refusal is *correct* for code work: an
+unverified change is not one this tool should ever auto-publish. But it also means `dispatch_lane_task`
+cannot be used at all for a legitimate class of task this tool's own design already anticipates -
+**docs-only work, where there genuinely is no executable check** (a README fix, a comment, a markdown
+file with no test suite backing it at all, not even indirectly).
+
+**What's proposed, in outline, not code:**
+
+- An EXPLICIT, caller-chosen mode (not a fallback `infer_check` reaches for on its own) - the caller
+  states up front "this is docs-only, there is no check," rather than the tool ever guessing that for
+  itself. Guessing "no check needed" from a repo's shape would reopen exactly the hole §7's own
+  reasoning has been closing all along: a caller (or an arbitrary repo) choosing whether verification
+  happens at all.
+- In this mode, the run **never auto-publishes**, regardless of what the model produced or how
+  confident anything looks. The absence of an executable check means the absence of PASS/FAIL
+  evidence, not a green light.
+- The result instead **always routes to a human or the PM gate** for review before anything reaches a
+  real branch or PR - the same "queue for review, never self-merge" discipline this portfolio's own
+  `CLAUDE.md` already applies to every PR a lane opens, extended to cover a dispatch run that has no
+  automated verification behind it at all.
+
+**Why this needs CireSnave and isn't built here:** it changes WHAT THIS TOOL IS ALLOWED TO DO -
+today, `dispatch_lane_task` refuses outright rather than publish anything unverified; this proposal
+would let it produce and surface an unverified result, gated on a human seeing it before anything
+happens with it. That is a real expansion of the tool's own risk surface (an unverified diff exists
+and is shown to someone, even if it's never auto-merged), not an implementation detail - exactly the
+class of decision §0/§2.4's own "narrating success" discipline requires a real ruling for, not an
+agent's own judgment call. **Not implemented, not scoped further, until CireSnave decides whether this
+mode should exist at all.**

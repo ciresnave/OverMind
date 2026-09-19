@@ -79,6 +79,11 @@ class AgentRun:
     #: Tools offered to the model that the gate would always refuse. ⚠️ Paid for
     #: on every turn and never usable.
     offered_but_refused: list[str] = field(default_factory=list)
+    #: The `max_tokens` budget the LAST completed call in this run actually
+    #: carried (`ChatResult.max_tokens`) - `0` when no call ever completed.
+    #: One run is normally one model throughout, so this is representative
+    #: of the whole run's budget, not just its final step.
+    max_tokens: int = 0
 
     @property
     def executed_tools(self) -> tuple[str, ...]:
@@ -297,6 +302,7 @@ def run_agent(client: ProviderClient, executor: GatedExecutor,
             return AgentRun(final_text="", stop_reason=StopReason.PROVIDER_ERROR,
                             steps=step, ledger=executor.gate.ledger, messages=messages,
                             usage=spent, offered_but_refused=offered_but_refused,
+                            max_tokens=result.max_tokens if result else 0,
                             error=f"{type(exc).__name__}: {exc}")
 
         spent = spent + result.usage
@@ -312,7 +318,7 @@ def run_agent(client: ProviderClient, executor: GatedExecutor,
                 final_text=result.content, stop_reason=StopReason.TRUNCATED,
                 steps=step + 1, ledger=executor.gate.ledger, messages=messages,
                 model=result.model, provider=result.provider, usage=spent,
-                offered_but_refused=offered_but_refused,
+                offered_but_refused=offered_but_refused, max_tokens=result.max_tokens,
                 error=(f"the reply was cut off by the output budget "
                        f"(finish_reason={result.finish_reason!r}); raise max_tokens. "
                        f"A thinking model spends this budget BEFORE it answers."))
@@ -328,7 +334,7 @@ def run_agent(client: ProviderClient, executor: GatedExecutor,
                         final_text=result.content, stop_reason=StopReason.PROTOCOL_FAILURE,
                         steps=step + 1, ledger=executor.gate.ledger, messages=messages,
                         model=result.model, provider=result.provider, usage=spent,
-                        offered_but_refused=offered_but_refused,
+                        offered_but_refused=offered_but_refused, max_tokens=result.max_tokens,
                         error=f"model wrote tool-call JSON into its message twice "
                               f"({', '.join(smuggled)}) instead of emitting a tool call",
                     )
@@ -347,7 +353,7 @@ def run_agent(client: ProviderClient, executor: GatedExecutor,
             return AgentRun(final_text=result.content, stop_reason=StopReason.COMPLETED,
                             steps=step + 1, ledger=executor.gate.ledger, messages=messages,
                             model=result.model, provider=result.provider, usage=spent,
-                            offered_but_refused=offered_but_refused)
+                            offered_but_refused=offered_but_refused, max_tokens=result.max_tokens)
 
         repeated_twice = False
         for call in calls:
@@ -391,7 +397,7 @@ def run_agent(client: ProviderClient, executor: GatedExecutor,
             return AgentRun(final_text=result.content, stop_reason=StopReason.NO_PROGRESS,
                             steps=step + 1, ledger=executor.gate.ledger, messages=messages,
                             model=result.model, provider=result.provider, usage=spent,
-                            offered_but_refused=offered_but_refused,
+                            offered_but_refused=offered_but_refused, max_tokens=result.max_tokens,
                             error="the model repeated an identical call after being told it had "
                                   "already been made")
 
@@ -400,4 +406,5 @@ def run_agent(client: ProviderClient, executor: GatedExecutor,
                     ledger=executor.gate.ledger, messages=messages,
                     model=result.model if result else None,
                     provider=result.provider if result else None, usage=spent,
-                    offered_but_refused=offered_but_refused)
+                    offered_but_refused=offered_but_refused,
+                    max_tokens=result.max_tokens if result else 0)

@@ -148,6 +148,17 @@ class DispatchRequest:
     #: the result is ALWAYS a DRAFT PR - never auto-mergeable, always routed
     #: to a human/the PM gate.
     docs_only: bool = False
+    #: PM point 2, 2026-09-19: `repo_probe.CHECK_TABLE`'s table-order
+    #: tie-break picks the wrong marker for a repo with more than one
+    #: project type at its root (OverMind's own repo: `Cargo.toml` always
+    #: wins over `pyproject.toml`, even when the dispatched work is
+    #: entirely Python). `check_profile` names an entry from
+    #: `repo_probe.NAMED_CHECK_PROFILES` to use INSTEAD of that
+    #: tie-break - still a host-owned table, still validated, still
+    #: requiring that profile's own marker to be present; only the
+    #: SELECTION changes, never the source of the argv. `None` (the
+    #: default) keeps auto-inference exactly as it was.
+    check_profile: str | None = None
 
 
 def build_goal(prompt: str, probe: RepoProbe, request: DispatchRequest,
@@ -287,6 +298,7 @@ def dispatch_record_from(task: Task, request: DispatchRequest,
         docs_only=request.docs_only, provider=result.provider, model=result.model,
         verdict=result.verdict, steps=result.steps, tokens=result.tokens,
         seconds=result.seconds, pr_url=result.pr_url, error=result.error,
+        max_tokens=result.max_tokens,
     )
 
 
@@ -297,7 +309,7 @@ def dispatch(request: DispatchRequest, *, publish: bool = True,
     with tempfile.TemporaryDirectory(prefix="overmind-dispatch-") as tmp:
         scratch = pathlib.Path(tmp)
         clone_dir = prepare_clone(request.repo, scratch)
-        probe = RepoProbe.run(clone_dir)
+        probe = RepoProbe.run(clone_dir, check_profile=request.check_profile)
         task = build_task(make_task_id(), clone_dir, probe, request)
         quota = quota if quota is not None else QuotaBook(path=default_path())
         client = build_client(task, quota)
@@ -329,13 +341,34 @@ def register(server) -> None:
                            extra_requirements: str | None = None,
                            requirements_url: str | None = None,
                            writable: list[str] | None = None,
-                           docs_only: bool = False) -> dict:
+                           docs_only: bool = False,
+                           check_profile: str | None = None) -> dict:
         """Dispatch a piece of real work to a free-tier model.
+
+        ⚠️ `repo` MUST BE A REAL GITHUB URL (e.g.
+        "https://github.com/owner/name.git"), NOT A LOCAL PATH. This tool
+        clones `repo` fresh into a scratch directory before running anything
+        (see the module docstring), and the resulting clone's own `origin`
+        remote is whatever `repo` named - a local path clones with `origin`
+        pointing at that local path, so the PASS-path `gh pr create` call
+        fails at the very end with "none of the git remotes configured for
+        this repository point to a known GitHub host", after the model has
+        already done real work and a commit has already been pushed nowhere
+        useful. Always pass the repo's real GitHub URL.
 
         The acceptance check is never caller-supplied - it is inferred from
         the target repo's own project markers (Cargo.toml, pyproject.toml,
         ...). If no marker is recognised, this refuses rather than guessing.
         A PR is opened only if that check genuinely passes.
+
+        Set check_profile to a name from repo_probe.NAMED_CHECK_PROFILES
+        (e.g. "python-unittest", "python-pytest", "cargo", "go",
+        "pnpm-workspace") to SELECT a specific profile instead of relying on
+        auto-inference's table-order tie-break - useful when a repo has more
+        than one project type at its root and auto-inference would pick the
+        wrong one for the work being dispatched. The chosen profile's own
+        marker must still be present in the repo; this only changes which
+        marker is considered, never the argv it maps to.
 
         Set docs_only=True for work with NO executable check at all (a
         README fix, a markdown file with no test suite behind it) -
@@ -349,7 +382,7 @@ def register(server) -> None:
             repo=repo, prompt=prompt, capabilities=tuple(capabilities or ()),
             extra_requirements=extra_requirements, requirements_url=requirements_url,
             writable=tuple(writable) if writable else ("**",),
-            docs_only=docs_only,
+            docs_only=docs_only, check_profile=check_profile,
         )
         return dispatch(request)
 

@@ -476,6 +476,16 @@ class TestPieces(unittest.TestCase):
         self.assertTrue(all(c.quota is book for c in routed.clients),
                         "a spent model must be spent for every client")
 
+    def test_build_client_does_not_hard_code_max_tokens(self):
+        """PM finding, 2026-09-19: a flat max_tokens=4096 here truncated a
+        thinking model before it answered - `ProviderClient` now resolves
+        the budget per model/provider itself (`providers.resolve_max_tokens`),
+        so this must no longer pin one fixed number for every model."""
+        client = lw.build_client(lw.Task(id="x", repo=".", goal="g", check=["c"],
+                                         writable=[], provider="google"))
+        self.assertIsNone(client.max_tokens,
+                          "an explicit override here would defeat per-model resolution")
+
     def test_the_default_book_is_the_per_user_one(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = pathlib.Path(tmp) / "quota.json"

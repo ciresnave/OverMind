@@ -501,10 +501,42 @@ mod relaunch {
     /// both unit tested directly; this function's own fallback branching
     /// is exercised by real use, the same way a real restart is the
     /// acceptance check for the rest of §5.
+    /// PM finding, 2026-09-18 (third real-restart retest): `lane-restart`
+    /// itself always runs from a lane's own Bash tool, i.e. FROM INSIDE a
+    /// running Claude Code session - `wt.exe` inherits that whole
+    /// environment by default, so the "fresh" relaunch came up believing
+    /// it was a CHILD of the session that requested the restart
+    /// (`CLAUDE_CODE_CHILD_SESSION` inherited): no transcript, and the
+    /// positional prompt never auto-submitted. Confirmed live by dumping
+    /// `env` from inside a real session (not guessed) - only vars that
+    /// actually name THIS session or its IPC channel are stripped; a
+    /// user's own persistent config vars (`CLAUDE_EFFORT`,
+    /// `CLAUDE_CODE_USE_POWERSHELL_TOOL`, `CLAUDE_CODE_EXECPATH`, and
+    /// anything unrelated like `CLOUDFLARE_*`) are left alone.
+    const SESSION_IDENTITY_ENV_VARS: &[&str] = &[
+        "CLAUDECODE",
+        "CLAUDE_CODE_CHILD_SESSION",
+        "CLAUDE_CODE_ENTRYPOINT",
+        "CLAUDE_CODE_SESSION_ID",
+        "CLAUDE_CODE_SESSION_ATTENDED",
+        "CLAUDE_CODE_BRIDGE_SESSION_ID",
+        "CLAUDE_CODE_MESSAGING_SOCKET",
+        "CLAUDE_CODE_MESSAGING_TOKEN",
+        "CLAUDE_CODE_SSE_PORT",
+        "CLAUDE_PID",
+    ];
+
+    fn strip_session_identity_env(cmd: &mut std::process::Command) {
+        for var in SESSION_IDENTITY_ENV_VARS {
+            cmd.env_remove(var);
+        }
+    }
+
     fn spawn_relaunch(state: &LaneState, argv: &[String]) -> Result<(), RelaunchError> {
         let mut wt = std::process::Command::new("wt.exe");
         wt.args(["-w", "new", "-d", &state.cwd]);
         wt.args(argv);
+        strip_session_identity_env(&mut wt);
         match wt.spawn() {
             Ok(_) => return Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -516,6 +548,7 @@ mod relaunch {
         let mut conhost = std::process::Command::new("conhost.exe");
         conhost.args(argv);
         conhost.current_dir(&state.cwd);
+        strip_session_identity_env(&mut conhost);
         conhost
             .spawn()
             .map(|_| ())
@@ -723,6 +756,38 @@ mod relaunch {
             state.name = Some("a|calc".to_string());
             let result = kill_and_relaunch(&NeverCalled, &state, &dummy_identity());
             assert!(matches!(result, Err(RelaunchError::InvalidIdentifier(_))));
+        }
+
+        // -- strip_session_identity_env ------------------------------------ //
+        // PM finding, 2026-09-18 (third real-restart retest): `wt.exe`
+        // inherits this process's own env by default, so a relaunch run
+        // from inside a real session came up believing it was a CHILD of
+        // that session (CLAUDE_CODE_CHILD_SESSION inherited) - no
+        // transcript, prompt never auto-submitted.
+
+        #[test]
+        fn strip_session_identity_env_removes_every_listed_var() {
+            let mut cmd = std::process::Command::new("does-not-matter");
+            for var in SESSION_IDENTITY_ENV_VARS {
+                cmd.env(var, "1");
+            }
+            cmd.env("UNRELATED_VAR", "keep-me");
+
+            strip_session_identity_env(&mut cmd);
+
+            let envs: std::collections::HashMap<_, _> = cmd.get_envs().collect();
+            for var in SESSION_IDENTITY_ENV_VARS {
+                assert_eq!(
+                    envs.get(std::ffi::OsStr::new(var)),
+                    Some(&None),
+                    "{var} must be explicitly removed (env_remove), not merely left unset"
+                );
+            }
+            assert_eq!(
+                envs.get(std::ffi::OsStr::new("UNRELATED_VAR")),
+                Some(&Some(std::ffi::OsStr::new("keep-me"))),
+                "an unrelated var must be left alone - this isn't a blanket env wipe"
+            );
         }
 
         // -- claude_argv ------------------------------------------------- //

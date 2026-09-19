@@ -257,6 +257,29 @@ doesn't weaken the check meaningfully - a stale, truly unrelated process from be
 excluded - it only stops two clock sources' ordinary disagreement from being read as evidence of
 staleness.
 
+⚠️ **REVISED (PM finding, 2026-09-18, third real-restart retest): the mechanics are proven - kill,
+`wt.exe` launch with the exact planned argv, `--remote-control` live, liveness confirmed - but the new
+session came up believing it was a CHILD of the session that requested the restart.** `lane-restart`
+always runs from a lane's own Bash tool - i.e. from INSIDE a running Claude Code session - and `wt.exe`
+inherits that whole environment by default. The relaunched session showed "Transcript saving is off -
+inherited `CLAUDE_CODE_CHILD_SESSION` marker," had no transcript, and its positional prompt never
+auto-submitted. **Fixed:** `spawn_relaunch` strips the vars that actually NAME this session or its IPC
+channel before launching, via `Command::env_remove` on both the `wt.exe` and `conhost.exe` fallback -
+confirmed by dumping `env` from inside a real session first, not guessed:
+`CLAUDECODE`, `CLAUDE_CODE_CHILD_SESSION`, `CLAUDE_CODE_ENTRYPOINT`, `CLAUDE_CODE_SESSION_ID`,
+`CLAUDE_CODE_SESSION_ATTENDED`, `CLAUDE_CODE_BRIDGE_SESSION_ID`, `CLAUDE_CODE_MESSAGING_SOCKET`,
+`CLAUDE_CODE_MESSAGING_TOKEN`, `CLAUDE_CODE_SSE_PORT`, `CLAUDE_PID`. A user's own persistent config
+vars (`CLAUDE_EFFORT`, `CLAUDE_CODE_USE_POWERSHELL_TOOL`, `CLAUDE_CODE_EXECPATH`, anything unrelated
+like `CLOUDFLARE_*`) are deliberately left alone - this is a targeted strip of session identity, not a
+blanket environment wipe.
+
+**Also noted (PM finding, same retest, cosmetic - not fixed in code):** killing `claude` leaves its
+hosting terminal tab behind, in raw mouse-tracking mode (the shell's own escape codes never got
+cleaned up). Not worth a terminal-reset-sequence fix - the actual answer is that a lane's tab should
+close on its own once its `claude` process exits, which is already true when a lane is LAUNCHED the
+same way this tool relaunches it (`wt … claude …`, one `claude` per tab, no intermediate shell prompt
+sitting underneath it).
+
 ## 6. Bulletproof requirements (from the task, restated as testable properties)
 
 1. **Positive identification** — §2's four-part check, every time, no exceptions, including for

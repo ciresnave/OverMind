@@ -138,6 +138,11 @@ class Task:
     #: How the check is named anywhere PUBLIC - the commit message, the PR
     #: body, and the brief sent to the provider. Defaults to `check_label`.
     check_name: str | None = None
+    #: Glob patterns denied regardless of `writable` - see
+    #: `WorkspaceConfined.extra_denied_globs`. Empty for every task except
+    #: §7.4's docs_only mode, which sets this to
+    #: `dispatch_mcp.AGENT_INSTRUCTION_GLOBS`.
+    protected_globs: list[str] = field(default_factory=list)
 
     @classmethod
     def from_json(cls, data: Mapping[str, Any]) -> "Task":
@@ -261,6 +266,14 @@ class WorkspaceConfined:
     #: Paths tracked at the task's base, casefolded. `write_file` may not
     #: replace any of them.
     tracked: frozenset[str] = frozenset()
+    #: Glob patterns denied REGARDLESS of `writable` - a task-specific
+    #: analogue of `PROTECTED` (which is fixed and portfolio-wide), for a
+    #: task whose OWN mode needs a narrower writable surface than the
+    #: portfolio's blanket denylist covers. §7.4's docs_only mode is the
+    #: first user: `*.md` is writable there, but an agent-instruction file
+    #: (`CLAUDE.md`, `.claude/**`, ...) is still off limits even though it
+    #: matches that glob - see `dispatch_mcp.AGENT_INSTRUCTION_GLOBS`.
+    extra_denied_globs: Sequence[str] = ()
     name: str = "workspace-confined"
 
     def applies_to(self, call: ToolCall) -> bool:
@@ -282,6 +295,11 @@ class WorkspaceConfined:
                 return Decision.deny(
                     f"{rel} is under {hit!r}, which no task may write, whatever it "
                     f"declares writable", self.name)
+            extra_hit = next((p for p in self.extra_denied_globs if glob_match(rel, p)), None)
+            if extra_hit:
+                return Decision.deny(
+                    f"{rel} matches {extra_hit!r}, denied for this task regardless of "
+                    f"writable", self.name)
             if not any(glob_match(rel, p) for p in self.writable):
                 return Decision.deny(
                     f"{rel} is not writable for this task; declared writable: "
@@ -598,7 +616,8 @@ def run_task(task: Task, client: Any = None, *, publish: bool = False, keep: boo
         ws = Workspace(root, task)
         tracked = frozenset(n.casefold() for n in
                             _git(root, "ls-files", "-z").split("\0") if n)
-        gate = Gate([WorkspaceConfined(root, task.writable, tracked),
+        gate = Gate([WorkspaceConfined(root, task.writable, tracked,
+                                       extra_denied_globs=task.protected_globs),
                      DenyUnlessDeclared(reversible=frozenset(TOOL_NAMES))],
                     facts=StaticFacts(), ledger=Ledger())
         executor = GatedExecutor(gate, ws.tools())

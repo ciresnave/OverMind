@@ -23,9 +23,10 @@ import urllib.error
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from overmind.dispatch_mcp import (                                     # noqa: E402
-    DOCS_ONLY_CHECK, DOCS_ONLY_WRITABLE, DispatchRequest, NoCheckInferred,
-    UnsafeRequirementsURL, build_goal, build_task, clone_argv,
-    fetch_requirements_text, prepare_clone, pr_creator_for,
+    AGENT_INSTRUCTION_GLOBS, DOCS_ONLY_CHECK, DOCS_ONLY_WRITABLE,
+    DispatchRequest, NoCheckInferred, UnsafeRequirementsURL, build_goal,
+    build_task, clone_argv, fetch_requirements_text, prepare_clone,
+    pr_creator_for,
 )
 from overmind.lanework import gh_pr_create                              # noqa: E402
 from overmind.repo_probe import RepoProbe                               # noqa: E402
@@ -305,6 +306,30 @@ class TestDocsOnlyMode(GitRepoCase):
         task = build_task("t1", self.repo, probe, req)
         self.assertEqual(task.writable, list(DOCS_ONLY_WRITABLE))
         self.assertNotIn("**", task.writable)
+
+    def test_docs_only_task_carries_the_agent_instruction_protected_globs(self):
+        """PM finding, 2026-09-19 (defence in depth, after §7.4 shipped):
+        some *.md files are agent instructions, not documentation - a free-
+        tier model editing CLAUDE.md/AGENTS.md/etc. steers a FUTURE agent
+        session, not a docs fix. `task.protected_globs` is what
+        `WorkspaceConfined` actually enforces (see test_lanework.py's own
+        `test_protected_globs_are_refused_even_when_they_match_writable`
+        for the enforcement itself); this only proves docs_only WIRES the
+        real denylist onto the task, not an empty or different one."""
+        probe = RepoProbe(check=None, check_name=None, context="")
+        req = DispatchRequest(repo=str(self.repo), prompt="x", docs_only=True)
+        task = build_task("t1", self.repo, probe, req)
+        self.assertEqual(task.protected_globs, list(AGENT_INSTRUCTION_GLOBS))
+        for must_have in ("**/CLAUDE.md", "**/AGENTS.md", "**/GEMINI.md",
+                          "**/.claude/**", "**/SKILL.md", "**/skills/**",
+                          "**/.github/**"):
+            self.assertIn(must_have, task.protected_globs)
+
+    def test_non_docs_only_task_has_no_protected_globs(self):
+        probe = RepoProbe(check=["cargo", "test"], check_name="cargo test", context="")
+        req = DispatchRequest(repo=str(self.repo), prompt="x")
+        task = build_task("t1", self.repo, probe, req)
+        self.assertEqual(task.protected_globs, [])
 
     def test_docs_only_pr_body_says_plainly_that_no_check_ran(self):
         probe = RepoProbe(check=None, check_name=None, context="")

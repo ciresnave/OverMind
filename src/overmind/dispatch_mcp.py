@@ -195,6 +195,24 @@ DOCS_ONLY_CHECK_NAME = "docs-only mode: no executable check ran - unverified, hu
 #: and edit code under cover of "docs-only."
 DOCS_ONLY_WRITABLE: tuple[str, ...] = ("*.md", "docs/**")
 
+#: PM finding, 2026-09-19 (defence in depth, after §7.4 shipped): some
+#: `*.md` files are AGENT INSTRUCTIONS, not documentation - `CLAUDE.md`,
+#: `AGENTS.md`, `GEMINI.md`, a `.claude/` config, a skill's own
+#: `SKILL.md`. A free-tier model editing one of these steers a FUTURE
+#: Claude/agent session reading it - prompt injection by the back door,
+#: not a docs fix. Denied REGARDLESS of `DOCS_ONLY_WRITABLE` matching them
+#: (`**/CLAUDE.md` matches `*.md` too) - `WorkspaceConfined.
+#: extra_denied_globs` is checked BEFORE the `writable` allowlist, so
+#: these refuse even though `*.md` alone would have let them through.
+#: `.github/**` is also already covered by `lanework.PROTECTED` for every
+#: task, not just docs_only - included here too so this list is a complete
+#: statement of intent on its own, not one that depends on reading a
+#: different module to understand.
+AGENT_INSTRUCTION_GLOBS: tuple[str, ...] = (
+    "**/CLAUDE.md", "**/AGENTS.md", "**/GEMINI.md",
+    "**/.claude/**", "**/SKILL.md", "**/skills/**", "**/.github/**",
+)
+
 
 def build_task(task_id: str, clone_dir: pathlib.Path, probe: RepoProbe,
                request: DispatchRequest, *, fetch_requirements=fetch_requirements_text) -> Task:
@@ -216,6 +234,7 @@ def build_task(task_id: str, clone_dir: pathlib.Path, probe: RepoProbe,
             writable=list(DOCS_ONLY_WRITABLE), base="origin/HEAD", fetch=False,
             provider=request.provider, max_steps=request.max_steps,
             check_name=DOCS_ONLY_CHECK_NAME, pr_body="\n\n".join(pr_body_lines),
+            protected_globs=list(AGENT_INSTRUCTION_GLOBS),
         )
 
     if probe.check is None:

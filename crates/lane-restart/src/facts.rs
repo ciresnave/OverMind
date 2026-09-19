@@ -507,6 +507,22 @@ mod tests {
     /// parametrisation `find_claude_process_in` calls with `&["claude"]`
     /// in production - so this proves the matching logic itself, not just
     /// that a hard-coded string equals another hard-coded string.
+    fn poll_for<T>(
+        timeout: std::time::Duration,
+        mut attempt: impl FnMut() -> Option<T>,
+    ) -> Option<T> {
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            if let Some(v) = attempt() {
+                return Some(v);
+            }
+            if std::time::Instant::now() >= deadline {
+                return None;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+    }
+
     #[test]
     fn find_process_in_locates_a_real_child_by_name_cwd_and_start_time() {
         // ⚠️ A UNIQUE directory, not the shared system temp root: cargo
@@ -526,12 +542,18 @@ mod tests {
         let mut child = spawn_sleep_child_in(&known_dir);
         let pid = child.id();
 
-        std::thread::sleep(std::time::Duration::from_millis(200));
-        let found = find_process_in(
-            &known_dir.to_string_lossy(),
-            before_spawn_secs,
-            &[SLEEP_CHILD_IMAGE_NAME],
-        );
+        // ⚠️ POLLED, not a single fixed-delay lookup: a loaded CI runner
+        // can be slower than a 200ms sleep accounts for - this is the same
+        // real-world timing variance the production liveness check itself
+        // exists to tolerate, so the test tolerates it too rather than
+        // flaking on a busy machine.
+        let found = poll_for(std::time::Duration::from_secs(3), || {
+            find_process_in(
+                &known_dir.to_string_lossy(),
+                before_spawn_secs,
+                &[SLEEP_CHILD_IMAGE_NAME],
+            )
+        });
 
         let _ = child.kill();
         let _ = child.wait();

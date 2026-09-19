@@ -53,7 +53,8 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Sequence
 
-from .lanework import Task, build_client, gh_pr_create, run_task
+from . import ledger
+from .lanework import LaneResult, Task, build_client, gh_pr_create, run_task
 from .quota import QuotaBook, default_path
 from .repo_probe import RepoProbe
 
@@ -275,6 +276,20 @@ def pr_creator_for(request: DispatchRequest):
     return _draft_pr_creator if request.docs_only else gh_pr_create
 
 
+def dispatch_record_from(task: Task, request: DispatchRequest,
+                         result: LaneResult) -> ledger.DispatchRecord:
+    """What `dispatch` appends to the durable ledger - pulled out as its own
+    pure, directly-testable function (same reason as `pr_creator_for`): the
+    CONTENT logic is testable with fake `Task`/`DispatchRequest`/
+    `LaneResult` objects, without needing a full `dispatch()` run."""
+    return ledger.DispatchRecord(
+        task_id=task.id, repo=request.repo, task_type=task.check_name or "unknown",
+        docs_only=request.docs_only, provider=result.provider, model=result.model,
+        verdict=result.verdict, steps=result.steps, tokens=result.tokens,
+        seconds=result.seconds, pr_url=result.pr_url, error=result.error,
+    )
+
+
 def dispatch(request: DispatchRequest, *, publish: bool = True,
              quota: QuotaBook | None = None) -> dict:
     """Clone, probe, build the task, run it, report the verdict - the whole
@@ -287,6 +302,12 @@ def dispatch(request: DispatchRequest, *, publish: bool = True,
         quota = quota if quota is not None else QuotaBook(path=default_path())
         client = build_client(task, quota)
         result = run_task(task, client, publish=publish, pr_creator=pr_creator_for(request))
+        # ⚠️ EVERY DISPATCH IS RECORDED, whatever the verdict - a
+        # CHECK_FAILED or ERROR run is exactly the data future cost-per-
+        # success routing needs, not just the PASS runs. Best-effort:
+        # ledger.append never raises, so a logging failure can't take down
+        # the result this function is about to return.
+        ledger.append(dispatch_record_from(task, request, result))
         return {
             "verdict": result.verdict,
             "provider": result.provider,

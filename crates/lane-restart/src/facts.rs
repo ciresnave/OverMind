@@ -535,24 +535,25 @@ mod tests {
         // doesn't either.
         let unique_dir = tempdir().unwrap();
         let known_dir = unique_dir.path().to_path_buf();
-        let before_spawn_secs = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
         let mut child = spawn_sleep_child_in(&known_dir);
         let pid = child.id();
 
+        // ⚠️ Threshold 0, not "now": this test's OWN job is proving the
+        // name+cwd matching works against a real process - the start_time
+        // boundary itself is separately, dedicatedly tested below
+        // (`_ignores_..._before_the_threshold`). A tight "now"-based
+        // threshold here mixes two different clock sources (this
+        // process's wall clock vs the OS's boot-time-derived start_time)
+        // that can disagree by a second or two without either being
+        // wrong - confirmed live: this exact test failed on a CI runner
+        // for that reason before being loosened. Production code
+        // (`kill_and_relaunch`) carries its own small safety margin for
+        // the same reason - see its own comment.
+        //
         // ⚠️ POLLED, not a single fixed-delay lookup: a loaded CI runner
-        // can be slower than a 200ms sleep accounts for - this is the same
-        // real-world timing variance the production liveness check itself
-        // exists to tolerate, so the test tolerates it too rather than
-        // flaking on a busy machine.
+        // can be slower than a 200ms sleep accounts for.
         let found = poll_for(std::time::Duration::from_secs(3), || {
-            find_process_in(
-                &known_dir.to_string_lossy(),
-                before_spawn_secs,
-                &[SLEEP_CHILD_IMAGE_NAME],
-            )
+            find_process_in(&known_dir.to_string_lossy(), 0, &[SLEEP_CHILD_IMAGE_NAME])
         });
 
         let _ = child.kill();

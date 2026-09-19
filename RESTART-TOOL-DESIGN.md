@@ -247,6 +247,16 @@ image-name list so it can search for a stand-in like `ping` instead of `claude`)
 REAL spawned child, per this section's own "not unit tested without a real process" discipline for
 anything that touches `sysinfo` directly.
 
+⚠️ **The `start_time`-at-or-after-the-kill threshold carries a small safety margin (5s), found live
+while adding this fix's own real-process CI coverage**: the kill timestamp is wall-clock time
+(`facts.now()`), but the OS-reported `start_time` a fresh relaunch gets compared against comes from a
+different clock source (on Linux, ticks-since-boot converted to a Unix timestamp) - the two can
+disagree by a second or two without either being wrong. Without slack, `ubuntu-latest`'s CI runner
+reproducibly excluded a genuinely fresh relaunch as "too old" by exactly this rounding gap. The margin
+doesn't weaken the check meaningfully - a stale, truly unrelated process from before the kill is still
+excluded - it only stops two clock sources' ordinary disagreement from being read as evidence of
+staleness.
+
 ## 6. Bulletproof requirements (from the task, restated as testable properties)
 
 1. **Positive identification** — §2's four-part check, every time, no exceptions, including for

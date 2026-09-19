@@ -589,7 +589,19 @@ mod relaunch {
         // Give the OS a moment to finish tearing the process down before a
         // new `claude` process claims the same working directory's lock.
         std::thread::sleep(std::time::Duration::from_millis(500));
-        let killed_at_secs = facts.now().timestamp().max(0) as u64;
+        // ⚠️ A SMALL SAFETY MARGIN, not a guess: `facts.now()` is wall-clock
+        // time, but `find_claude_process_in`'s `start_time` comes from the
+        // OS (on Linux, ticks-since-boot converted to a Unix timestamp) -
+        // two different clock sources that can disagree by a second or two
+        // without either being "wrong". Without slack, a genuinely fresh
+        // relaunch could be excluded as "too old" by a rounding difference
+        // between the two - confirmed live: this crate's own real-process
+        // liveness test failed on a CI runner for exactly this reason
+        // before the margin was added. §2's real identity check (pid, cwd,
+        // session transcript, exe) still does the actual verification;
+        // this threshold only needs to rule out a stale, unrelated process
+        // from BEFORE the kill, not pin the exact second.
+        let killed_at_secs = facts.now().timestamp().max(0).saturating_sub(5) as u64;
 
         spawn_relaunch(state, &argv)?;
 

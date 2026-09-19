@@ -749,11 +749,26 @@ conditions." It never guesses, never approximates, and never runs anywhere but t
 relaunched. **It is never wired into in-work permission prompts** - those stay exactly as they are
 today, answered by a human or by Claude Code's own permission system, never by this mechanism.
 
-### 12.2 Handlers are DATA, never code
+### 12.2 Handlers are DATA, never code - but ACTIVE means shipped in the binary, never a loose file
 
-One JSON file per handler, under `C:/Projects/.claude-hooks/handlers/*.json` (a user, per CireSnave's
-framing, "adds or removes" a handler by adding or removing a file - no code change, no rebuild).
-Fields:
+⚠️ **REVISED (PM finding, 2026-09-18, reviewing this same PR before merge): a runtime handlers
+directory has no provenance a lane can't forge.** Every lane runs as the same Windows user; any lane
+(or the LLM-proposal loop, by a bug or an accident) can write a JSON file WITH a `provenance` block
+into any directory this tool reads. A `provenance` field inside a file the tool itself could write is
+a claim, not proof - it says "CireSnave approved this," it doesn't make that true. §12's first draft
+never said who is allowed to create or activate a handler; this revision does.
+
+**Handlers a user "adds or removes" (CireSnave's own framing) still means editing a JSON file** - that
+part of the design is unchanged. What changed is WHERE that file has to live to ever take effect:
+`crates/lane-restart/handlers/*.json`, inside the OverMind repo itself, reachable only through this
+project's own PR review and merge gate (the PM, with CireSnave's approval quoted verbatim in the PR -
+the PR itself becomes the provenance of record, not a field inside the JSON). **Embedded into the
+binary at build time** via `include_str!` (or a compiled-in hash list the binary checks any runtime
+file against, refusing anything whose hash isn't on it - exact mechanism settled during the build,
+either way the property holds): **a runtime directory must NEVER be able to activate a handler on its
+own**, no matter what it contains or claims.
+
+Handler file fields (unchanged from the first draft):
 
 ```jsonc
 {
@@ -784,11 +799,15 @@ Fields:
 
 ### 12.3 Loading rules - fail closed, every time
 
-- **No handlers load by default.** The handlers directory does not need to exist; an empty or missing
-  directory means the mechanism is a no-op, identical to §5's behaviour before this section existed.
-- **A handler file with no `provenance.approved_by`/`approved_at`/`quote` is refused outright** - not
-  loaded, logged as refused and why. A handler is never "trusted until proven otherwise."
-- **An expired handler (`expires_at` in the past) is treated as not present.**
+- **No handlers load by default.** An empty `crates/lane-restart/handlers/` directory means the
+  mechanism is a no-op, identical to §5's behaviour before this section existed.
+- **Only handlers embedded at build time (§12.2) ever activate.** Nothing read from a runtime
+  directory is trusted, regardless of what its own `provenance` field claims - see §12.7.
+- **A handler file with no `provenance.approved_by`/`approved_at`/`quote` is refused at build/PR-review
+  time** - not embedded, not shipped. A handler is never "trusted until proven otherwise," and now
+  never gets the chance to be trusted without having gone through the PR gate at all.
+- **An expired handler (`expires_at` in the past) is treated as not present**, even though it was
+  embedded - the binary still has to check this at runtime, not just at build time.
 - **Malformed JSON is refused and logged** - never partially parsed, never guessed.
 - A handler whose `scope.roles` doesn't include the target lane's role is simply not applicable there;
   not an error, just skipped for that lane.
@@ -837,15 +856,55 @@ handler exists yet for that dialog), the captured screen text is written verbati
 else in this spec: a record of what actually happened, not an assumption about what should happen
 next.
 
-A model - the PM, or a future free-tier dispatch through this project's own `dispatch_lane_task` tool
-- may read that file and **draft** a candidate handler as a separate PROPOSAL file (a distinct location
-from `C:/Projects/.claude-hooks/handlers/`, e.g. a `proposals/` subdirectory - exact path settled during
-the build). **Proposals are inert by construction**: the loader (§12.3) only ever reads from the real
-handlers directory, and only handler files carrying a valid provenance record. A drafted proposal
-cannot activate itself, at any stage, by any path - only CireSnave moving/approving a file, with his
-own words captured as that handler's `provenance.quote`, makes it real.
+A model - the PM, or a future free-tier dispatch through this project's own `dispatch_lane_task` tool -
+may read that file and **draft** a candidate handler, written to `.lane-state/handler-proposals/` -
+⚠️ **REVISED (PM finding, 2026-09-18): NOT the runtime handlers path from the first draft, and this
+tool NEVER reads this directory for activation, under any circumstance.** It exists purely so a human
+(or the PM lane, drafting on CireSnave's behalf) has a starting point to copy from. **Promoting a
+proposal means opening a PR** that adds it to `crates/lane-restart/handlers/` (§12.2) with CireSnave's
+verbatim approval of that exact spec in the PR description - the same path as writing a handler by
+hand, no shortcut. A drafted proposal cannot activate itself, at any stage, by any path.
 
-### 12.7 What this section does NOT authorize
+### 12.7 Provenance and activation: only a merged PR, never a runtime claim
+
+⚠️ **PM finding, 2026-09-18, reviewing this PR before merge - the gap the first draft of this section
+left open.** Every lane on this machine runs as the same Windows user. Any lane - including a buggy or
+misbehaving §12.6 proposal-drafting step - can write a file into any directory this tool might read,
+and nothing stops that file's own `provenance` block from CLAIMING CireSnave's approval whether or not
+he gave it. A `provenance` field is data the tool reads; it is not, by itself, evidence of anything.
+
+**The only thing this design treats as real provenance is a merged pull request against this repo**:
+CireSnave's approval, quoted verbatim, in the PR description, reviewed through this project's own PM
+merge gate (`CLAUDE.md`'s "queue for the PM, never self-merge" rule - no exception for handler PRs).
+The PR *is* the provenance record; the `provenance` fields inside the JSON (§12.2) are a convenient,
+human-readable RESTATEMENT of what the PR already shows, checked at build time for completeness, never
+the thing that makes a handler real. A handler is active if and only if it shipped inside a binary
+built from a commit on `main` that a real, reviewable PR put there.
+
+### 12.8 Threat model - stated plainly, not overclaimed
+
+**What this stops**: a handler activating by accident (a stray file, a bug in the proposal loop, a
+copy-paste into the wrong directory), or by an automated process acting alone (the LLM-proposal loop
+drafting something and it silently taking effect). It gives a durable audit trail - every active
+handler traces to one merged PR, one reviewed diff, one verbatim quote from CireSnave.
+
+**What this does NOT stop**: a fully compromised lane. A lane that can run arbitrary code on this
+machine can already press keys itself, read and write any file this tool could, or simply launch
+`claude.exe` directly without going through `lane-restart` at all - no handler-provenance scheme
+changes that threat model, and this section does not claim to. The value here is raising the bar from
+"any file that shows up gets trusted" to "only a change CireSnave has actually seen and approved gets
+shipped," not building a security boundary against a hostile lane.
+
+### 12.9 The installed binary: build provenance and `--version`
+
+- **The PM builds the installed `lane-restart.exe` from a clean clone of `main`** (§11.2's existing
+  step - unchanged) and records its SHA-256 at `C:/Projects/.claude-hooks/lane-restart.sha256`, so the
+  binary actually running can be checked against the commit it was supposedly built from.
+- **`lane-restart --version` prints the crate version, plus every embedded handler's `id` and a hash
+  of its exact contents** - so anyone (CireSnave included) can see precisely what's active without
+  reading source, and a diff between two `--version` outputs shows exactly what changed.
+
+### 12.10 What this section does NOT authorize
 
 - **No handler is written yet**, including the `claude-peers` dev-channels one this section uses as
   its own running example - CireSnave's own words above require its exact spec to be shown to him
@@ -854,3 +913,5 @@ own words captured as that handler's `provenance.quote`, makes it real.
   one point §5's `AwaitingConfirmation` already exists, never anywhere else.
 - **No default handlers, no bundled handlers, no "trusted" handler source** - every handler, with no
   exception, needs its own provenance record before it loads.
+- **No runtime directory, anywhere, ever activates a handler on its own** (§12.7) - only a merged PR
+  does, regardless of what any file on disk claims about itself.

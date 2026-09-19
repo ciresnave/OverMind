@@ -64,6 +64,12 @@ class DispatchRecord:
     #: Wall-clock UNIX time this record was appended - NOT when the run
     #: started (`seconds` already carries the run's own duration).
     at: float = field(default_factory=time.time)
+    #: The `max_tokens` budget the model actually got (`LaneResult.max_tokens`)
+    #: - `0` when no call ever completed. PM finding, 2026-09-19: a flat
+    #: 4096 truncated a thinking model before it answered
+    #: (`providers.DEFAULT_MAX_TOKENS` fixed the default; this records what
+    #: a given run actually had, since routing may vary it per model later).
+    max_tokens: int = 0
 
 
 def append(record: DispatchRecord, path: pathlib.Path | None = None) -> None:

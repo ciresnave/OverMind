@@ -25,8 +25,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 from overmind.dispatch_mcp import (                                     # noqa: E402
     AGENT_INSTRUCTION_GLOBS, DOCS_ONLY_CHECK, DOCS_ONLY_WRITABLE,
     DispatchRequest, NoCheckInferred, UnsafeRequirementsURL, build_goal,
-    build_task, clone_argv, dispatch_record_from, fetch_requirements_text,
-    prepare_clone, pr_creator_for,
+    build_task, clone_argv, dispatch, dispatch_record_from,
+    fetch_requirements_text, prepare_clone, pr_creator_for,
 )
 from overmind.lanework import LaneResult, Task, gh_pr_create             # noqa: E402
 from overmind.repo_probe import RepoProbe                               # noqa: E402
@@ -394,6 +394,50 @@ class TestDocsOnlyMode(GitRepoCase):
         self.assertIn("--draft", seen["argv"])
 
 
+class TestCheckProfile(GitRepoCase):
+    """PM point 2, 2026-09-19: an optional `check_profile` lets a caller
+    bypass `repo_probe.CHECK_TABLE`'s table-order tie-break by name, without
+    the argv ever coming from anywhere but the host-owned table. This
+    module's own job is just to THREAD the value through unchanged - the
+    selection logic itself is `repo_probe`'s, tested there."""
+
+    def test_check_profile_defaults_to_none(self):
+        req = DispatchRequest(repo=str(self.repo), prompt="x")
+        self.assertIsNone(req.check_profile)
+
+    def test_dispatch_passes_check_profile_through_to_repo_probe_run(self):
+        """⚠️ The one thing this module must get right: `dispatch()` must
+        call `RepoProbe.run` with the CALLER'S `check_profile`, not drop it
+        on the floor. Patches `RepoProbe.run` itself so this doesn't need a
+        real provider client or a real `gh` - only the wiring is under
+        test here."""
+        from unittest import mock
+
+        from overmind import dispatch_mcp
+        from overmind.repo_probe import RepoProbe
+
+        seen = {}
+        real_run = RepoProbe.run.__func__
+
+        def fake_run(cls, root, check_profile=None):
+            seen["check_profile"] = check_profile
+            return real_run(cls, root, check_profile=check_profile)
+
+        req = DispatchRequest(repo=str(self.repo), prompt="x",
+                              check_profile="python-unittest")
+
+        with mock.patch.object(RepoProbe, "run", classmethod(fake_run)):
+            try:
+                dispatch_mcp.dispatch(req)
+            except Exception:
+                # No `tests/` dir in this fixture repo, so this profile
+                # refuses (NoCheckInferred) before any client/network call -
+                # only the threaded argument is under test here.
+                pass
+
+        self.assertEqual(seen["check_profile"], "python-unittest")
+
+
 class TestDispatchRecordFrom(unittest.TestCase):
     """PM relay of CireSnave's long-term routing goal (EXPECTATIONS §2.3a),
     2026-09-19: collect task type, provider/model, verdict, tokens and wall
@@ -463,6 +507,16 @@ class TestDispatchRecordFrom(unittest.TestCase):
         req = DispatchRequest(repo="x", prompt="p")
         rec = dispatch_record_from(task, req, self._result())
         self.assertEqual(rec.task_type, "unknown")
+
+    def test_max_tokens_used_reaches_the_ledger(self):
+        """PM ask, 2026-09-19: "record the value used in the ledger" - the
+        chain is ChatResult.max_tokens -> AgentRun.max_tokens ->
+        LaneResult.max_tokens -> DispatchRecord.max_tokens; this is the
+        last link, tested with a fake LaneResult carrying a real value."""
+        task = self._task()
+        req = DispatchRequest(repo="x", prompt="p")
+        rec = dispatch_record_from(task, req, self._result(max_tokens=16384))
+        self.assertEqual(rec.max_tokens, 16384)
 
 
 if __name__ == "__main__":

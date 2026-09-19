@@ -63,8 +63,18 @@ from .quota import QuotaBook, daily_limit_in, monthly_limit_in
 __all__ = [
     "Provider", "PROVIDERS", "ProviderClient", "ChatResult", "Usage", "ProviderError",
     "RateLimited", "NoUsableModel", "read_secret", "normalise_for_echo",
-    "select_models", "RoutedClient",
+    "select_models", "RoutedClient", "resolve_max_tokens",
 ]
+
+#: PM finding, 2026-09-19: lanework.py hard-coded max_tokens=4096 on every
+#: request, regardless of model. `ChatResult.truncated`'s own docstring
+#: above already measured that a THINKING model spends this budget before
+#: it answers - a dispatch to nvidia/openai/gpt-oss-20b truncated with
+#: exactly this symptom (finish_reason='length', empty answer) at 4096.
+#: This is the provider-level fallback when a model has no entry of its own
+#: in `Provider.model_max_tokens` - generous enough for a thinking model's
+#: reasoning tokens plus a real answer, without being unbounded.
+DEFAULT_MAX_TOKENS = 16384
 
 USER_AGENT = "OverMind/0.2 (+https://github.com/ciresnave/OverMind)"
 
@@ -150,6 +160,16 @@ class Provider:
     extra_headers: Mapping[str, str] = field(default_factory=dict)
     #: Roster endpoint relative to base_url, or None when there is not one.
     models_path: str | None = "/models"
+    #: Per-model `max_tokens` override, keyed by the exact model id `chat()`
+    #: sends. ⚠️ A THINKING MODEL SPENDS THIS BUDGET REASONING BEFORE IT
+    #: ANSWERS (measured repeatedly - see `ChatResult.truncated`'s own
+    #: docstring): a model known to need more headroom than
+    #: `default_max_tokens` gets its own entry here; everything else falls
+    #: back to the provider-level default below.
+    model_max_tokens: Mapping[str, int] = field(default_factory=dict)
+    #: This provider's own default when a model has no entry above.
+    #: `DEFAULT_MAX_TOKENS` unless a provider is measured to need otherwise.
+    default_max_tokens: int = DEFAULT_MAX_TOKENS
 
     def resolved_base(self) -> str:
         base = self.base_url
@@ -244,6 +264,17 @@ PROVIDERS: dict[str, Provider] = {
                          "deepseek-ai/DeepSeek-V3.2"),
     ),
 }
+
+
+def resolve_max_tokens(provider: Provider, model: str | None) -> int:
+    """What `max_tokens` a request to `model` should carry: that model's own
+    entry in `provider.model_max_tokens` if it has one, else the provider's
+    own default. ⚠️ `model` may be `None` (no candidate chosen yet, or an
+    errored run with nothing to attribute) - that always falls back to the
+    provider default, the same as any model with no entry of its own."""
+    if model and model in provider.model_max_tokens:
+        return provider.model_max_tokens[model]
+    return provider.default_max_tokens
 
 
 # --------------------------------------------------------------------------- #
@@ -372,6 +403,11 @@ class ChatResult:
     #: reply was CUT OFF, which is a different fact from having nothing to say.
     finish_reason: str | None = None
     raw: dict[str, Any] = field(default_factory=dict)
+    #: The `max_tokens` VALUE THIS REQUEST ACTUALLY CARRIED - not a guess or
+    #: a recomputation, the number `chat()` put in the payload. Recorded so
+    #: a caller (the dispatch ledger) can see what budget a run got, not
+    #: just whether it was enough.
+    max_tokens: int = 0
 
     @property
     def truncated(self) -> bool:
@@ -400,10 +436,16 @@ class ProviderClient:
     """One OpenAI-shaped client. `provider` is the only thing that changes."""
 
     def __init__(self, provider: str | Provider, *, timeout: float = 90.0,
-                 max_tokens: int = 512, model: str | None = None,
+                 max_tokens: int | None = None, model: str | None = None,
                  opener: Any | None = None, quota: QuotaBook | None = None) -> None:
         self.provider = PROVIDERS[provider] if isinstance(provider, str) else provider
         self.timeout = timeout
+        #: ⚠️ `None` (the default) means "no per-client override" - `chat()`
+        #: resolves the actual value per-request, per-model, from
+        #: `self.provider.model_max_tokens`/`default_max_tokens` via
+        #: `resolve_max_tokens`. An explicit value here (or passed to a
+        #: single `chat()` call) still wins, for a caller that genuinely
+        #: wants one fixed budget regardless of model.
         self.max_tokens = max_tokens
         self.pinned_model = canonical_model(model) if model else model
         self._roster: list[str] | None = None
@@ -533,13 +575,19 @@ class ProviderClient:
                       else "daily quota spent (recorded)")
                 attempts.append((model, why))
                 continue
+            # ⚠️ A thinking model spends this before it answers; too small a
+            # budget looks exactly like a model that will not comply. Order:
+            # this call's own override, then the client's own override, then
+            # this specific model's configured budget, then the provider's
+            # default - the first of those actually set wins.
+            effective_max_tokens = (max_tokens if max_tokens is not None
+                                    else self.max_tokens if self.max_tokens is not None
+                                    else resolve_max_tokens(self.provider, model))
             payload: dict[str, Any] = {
                 "model": model,
                 "messages": payload_messages,
                 "temperature": temperature,
-                # ⚠️ A thinking model spends this before it answers; too small a
-                # budget looks exactly like a model that will not comply.
-                "max_tokens": max_tokens or self.max_tokens,
+                "max_tokens": effective_max_tokens,
             }
             if tools:
                 payload["tools"] = list(tools)
@@ -597,6 +645,7 @@ class ProviderClient:
                     usage=Usage.from_response(body),
                     finish_reason=choices[0].get("finish_reason"),
                     raw=body,
+                    max_tokens=effective_max_tokens,
                 )
         raise NoUsableModel(self.provider.key, attempts)
 

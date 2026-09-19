@@ -71,8 +71,52 @@ def _resolve_go_mod(root: pathlib.Path) -> _Resolution:
 
 def _resolve_pyproject_toml(root: pathlib.Path) -> _Resolution:
     """Valid TOML, with either a `tests/` directory at the repo root or a
-    `[tool.pytest...]` config section - either is real evidence `pytest` has
-    something to actually run here."""
+    `[tool.pytest...]` config section - either is real evidence a Python test
+    runner has something to actually run here.
+
+    ⚠️ PYTEST IS ONLY INFERRED FROM A `[tool.pytest...]` SECTION - REAL
+    EVIDENCE THE REPO OWNS IT. PM finding, 2026-09-19: a `tests/` directory
+    alone is not evidence of `pytest` specifically; stdlib `unittest` reads
+    the exact same directory (`python -m unittest discover -s tests`), and a
+    repo with no pytest dependency (OverMind's own repo, among others) may
+    not even have `pytest` installed. A bare `tests/` dir with no pytest
+    config therefore infers `unittest`, not `pytest` - the safer default,
+    since it never assumes a dependency the repo never declared."""
+    path = root / "pyproject.toml"
+    try:
+        data = tomllib.loads(path.read_text(encoding="utf-8", errors="replace"))
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        return f"pyproject.toml present but could not be parsed as TOML: {exc}"
+    tool = data.get("tool") if isinstance(data, dict) else None
+    has_pytest_config = isinstance(tool, dict) and "pytest" in tool
+    has_tests_dir = (root / "tests").is_dir()
+    if not (has_pytest_config or has_tests_dir):
+        return ('pyproject.toml present but neither a "tests/" directory nor a '
+                '[tool.pytest...] config section was found')
+    if has_pytest_config:
+        return (["python", "-m", "pytest"], "python -m pytest")
+    return (["python", "-m", "unittest", "discover", "-s", "tests"],
+            "python -m unittest discover -s tests")
+
+
+def _resolve_setup_py(root: pathlib.Path) -> _Resolution:
+    """The legacy `setup.py` marker: sanity-checked the same way as
+    `pyproject.toml` - a `tests/` directory must actually exist. No
+    `pyproject.toml` means no `[tool.pytest...]` section could exist either,
+    so this always infers `unittest`, the same reasoning as the bare
+    `tests/`-dir case above."""
+    if not (root / "tests").is_dir():
+        return 'setup.py present but no "tests/" directory was found'
+    return (["python", "-m", "unittest", "discover", "-s", "tests"],
+            "python -m unittest discover -s tests")
+
+
+def _resolve_python_pytest_profile(root: pathlib.Path) -> _Resolution:
+    """Named-profile resolver for `check_profile="python-pytest"`: an
+    explicit caller request for pytest specifically, validated the same way
+    as auto-inference's pytest branch (real evidence pytest has something to
+    run), but returned regardless of whether a `tests/` dir alone would have
+    preferred `unittest` under auto-inference's default."""
     path = root / "pyproject.toml"
     try:
         data = tomllib.loads(path.read_text(encoding="utf-8", errors="replace"))
@@ -87,12 +131,17 @@ def _resolve_pyproject_toml(root: pathlib.Path) -> _Resolution:
     return (["python", "-m", "pytest"], "python -m pytest")
 
 
-def _resolve_setup_py(root: pathlib.Path) -> _Resolution:
-    """The legacy `setup.py` marker: sanity-checked the same way as
-    `pyproject.toml` - a `tests/` directory must actually exist."""
-    if not (root / "tests").is_dir():
-        return 'setup.py present but no "tests/" directory was found'
-    return (["python", "-m", "pytest"], "python -m pytest")
+def _resolve_python_unittest_profile(root: pathlib.Path) -> _Resolution:
+    """Named-profile resolver for `check_profile="python-unittest"`: the
+    marker is the `tests/` directory itself, so the only real validation
+    left is that it holds at least one file - an empty `tests/` dir would
+    "pass" `unittest discover` vacuously, which is the same kind of false
+    green this module's validation exists to catch elsewhere."""
+    tests_dir = root / "tests"
+    if not tests_dir.is_dir() or not any(tests_dir.iterdir()):
+        return 'a "tests/" directory was selected but it is empty'
+    return (["python", "-m", "unittest", "discover", "-s", "tests"],
+            "python -m unittest discover -s tests")
 
 
 def _pnpm_workspace_globs(text: str) -> list[str]:
@@ -188,6 +237,24 @@ CHECK_TABLE: tuple[tuple[str, Callable[[pathlib.Path], _Resolution]], ...] = (
     ("package.json", _resolve_package_json),
 )
 
+#: A caller-selectable override of `infer_check`'s own table-order tie-break,
+#: for when the auto-inferred marker is the WRONG one for what's actually
+#: being dispatched (PM finding, 2026-09-19: OverMind's own repo root has
+#: both `Cargo.toml` and `pyproject.toml`, so a Python-only dispatch against
+#: it always auto-infers `cargo test`, which is meaningless for the change).
+#: ⚠️ STILL HOST-OWNED, STILL VALIDATED. A `check_profile` name selects WHICH
+#: of these fixed entries to use - never a caller-supplied argv, and never a
+#: marker that isn't ALSO required to be present in the repo, same as
+#: auto-inference. This is a different tie-break, not a different safety
+#: property.
+NAMED_CHECK_PROFILES: dict[str, tuple[str, Callable[[pathlib.Path], _Resolution]]] = {
+    "cargo": ("Cargo.toml", _resolve_cargo_toml),
+    "go": ("go.mod", _resolve_go_mod),
+    "python-pytest": ("pyproject.toml", _resolve_python_pytest_profile),
+    "python-unittest": ("tests", _resolve_python_unittest_profile),
+    "pnpm-workspace": ("package.json", _resolve_package_json),
+}
+
 #: CI config paths worth quoting into the goal as a hint. Read-only, and never
 #: the same list as `lanework.PROTECTED` by coincidence - that list exists so
 #: a task can't WRITE there; this one exists so context can READ from there.
@@ -222,12 +289,47 @@ class CheckResult:
     refused_reason: str | None = None
 
 
-def infer_check(root: pathlib.Path) -> CheckResult:
+def infer_check(root: pathlib.Path, check_profile: str | None = None) -> CheckResult:
     """The check this task will be verified against, VALIDATED against the
     matched marker's own content before it's ever returned - see the module
-    docstring for why a marker's bare presence stopped being enough. Never
-    guesses past `CHECK_TABLE`, and never falls through to a lower-priority
-    marker just because a higher-priority one failed validation."""
+    docstring for why a marker's bare presence stopped being enough.
+
+    With `check_profile=None` (the default): never guesses past
+    `CHECK_TABLE`, and never falls through to a lower-priority marker just
+    because a higher-priority one failed validation - unchanged behaviour.
+
+    With `check_profile` set to a name from `NAMED_CHECK_PROFILES`: bypasses
+    `CHECK_TABLE`'s table-order tie-break and uses that PROFILE's own marker
+    and resolver instead - still refusing if the profile's marker is absent
+    from the repo, still validating the marker's content, still returning
+    only an argv this module's own table owns. An unknown profile name
+    refuses with the reason, the same as any other selection this module
+    can't satisfy."""
+    if check_profile is not None:
+        entry = NAMED_CHECK_PROFILES.get(check_profile)
+        if entry is None:
+            return CheckResult(
+                check=None, check_name=None,
+                refused_reason=(
+                    f"unknown check_profile {check_profile!r}; known profiles are "
+                    f"{', '.join(sorted(NAMED_CHECK_PROFILES))}"
+                ),
+            )
+        marker, resolve = entry
+        if not (root / marker).exists():
+            return CheckResult(
+                check=None, check_name=None,
+                refused_reason=(
+                    f'check_profile {check_profile!r} selected but its marker '
+                    f'"{marker}" was not found in the repo'
+                ),
+            )
+        result = resolve(root)
+        if isinstance(result, str):
+            return CheckResult(check=None, check_name=None, refused_reason=result)
+        check, name = result
+        return CheckResult(check=check, check_name=name)
+
     for marker, resolve in CHECK_TABLE:
         if (root / marker).is_file():
             result = resolve(root)
@@ -294,7 +396,7 @@ class RepoProbe:
     refused_reason: str | None = None
 
     @classmethod
-    def run(cls, root: pathlib.Path) -> "RepoProbe":
-        result = infer_check(root)
+    def run(cls, root: pathlib.Path, check_profile: str | None = None) -> "RepoProbe":
+        result = infer_check(root, check_profile=check_profile)
         return cls(check=result.check, check_name=result.check_name,
                    context=context_text(root), refused_reason=result.refused_reason)

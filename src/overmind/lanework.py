@@ -203,6 +203,11 @@ class LaneResult:
     #: `added removed path` per file. ⚠️ A check asserts what it asserts; the
     #: size of the diff is what a reviewer uses to see everything else.
     diff_numstat: list[str] = field(default_factory=list)
+    #: The `max_tokens` budget the model actually got (`AgentRun.max_tokens`)
+    #: - `0` when no call ever completed. PM finding, 2026-09-19: recorded
+    #: so the ledger shows what budget a run had, not just whether it was
+    #: enough.
+    max_tokens: int = 0
 
     def to_json(self) -> str:
         return json.dumps(dataclasses.asdict(self), indent=2)
@@ -593,8 +598,14 @@ def build_client(task: Task, quota: QuotaBook | None = None) -> Any:
     free tiers allow a handful of tasks a day (MEASUREMENTS §27).
     """
     quota = quota if quota is not None else QuotaBook(path=default_path())
-    clients = [ProviderClient(key, timeout=180.0, max_tokens=4096, model=task.model,
-                              quota=quota)
+    # ⚠️ NO max_tokens HERE. PM finding, 2026-09-19: a flat max_tokens=4096
+    # truncated a thinking model (nvidia/openai/gpt-oss-20b) before it ever
+    # answered - `finish_reason='length'` with nothing to show for it.
+    # Leaving `max_tokens=None` lets `ProviderClient.chat` resolve the
+    # budget per model from `providers.PROVIDERS[...].model_max_tokens`/
+    # `default_max_tokens` (see `providers.resolve_max_tokens`) instead of
+    # one fixed number for every model on every provider.
+    clients = [ProviderClient(key, timeout=180.0, model=task.model, quota=quota)
                for key in task.provider_keys()]
     return clients[0] if len(clients) == 1 else RoutedClient(clients)
 
@@ -646,7 +657,7 @@ def run_task(task: Task, client: Any = None, *, publish: bool = False, keep: boo
             denied_calls=run.denied_count, steps=run.steps,
             tokens=dataclasses.asdict(run.usage) if dataclasses.is_dataclass(run.usage) else {},
             ledger_digest=run.ledger.digest(limit=30), final_text=run.final_text[:2000],
-            error=run.error)
+            error=run.error, max_tokens=run.max_tokens)
 
         if publish and verdict == "PASS":
             _git(root, "add", "-A")

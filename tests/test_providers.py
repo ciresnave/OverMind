@@ -15,8 +15,9 @@ import urllib.error
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from overmind.providers import (  # noqa: E402
-    PROVIDERS, NoUsableModel, Provider, ProviderClient, RateLimited, Usage,
-    canonical_model, normalise_for_echo, select_models,
+    DEFAULT_MAX_TOKENS, PROVIDERS, NoUsableModel, Provider, ProviderClient,
+    RateLimited, Usage, canonical_model, normalise_for_echo, resolve_max_tokens,
+    select_models,
 )
 
 
@@ -175,6 +176,97 @@ class TestModelKeyCanonicalization(unittest.TestCase):
         client = ProviderClient(prov, model="models/gemini-3.1-flash-lite")
         self.assertEqual(client.pinned_model, "gemini-3.1-flash-lite")
         self.assertEqual(client.candidates(), ["gemini-3.1-flash-lite"])
+
+
+class TestMaxTokensResolution(unittest.TestCase):
+    """PM finding, 2026-09-19: lanework.py's flat `max_tokens=4096` truncated
+    a thinking model before it ever answered
+    (`finish_reason='length'`, nvidia/openai/gpt-oss-20b). `max_tokens` is
+    now resolved per request: a model's own entry in
+    `Provider.model_max_tokens` if it has one, else `default_max_tokens`,
+    else the module-wide `DEFAULT_MAX_TOKENS` - and every one of those is
+    overridable by an explicit caller value, highest priority first."""
+
+    def test_resolve_max_tokens_uses_the_models_own_entry_when_present(self):
+        prov = Provider(key="p", base_url="http://x", secret_name="NOPE",
+                        model_max_tokens={"thinker": 32000}, default_max_tokens=16384)
+        self.assertEqual(resolve_max_tokens(prov, "thinker"), 32000)
+
+    def test_resolve_max_tokens_falls_back_to_the_provider_default(self):
+        prov = Provider(key="p", base_url="http://x", secret_name="NOPE",
+                        model_max_tokens={"thinker": 32000}, default_max_tokens=16384)
+        self.assertEqual(resolve_max_tokens(prov, "some-other-model"), 16384)
+
+    def test_resolve_max_tokens_handles_no_model_chosen_yet(self):
+        prov = Provider(key="p", base_url="http://x", secret_name="NOPE")
+        self.assertEqual(resolve_max_tokens(prov, None), prov.default_max_tokens)
+
+    def test_provider_default_max_tokens_is_16384_unless_overridden(self):
+        """The PM's own number, verbatim: "default 16384"."""
+        prov = Provider(key="p", base_url="http://x", secret_name="NOPE")
+        self.assertEqual(prov.default_max_tokens, 16384)
+        self.assertEqual(prov.default_max_tokens, DEFAULT_MAX_TOKENS)
+
+    def test_the_configured_value_reaches_the_request_payload(self):
+        """⚠️ THE CORE PROPERTY: not just resolved correctly, but actually
+        PUT INTO the request `chat()` sends - the payload the fake
+        transport receives is asserted directly, the same way
+        `TestTransportDetails` already asserts other payload shape."""
+        prov = Provider(key="p", base_url="http://x", secret_name="NOPE",
+                        fallback_models=("thinker",), models_path=None,
+                        model_max_tokens={"thinker": 32000}, default_max_tokens=16384)
+        t = FakeTransport({"thinker": chat_body("ok")})
+        ProviderClient(prov, opener=t).chat([{"role": "user", "content": "hi"}])
+        self.assertEqual(t.calls[0]["payload"]["max_tokens"], 32000)
+
+    def test_the_default_applies_when_the_model_has_no_entry(self):
+        prov = Provider(key="p", base_url="http://x", secret_name="NOPE",
+                        fallback_models=("plain",), models_path=None,
+                        default_max_tokens=16384)
+        t = FakeTransport({"plain": chat_body("ok")})
+        ProviderClient(prov, opener=t).chat([{"role": "user", "content": "hi"}])
+        self.assertEqual(t.calls[0]["payload"]["max_tokens"], 16384)
+
+    def test_an_explicit_chat_call_override_still_wins(self):
+        prov = Provider(key="p", base_url="http://x", secret_name="NOPE",
+                        fallback_models=("plain",), models_path=None,
+                        default_max_tokens=16384)
+        t = FakeTransport({"plain": chat_body("ok")})
+        ProviderClient(prov, opener=t).chat([{"role": "user", "content": "hi"}],
+                                            max_tokens=999)
+        self.assertEqual(t.calls[0]["payload"]["max_tokens"], 999)
+
+    def test_an_explicit_client_constructor_override_still_wins(self):
+        """A caller who genuinely wants one fixed budget for the whole
+        client's life (not per-model) can still ask for it - the same
+        override this class's constructor accepted before this change,
+        kept so any existing caller passing max_tokens explicitly is
+        unaffected."""
+        prov = Provider(key="p", base_url="http://x", secret_name="NOPE",
+                        fallback_models=("plain",), models_path=None,
+                        model_max_tokens={"plain": 32000}, default_max_tokens=16384)
+        t = FakeTransport({"plain": chat_body("ok")})
+        ProviderClient(prov, opener=t, max_tokens=777).chat(
+            [{"role": "user", "content": "hi"}])
+        self.assertEqual(t.calls[0]["payload"]["max_tokens"], 777)
+
+    def test_the_result_records_the_value_it_actually_used(self):
+        """PM ask, 2026-09-19: "record the value used in the ledger" -
+        `ChatResult.max_tokens` is the first link in that chain."""
+        prov = Provider(key="p", base_url="http://x", secret_name="NOPE",
+                        fallback_models=("thinker",), models_path=None,
+                        model_max_tokens={"thinker": 32000})
+        t = FakeTransport({"thinker": chat_body("ok")})
+        result = ProviderClient(prov, opener=t).chat([{"role": "user", "content": "hi"}])
+        self.assertEqual(result.max_tokens, 32000)
+
+    def test_a_real_provider_entry_has_the_new_default(self):
+        """Not a fixture - the ACTUAL nvidia entry that truncated in
+        production, confirming the fix reaches it (no per-model override
+        registered for it yet, so it gets the provider default)."""
+        self.assertEqual(PROVIDERS["nvidia"].default_max_tokens, 16384)
+        self.assertEqual(
+            resolve_max_tokens(PROVIDERS["nvidia"], "openai/gpt-oss-20b"), 16384)
 
 
 class TestFailover(unittest.TestCase):

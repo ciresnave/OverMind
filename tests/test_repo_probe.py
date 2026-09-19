@@ -53,12 +53,16 @@ class TestInferCheck(unittest.TestCase):
             self.assertEqual(result.check, ["cargo", "test"])
             self.assertEqual(result.check_name, "cargo test")
 
-    def test_pyproject_selects_pytest_when_a_tests_dir_exists(self):
+    def test_pyproject_selects_unittest_when_only_a_tests_dir_exists(self):
+        """PM finding, 2026-09-19: a bare `tests/` dir is evidence a Python
+        test runner has something to run, not evidence of `pytest`
+        specifically - OverMind's own repo has no pytest dependency at all.
+        Auto-inference now defaults to stdlib `unittest`."""
         with TempRepo() as root:
             write(root, "pyproject.toml", "[project]\nname = \"x\"\n")
             write(root, "tests/test_x.py")
             result = infer_check(root)
-            self.assertEqual(result.check, ["python", "-m", "pytest"])
+            self.assertEqual(result.check, ["python", "-m", "unittest", "discover", "-s", "tests"])
 
     def test_pyproject_selects_pytest_via_config_section_with_no_tests_dir(self):
         with TempRepo() as root:
@@ -173,12 +177,78 @@ class TestInferCheck(unittest.TestCase):
             self.assertIsNone(result.check)
             self.assertIsNotNone(result.refused_reason)
 
-    def test_setup_py_with_a_tests_dir_selects_pytest(self):
+    def test_setup_py_with_a_tests_dir_selects_unittest(self):
         with TempRepo() as root:
             write(root, "setup.py", "from setuptools import setup\nsetup()\n")
             write(root, "tests/test_x.py")
             result = infer_check(root)
+            self.assertEqual(result.check, ["python", "-m", "unittest", "discover", "-s", "tests"])
+
+
+class TestCheckProfile(unittest.TestCase):
+    """`check_profile` bypasses `CHECK_TABLE`'s table-order tie-break, but
+    keeps every safety property: the argv still comes only from this
+    module's own table, and the chosen profile's own marker must still be
+    present and still validates."""
+
+    def test_python_unittest_profile_wins_over_cargo_table_order(self):
+        """The exact blind spot this exists to fix: OverMind's own repo root
+        has both Cargo.toml and pyproject.toml/tests/, so auto-inference
+        always picks cargo - a caller who knows the dispatch is Python-only
+        can override that."""
+        with TempRepo() as root:
+            write(root, "Cargo.toml", '[package]\nname = "x"\nversion = "0.1.0"\n')
+            write(root, "tests/test_x.py")
+            auto = infer_check(root)
+            self.assertEqual(auto.check, ["cargo", "test"])
+            overridden = infer_check(root, check_profile="python-unittest")
+            self.assertEqual(overridden.check,
+                             ["python", "-m", "unittest", "discover", "-s", "tests"])
+
+    def test_python_pytest_profile_selects_pytest_even_with_only_a_tests_dir(self):
+        with TempRepo() as root:
+            write(root, "pyproject.toml", "[project]\nname = \"x\"\n")
+            write(root, "tests/test_x.py")
+            result = infer_check(root, check_profile="python-pytest")
             self.assertEqual(result.check, ["python", "-m", "pytest"])
+
+    def test_cargo_profile_still_requires_its_own_marker(self):
+        """⚠️ THE SAFETY PROPERTY: a profile name is not a bypass of marker
+        presence - only of the table-order tie-break. Asserts the SPECIFIC
+        "not found in the repo" wording, not just a loose substring match -
+        a weaker `assertIn("Cargo.toml", ...)` would still pass even if the
+        marker-existence check were deleted outright, because the resolver's
+        OWN "could not be parsed" refusal also happens to mention the
+        filename (caught live by a manual mutation test that disabled the
+        `.exists()` check and found every prior assertion here still green)."""
+        with TempRepo() as root:
+            write(root, "pyproject.toml", "[project]\nname = \"x\"\n")
+            write(root, "tests/test_x.py")
+            result = infer_check(root, check_profile="cargo")
+            self.assertIsNone(result.check)
+            self.assertIn("was not found in the repo", result.refused_reason)
+            self.assertIn("Cargo.toml", result.refused_reason)
+
+    def test_python_unittest_profile_with_empty_tests_dir_refuses(self):
+        with TempRepo() as root:
+            (root / "tests").mkdir()
+            result = infer_check(root, check_profile="python-unittest")
+            self.assertIsNone(result.check)
+            self.assertIsNotNone(result.refused_reason)
+
+    def test_unknown_profile_name_refuses_with_a_reason(self):
+        with TempRepo() as root:
+            write(root, "Cargo.toml", '[package]\nname = "x"\nversion = "0.1.0"\n')
+            result = infer_check(root, check_profile="rust-nightly-fuzz")
+            self.assertIsNone(result.check)
+            self.assertIn("rust-nightly-fuzz", result.refused_reason)
+
+    def test_repo_probe_run_accepts_check_profile(self):
+        with TempRepo() as root:
+            write(root, "Cargo.toml", '[package]\nname = "x"\nversion = "0.1.0"\n')
+            write(root, "tests/test_x.py")
+            probe = RepoProbe.run(root, check_profile="python-unittest")
+            self.assertEqual(probe.check, ["python", "-m", "unittest", "discover", "-s", "tests"])
 
 
 class TestContextText(unittest.TestCase):

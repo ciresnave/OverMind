@@ -159,6 +159,15 @@ class DispatchRequest:
     #: SELECTION changes, never the source of the argv. `None` (the
     #: default) keeps auto-inference exactly as it was.
     check_profile: str | None = None
+    #: PM ask, 2026-09-19 ("retry piece 1 ONCE on nvidia/z-ai/glm-5.3"): a
+    #: caller who wants ONE SPECIFIC model, not `provider`'s own preference
+    #: order or failover - even a model that's FIRST in a provider's
+    #: `prefer` list can still fail over to a different one if it 404s or
+    #: rate-limits. `None` (the default) keeps the provider's own selection
+    #: exactly as it was; a value here pins `Task.model`, which
+    #: `ProviderClient` already treats as "this candidate only, never
+    #: failed over" (see `ProviderClient.candidates`).
+    model: str | None = None
 
 
 def build_goal(prompt: str, probe: RepoProbe, request: DispatchRequest,
@@ -244,7 +253,7 @@ def build_task(task_id: str, clone_dir: pathlib.Path, probe: RepoProbe,
         return Task(
             id=task_id, repo=str(clone_dir), goal=goal, check=list(DOCS_ONLY_CHECK),
             writable=list(DOCS_ONLY_WRITABLE), base="origin/HEAD", fetch=False,
-            provider=request.provider, max_steps=request.max_steps,
+            provider=request.provider, model=request.model, max_steps=request.max_steps,
             check_name=DOCS_ONLY_CHECK_NAME, pr_body="\n\n".join(pr_body_lines),
             protected_globs=list(AGENT_INSTRUCTION_GLOBS),
         )
@@ -259,7 +268,7 @@ def build_task(task_id: str, clone_dir: pathlib.Path, probe: RepoProbe,
     return Task(
         id=task_id, repo=str(clone_dir), goal=goal, check=probe.check,
         writable=list(request.writable), base="origin/HEAD", fetch=False,
-        provider=request.provider, max_steps=request.max_steps,
+        provider=request.provider, model=request.model, max_steps=request.max_steps,
         check_name=probe.check_name, pr_body=pr_body,
     )
 
@@ -342,7 +351,8 @@ def register(server) -> None:
                            requirements_url: str | None = None,
                            writable: list[str] | None = None,
                            docs_only: bool = False,
-                           check_profile: str | None = None) -> dict:
+                           check_profile: str | None = None,
+                           model: str | None = None) -> dict:
         """Dispatch a piece of real work to a free-tier model.
 
         ⚠️ `repo` MUST BE A REAL GITHUB URL (e.g.
@@ -377,12 +387,18 @@ def register(server) -> None:
         real check ever runs; the PR is ALWAYS opened as a draft, never
         auto-mergeable - it always needs a human to review and mark it
         ready.
+
+        Set model to pin ONE SPECIFIC model (e.g. "z-ai/glm-5.3"), never
+        failed over to a different one on that provider even if it's
+        rate-limited or 404s - useful when a model is already known to do
+        this kind of work well and a caller wants that model specifically,
+        not just "whichever this provider prefers."
         """
         request = DispatchRequest(
             repo=repo, prompt=prompt, capabilities=tuple(capabilities or ()),
             extra_requirements=extra_requirements, requirements_url=requirements_url,
             writable=tuple(writable) if writable else ("**",),
-            docs_only=docs_only, check_profile=check_profile,
+            docs_only=docs_only, check_profile=check_profile, model=model,
         )
         return dispatch(request)
 

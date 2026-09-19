@@ -256,6 +256,20 @@ class TestBuildTask(GitRepoCase):
         task = build_task("t1", self.repo, probe, req)
         self.assertEqual(task.writable, ["**"])
 
+    def test_model_defaults_to_none(self):
+        req = DispatchRequest(repo=str(self.repo), prompt="x")
+        self.assertIsNone(req.model)
+
+    def test_a_pinned_model_reaches_the_task(self):
+        """PM ask, 2026-09-19 ("retry piece 1 ONCE on nvidia/z-ai/glm-5.3"):
+        a caller who wants one specific model, not the provider's own
+        preference order - task.model is what ProviderClient already
+        treats as pin-and-never-fail-over."""
+        probe = RepoProbe(check=["cargo", "test"], check_name="cargo test", context="")
+        req = DispatchRequest(repo=str(self.repo), prompt="x", model="z-ai/glm-5.3")
+        task = build_task("t1", self.repo, probe, req)
+        self.assertEqual(task.model, "z-ai/glm-5.3")
+
 
 class TestDocsOnlyMode(GitRepoCase):
     """DESIGN-PROPOSAL.md §7.4, CireSnave's own ruling (board item 42,

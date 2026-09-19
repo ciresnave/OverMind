@@ -369,6 +369,7 @@ pub fn current_console_size() -> Option<(u16, u16)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(windows)]
     use std::io::Cursor;
 
     // -- relay_chunk: the transparency property itself --------------------- //

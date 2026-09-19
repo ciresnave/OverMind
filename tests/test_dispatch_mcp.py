@@ -25,10 +25,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 from overmind.dispatch_mcp import (                                     # noqa: E402
     AGENT_INSTRUCTION_GLOBS, DOCS_ONLY_CHECK, DOCS_ONLY_WRITABLE,
     DispatchRequest, NoCheckInferred, UnsafeRequirementsURL, build_goal,
-    build_task, clone_argv, fetch_requirements_text, prepare_clone,
-    pr_creator_for,
+    build_task, clone_argv, dispatch_record_from, fetch_requirements_text,
+    prepare_clone, pr_creator_for,
 )
-from overmind.lanework import gh_pr_create                              # noqa: E402
+from overmind.lanework import LaneResult, Task, gh_pr_create             # noqa: E402
 from overmind.repo_probe import RepoProbe                               # noqa: E402
 
 
@@ -392,6 +392,77 @@ class TestDocsOnlyMode(GitRepoCase):
             lw._run = original_run
 
         self.assertIn("--draft", seen["argv"])
+
+
+class TestDispatchRecordFrom(unittest.TestCase):
+    """PM relay of CireSnave's long-term routing goal (EXPECTATIONS §2.3a),
+    2026-09-19: collect task type, provider/model, verdict, tokens and wall
+    time now - no routing decision reads this yet. Every field the PM
+    listed must actually reach the record `dispatch()` appends."""
+
+    def _task(self, **kw):
+        base = dict(id="t1", repo="C:/x", goal="g", check=["x"], writable=["*.md"],
+                    check_name="docs-only mode: no executable check ran")
+        base.update(kw)
+        return Task(**base)
+
+    def _result(self, **kw):
+        base = dict(task_id="t1", verdict="PASS", provider="google",
+                    model="gemini-3.6-flash", stop_reason="completed", check_exit=0,
+                    check_tail="", changed_files=["README.md"], model_ran_check=True,
+                    model_claimed_success=True, unsupported_claim=False, denied_calls=0,
+                    steps=4, tokens={"input": 200, "output": 80}, ledger_digest="",
+                    final_text="", pr_url="https://github.com/x/y/pull/1", error=None,
+                    seconds=8.2)
+        base.update(kw)
+        return LaneResult(**base)
+
+    def test_every_pm_requested_field_is_carried_through(self):
+        task = self._task()
+        req = DispatchRequest(repo="https://example.com/x.git", prompt="fix docs",
+                              docs_only=True)
+        result = self._result()
+        rec = dispatch_record_from(task, req, result)
+        self.assertEqual(rec.task_type, task.check_name)
+        self.assertEqual(rec.provider, "google")
+        self.assertEqual(rec.model, "gemini-3.6-flash")
+        self.assertEqual(rec.verdict, "PASS")
+        self.assertEqual(rec.tokens, {"input": 200, "output": 80})
+        self.assertEqual(rec.seconds, 8.2)
+
+    def test_docs_only_flag_is_recorded(self):
+        task = self._task()
+        req = DispatchRequest(repo="x", prompt="p", docs_only=True)
+        rec = dispatch_record_from(task, req, self._result())
+        self.assertTrue(rec.docs_only)
+
+        req2 = DispatchRequest(repo="x", prompt="p", docs_only=False)
+        rec2 = dispatch_record_from(task, req2, self._result())
+        self.assertFalse(rec2.docs_only)
+
+    def test_a_failed_run_is_recorded_too_not_just_pass(self):
+        task = self._task(check_name="cargo test")
+        req = DispatchRequest(repo="x", prompt="p")
+        result = self._result(verdict="CHECK_FAILED", check_exit=1, pr_url=None,
+                              error=None)
+        rec = dispatch_record_from(task, req, result)
+        self.assertEqual(rec.verdict, "CHECK_FAILED")
+        self.assertIsNone(rec.pr_url)
+
+    def test_an_errored_run_carries_the_error_text(self):
+        task = self._task(check_name="cargo test")
+        req = DispatchRequest(repo="x", prompt="p")
+        result = self._result(verdict="ERROR", provider=None, model=None,
+                              error="RuntimeError: provider down")
+        rec = dispatch_record_from(task, req, result)
+        self.assertEqual(rec.verdict, "ERROR")
+        self.assertEqual(rec.error, "RuntimeError: provider down")
+
+    def test_a_missing_check_name_falls_back_to_unknown_not_none(self):
+        task = self._task(check_name=None)
+        req = DispatchRequest(repo="x", prompt="p")
+        rec = dispatch_record_from(task, req, self._result())
+        self.assertEqual(rec.task_type, "unknown")
 
 
 if __name__ == "__main__":

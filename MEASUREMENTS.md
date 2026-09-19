@@ -2039,3 +2039,60 @@ runs landing on the identical step is no longer a one-off transport blip** - cal
 "this model's fourth call on this task is reliably slow enough to trip a 180 s client timeout." Raising
 the client timeout for this model, not assuming the task is beyond it, is the next thing that would
 tell the two apart - not done here.
+
+---
+
+## 33. 🟡 FIVE PIECE-1 DISPATCH ATTEMPTS ON `tools/claims/checker.py` — zero capability verdicts, five provider-side failures
+
+**Observed 2026-09-19, real `dispatch_lane_task` calls (not the P1 bench harness), on
+`https://github.com/ciresnave/OverMind.git`, `check_profile="python-unittest"`, `writable` scoped to
+`tools/claims/checker.py`/`tests/test_claims_checker.py`.** The task: implement `classify_claim` (the
+four-outcome staleness classifier PORTFOLIO-DASHBOARD-SPEC.md §Phase-0 calls for), with real git-repo
+fixture tests. Piece 2 (the render/registry/CLI half of the same tool) was written successfully by
+`nvidia/z-ai/glm-5.3` earlier this session - so this is the same tool, same repo, same dispatch path,
+and the SAME model on one of the five attempts.
+
+| # | provider | model | verdict | failure class | steps |
+|---|---|---|---|---|---|
+| 1 | nvidia | `deepseek-ai/deepseek-v4-flash-0731` | INCOMPLETE | ran out of steps | max_steps |
+| 2 | nvidia | `openai/gpt-oss-20b` | NO_CHANGE | output-budget truncation (pre-#83's flat 4096 cap) | 8 |
+| 3 | nvidia | `z-ai/glm-5.3` (pinned) | NO_CHANGE | transport timeout, never connected | 0 |
+| 4 | nvidia | `z-ai/glm-5.3` (pinned, rerun) | NO_CHANGE | transport timeout, never connected (identical to #3) | 0 |
+| 5 | nvidia | `openai/gpt-oss-20b` (pinned, post-#83) | NO_CHANGE | empty `choices` array (provider anomaly, not a budget problem - `finish_reason` was never `'length'` this time; ledger confirms `max_tokens=16384` was actually sent) | 1 |
+| 6 | google | `gemini-3.5-flash-lite` (pinned, §27's confirmed 4/4 fixer) | INCOMPLETE | rate-limited mid-run, after real progress | 16 |
+
+### 🔴 Every failure is provider-side. None is a capability verdict.
+
+Not one of the six runs produced a PASS, a CHECK_FAILED, or an unsupported-claim - the three verdicts
+that would say anything about whether a model CAN write this code. Every failure is the harness (or the
+provider under it) never getting a finished answer to grade: two ran out of budget/steps before
+answering, three never got a usable response from the provider at all (two timeouts, one empty-choices
+anomaly), and the google run (attempt 6) got 16 real steps in - the most progress of any attempt, and on
+§27's OWN confirmed 4/4 fixer for this harness - before a rate limit cut it off mid-task. **This is
+exactly the reliability-vs-skill distinction the PM's routing goal (EXPECTATIONS §2.3a) needs: on this
+task, on this day, provider RELIABILITY was the binding constraint, not model skill.** The ledger has all
+six records (`task_id`, `provider`, `model`, `verdict`, `steps`, `max_tokens`, `error`).
+
+### 🟡 Attempt 6 is the most informative data point, and it is still not a verdict
+
+16 steps of real agentic work (reading `tools/claims/`'s existing files, presumably drafting
+`checker.py`) ran on the exact model measured 4/4 on the P1 bench (§27) before a 429 stopped it - the
+quota book (`~/.overmind/quota.json`) did NOT record it as a daily-exhausted model afterward, so this
+reads as the per-minute/burst limit under §27's already-documented 20-requests-a-day allowance, not
+proof the day's allowance is spent. Nothing from that run survived (no `keep=True`, no PASS, so
+`run_task` tore the worktree down) - there is no code to inspect, only the step count and the verdict.
+
+### What this does and does not show
+
+- **Five providers were NOT all tried.** OpenRouter, Hugging Face and Mistral remain untried on this
+  specific task - the stopping point here was CireSnave/PM's explicit "we do not hand-code this with
+  Claude; if free models can't do it yet, that's the finding" budget rule, not exhaustion of every route.
+- **The NVIDIA timeouts (#3, #4) match a PRIOR measurement exactly**: §32's control run already found
+  `glm-5.3` reproducibly timing out past the 180 s client timeout on a different task
+  (`number-substring`). Two more identical timeouts on a third, unrelated task strengthen that as a
+  provider/client-timeout interaction, not a per-task fluke - raising the timeout (per-model, not
+  changed in this measurement) is the next thing that would tell "the model is slow" from "180 s is
+  too tight for this provider" apart.
+- **This piece is now parked, not abandoned**, per PM direction: retry after the weekly budget reset
+  (Tue 18:00 Phoenix), when quota allowances are fresh and more providers can be tried without spending
+  today's remaining allowance on a task that's already produced five non-verdicts.

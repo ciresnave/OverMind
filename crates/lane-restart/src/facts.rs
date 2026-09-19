@@ -527,7 +527,11 @@ mod tests {
         let pid = child.id();
 
         std::thread::sleep(std::time::Duration::from_millis(200));
-        let found = find_process_in(&known_dir.to_string_lossy(), before_spawn_secs, &["ping"]);
+        let found = find_process_in(
+            &known_dir.to_string_lossy(),
+            before_spawn_secs,
+            &[SLEEP_CHILD_IMAGE_NAME],
+        );
 
         let _ = child.kill();
         let _ = child.wait();
@@ -553,7 +557,11 @@ mod tests {
             .unwrap()
             .as_secs()
             + 3600;
-        let found = find_process_in(&known_dir.to_string_lossy(), far_future_secs, &["ping"]);
+        let found = find_process_in(
+            &known_dir.to_string_lossy(),
+            far_future_secs,
+            &[SLEEP_CHILD_IMAGE_NAME],
+        );
 
         let _ = child.kill();
         let _ = child.wait();
@@ -579,6 +587,14 @@ mod tests {
 
         assert_eq!(found, None);
     }
+
+    /// The image name `spawn_sleep_child_in` actually spawns, per platform -
+    /// kept in one place so the `find_process_in` tests below search for
+    /// whichever name is really running, not a Windows-only guess.
+    #[cfg(windows)]
+    const SLEEP_CHILD_IMAGE_NAME: &str = "ping";
+    #[cfg(not(windows))]
+    const SLEEP_CHILD_IMAGE_NAME: &str = "sleep";
 
     fn spawn_sleep_child_in(dir: &std::path::Path) -> std::process::Child {
         #[cfg(windows)]

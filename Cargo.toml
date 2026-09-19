@@ -6,7 +6,7 @@ members = ["crates/lane-restart"]
 # Python package and every crate here share pyproject.toml's version - keep
 # them in lockstep by hand until something automates it.
 [workspace.package]
-version = "0.3.23"
+version = "0.3.24"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/ciresnave/OverMind"

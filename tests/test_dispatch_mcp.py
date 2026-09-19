@@ -195,6 +195,19 @@ class TestBuildTask(GitRepoCase):
         with self.assertRaises(NoCheckInferred):
             build_task("t1", self.repo, probe, req)
 
+    def test_refusal_quotes_the_probes_own_reason_when_a_marker_failed_validation(self):
+        """PM finding, 2026-09-19 (ThinkersJournal-Community#67): a marker
+        that matched but didn't validate (e.g. package.json with no "test"
+        script) must refuse with THAT specific reason, not the generic
+        "no known project marker" message - so a caller can see WHY before
+        any model time is spent, not just THAT nothing was inferred."""
+        probe = RepoProbe(check=None, check_name=None, context="",
+                          refused_reason='package.json present but has no "scripts.test" entry')
+        req = DispatchRequest(repo=str(self.repo), prompt="fix it")
+        with self.assertRaises(NoCheckInferred) as ctx:
+            build_task("t1", self.repo, probe, req)
+        self.assertIn("scripts.test", str(ctx.exception))
+
     def test_check_comes_from_the_probe_not_the_prompt(self):
         probe = RepoProbe(check=["cargo", "test"], check_name="cargo test", context="")
         req = DispatchRequest(

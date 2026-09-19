@@ -158,16 +158,20 @@ def build_goal(prompt: str, probe: RepoProbe, request: DispatchRequest,
 
 
 class NoCheckInferred(ValueError):
-    """No marker in `repo_probe.CHECK_TABLE` matched this repo. Refuse rather
-    than guess a check - an unverified task is not a task this tool runs."""
+    """Either no marker in `repo_probe.CHECK_TABLE` matched this repo, or one
+    did but its own content didn't validate (`probe.refused_reason` - PM
+    finding, 2026-09-19: a marker's bare presence isn't enough; see
+    `repo_probe`'s own module docstring). Refuse rather than guess a check -
+    an unverified task is not a task this tool runs, and this now refuses
+    BEFORE any model time is spent, not after a run nothing could verify."""
 
 
 def build_task(task_id: str, clone_dir: pathlib.Path, probe: RepoProbe,
                request: DispatchRequest, *, fetch_requirements=fetch_requirements_text) -> Task:
     if probe.check is None:
-        raise NoCheckInferred(
-            f"no known project marker (see repo_probe.CHECK_TABLE) found in "
-            f"{request.repo!r}; refusing to guess a check")
+        reason = probe.refused_reason or (
+            f"no known project marker (see repo_probe.CHECK_TABLE) found in {request.repo!r}")
+        raise NoCheckInferred(f"refusing to guess a check: {reason}")
     requirements_text = ""
     if request.requirements_url:
         requirements_text = fetch_requirements(request.requirements_url)

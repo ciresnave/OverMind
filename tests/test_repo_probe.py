@@ -31,46 +31,61 @@ def write(root: Path, rel: str, text: str = "x") -> None:
     p.write_text(text, encoding="utf-8")
 
 
+def write_json(root: Path, rel: str, data) -> None:
+    import json
+    write(root, rel, json.dumps(data))
+
+
 class TestInferCheck(unittest.TestCase):
     """⚠️ The check is a subprocess argv. Every case here must be one of the
     fixed table's own entries, never anything built from repo content."""
 
-    def test_no_marker_returns_none(self):
+    def test_no_marker_returns_no_check_and_no_refusal_reason(self):
         with TempRepo() as root:
-            self.assertIsNone(infer_check(root))
+            result = infer_check(root)
+            self.assertIsNone(result.check)
+            self.assertIsNone(result.refused_reason)
 
     def test_cargo_toml_selects_cargo_test(self):
         with TempRepo() as root:
-            write(root, "Cargo.toml")
-            check, name = infer_check(root)
-            self.assertEqual(check, ["cargo", "test"])
-            self.assertEqual(name, "cargo test")
+            write(root, "Cargo.toml", '[package]\nname = "x"\nversion = "0.1.0"\n')
+            result = infer_check(root)
+            self.assertEqual(result.check, ["cargo", "test"])
+            self.assertEqual(result.check_name, "cargo test")
 
-    def test_pyproject_selects_pytest(self):
+    def test_pyproject_selects_pytest_when_a_tests_dir_exists(self):
         with TempRepo() as root:
-            write(root, "pyproject.toml")
-            check, _ = infer_check(root)
-            self.assertEqual(check, ["python", "-m", "pytest"])
+            write(root, "pyproject.toml", "[project]\nname = \"x\"\n")
+            write(root, "tests/test_x.py")
+            result = infer_check(root)
+            self.assertEqual(result.check, ["python", "-m", "pytest"])
 
-    def test_package_json_selects_npm_test(self):
+    def test_pyproject_selects_pytest_via_config_section_with_no_tests_dir(self):
         with TempRepo() as root:
-            write(root, "package.json")
-            check, _ = infer_check(root)
-            self.assertEqual(check, ["npm", "test"])
+            write(root, "pyproject.toml",
+                 "[tool.pytest.ini_options]\ntestpaths = [\"src\"]\n")
+            result = infer_check(root)
+            self.assertEqual(result.check, ["python", "-m", "pytest"])
+
+    def test_package_json_selects_npm_test_when_root_has_a_test_script(self):
+        with TempRepo() as root:
+            write_json(root, "package.json", {"scripts": {"test": "jest"}})
+            result = infer_check(root)
+            self.assertEqual(result.check, ["npm", "test"])
 
     def test_go_mod_selects_go_test(self):
         with TempRepo() as root:
-            write(root, "go.mod")
-            check, _ = infer_check(root)
-            self.assertEqual(check, ["go", "test", "./..."])
+            write(root, "go.mod", "module example.com/x\n\ngo 1.22\n")
+            result = infer_check(root)
+            self.assertEqual(result.check, ["go", "test", "./..."])
 
     def test_cargo_wins_over_package_json_by_table_order(self):
         """A Rust project with a JS-based doc site still gets `cargo test`."""
         with TempRepo() as root:
-            write(root, "Cargo.toml")
-            write(root, "package.json")
-            check, _ = infer_check(root)
-            self.assertEqual(check, ["cargo", "test"])
+            write(root, "Cargo.toml", '[package]\nname = "x"\nversion = "0.1.0"\n')
+            write_json(root, "package.json", {"scripts": {"test": "jest"}})
+            result = infer_check(root)
+            self.assertEqual(result.check, ["cargo", "test"])
 
     def test_a_ci_config_is_never_read_for_this(self):
         """⚠️ The exact failure mode this module exists to prevent: a repo
@@ -79,7 +94,91 @@ class TestInferCheck(unittest.TestCase):
         with TempRepo() as root:
             write(root, ".github/workflows/ci.yml",
                  "jobs:\n  build:\n    steps:\n      - run: rm -rf /\n")
-            self.assertIsNone(infer_check(root))
+            result = infer_check(root)
+            self.assertIsNone(result.check)
+
+    # -- validation: a marker's bare presence is no longer enough ---------- #
+    # PM finding, 2026-09-19, OverMind's first real dispatch job
+    # (ThinkersJournal-Community#67): `npm test` was inferred from
+    # `package.json`'s bare presence, but the repo is a pnpm workspace whose
+    # ROOT package.json has no "test" script at all - the check could never
+    # have passed regardless of what the model did.
+
+    def test_package_json_with_no_test_script_and_no_workspace_refuses(self):
+        with TempRepo() as root:
+            write_json(root, "package.json", {"scripts": {"build": "tsc"}})
+            result = infer_check(root)
+            self.assertIsNone(result.check)
+            self.assertIn("test", result.refused_reason.lower())
+
+    def test_community_shaped_fixture_prefers_pnpm_recursive_test(self):
+        """The REAL shape (ThinkersJournal-Community, 2026-09-19): root
+        package.json has `workspaces`/`scripts` but no "test" script;
+        `pnpm-workspace.yaml` lists `apps/*`/`packages/*`; some workspace
+        packages (not all) declare their own "test" script. This is exactly
+        the case that produced the real incomplete-verdict run - it must now
+        infer `pnpm -r --if-present test`, never `npm test`."""
+        with TempRepo() as root:
+            write_json(root, "package.json", {
+                "name": "thinkersjournal-community",
+                "private": True,
+                "workspaces": ["apps/*", "packages/*"],
+                "scripts": {
+                    "typecheck": "pnpm -r run typecheck",
+                    "test:e2e": "playwright test",
+                },
+            })
+            write(root, "pnpm-workspace.yaml", 'packages:\n  - "apps/*"\n  - "packages/*"\n')
+            write_json(root, "apps/web/package.json", {"scripts": {"build": "astro build"}})
+            write_json(root, "apps/api/package.json", {"scripts": {"test": "vitest run"}})
+            write_json(root, "packages/shared/package.json", {"scripts": {"test": "vitest run"}})
+            result = infer_check(root)
+            self.assertEqual(result.check, ["pnpm", "-r", "--if-present", "test"])
+            self.assertIsNone(result.refused_reason)
+
+    def test_pnpm_workspace_with_no_package_having_a_test_script_refuses(self):
+        with TempRepo() as root:
+            write_json(root, "package.json", {"workspaces": ["apps/*"]})
+            write(root, "pnpm-workspace.yaml", 'packages:\n  - "apps/*"\n')
+            write_json(root, "apps/web/package.json", {"scripts": {"build": "astro build"}})
+            result = infer_check(root)
+            self.assertIsNone(result.check)
+            self.assertIn("test", result.refused_reason.lower())
+
+    def test_malformed_package_json_refuses_with_a_reason(self):
+        with TempRepo() as root:
+            write(root, "package.json", "{not json")
+            result = infer_check(root)
+            self.assertIsNone(result.check)
+            self.assertIsNotNone(result.refused_reason)
+
+    def test_cargo_toml_with_no_package_or_workspace_table_refuses(self):
+        with TempRepo() as root:
+            write(root, "Cargo.toml", 'version = "0.1.0"\n')
+            result = infer_check(root)
+            self.assertIsNone(result.check)
+            self.assertIsNotNone(result.refused_reason)
+
+    def test_pyproject_with_neither_tests_dir_nor_pytest_config_refuses(self):
+        with TempRepo() as root:
+            write(root, "pyproject.toml", "[project]\nname = \"x\"\n")
+            result = infer_check(root)
+            self.assertIsNone(result.check)
+            self.assertIsNotNone(result.refused_reason)
+
+    def test_setup_py_with_no_tests_dir_refuses(self):
+        with TempRepo() as root:
+            write(root, "setup.py", "from setuptools import setup\nsetup()\n")
+            result = infer_check(root)
+            self.assertIsNone(result.check)
+            self.assertIsNotNone(result.refused_reason)
+
+    def test_setup_py_with_a_tests_dir_selects_pytest(self):
+        with TempRepo() as root:
+            write(root, "setup.py", "from setuptools import setup\nsetup()\n")
+            write(root, "tests/test_x.py")
+            result = infer_check(root)
+            self.assertEqual(result.check, ["python", "-m", "pytest"])
 
 
 class TestContextText(unittest.TestCase):
@@ -133,11 +232,12 @@ class TestContextText(unittest.TestCase):
 class TestRepoProbe(unittest.TestCase):
     def test_bundles_both_results(self):
         with TempRepo() as root:
-            write(root, "Cargo.toml")
+            write(root, "Cargo.toml", '[package]\nname = "x"\nversion = "0.1.0"\n')
             write(root, ".overmind/STANDARDS.md", "must: keep MSRV at 1.75")
             probe = RepoProbe.run(root)
             self.assertEqual(probe.check, ["cargo", "test"])
             self.assertEqual(probe.check_name, "cargo test")
+            self.assertIsNone(probe.refused_reason)
             self.assertIn("MSRV", probe.context)
 
     def test_no_marker_still_returns_context(self):
@@ -147,6 +247,16 @@ class TestRepoProbe(unittest.TestCase):
             self.assertIsNone(probe.check)
             self.assertIsNone(probe.check_name)
             self.assertIn("something", probe.context)
+
+    def test_a_marker_that_fails_validation_carries_the_reason(self):
+        """PM finding, 2026-09-19: the refusal reason must reach `RepoProbe`,
+        not just `infer_check` internally - it's what `NoCheckInferred`
+        quotes so a caller can see WHY, not just THAT nothing was inferred."""
+        with TempRepo() as root:
+            write_json(root, "package.json", {"scripts": {"build": "tsc"}})
+            probe = RepoProbe.run(root)
+            self.assertIsNone(probe.check)
+            self.assertIsNotNone(probe.refused_reason)
 
 
 if __name__ == "__main__":

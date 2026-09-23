@@ -69,6 +69,15 @@ def _resolve_go_mod(root: pathlib.Path) -> _Resolution:
     return (["go", "test", "./..."], "go test ./...")
 
 
+def _resolve_makefile(root: pathlib.Path) -> _Resolution:
+    """`Makefile`'s own presence, the same reasoning as `go.mod` above: Make
+    syntax has no fixed schema this module could parse to confirm a `test`
+    target actually exists (recipes, includes, conditionals, `.PHONY`
+    declarations in any order) - the same "no further sanity check is
+    meaningful" call `_resolve_go_mod` already makes."""
+    return (["make", "test"], "make test")
+
+
 def _resolve_pyproject_toml(root: pathlib.Path) -> _Resolution:
     """Valid TOML, with either a `tests/` directory at the repo root or a
     `[tool.pytest...]` config section - either is real evidence a Python test
@@ -232,6 +241,7 @@ def _resolve_package_json(root: pathlib.Path) -> _Resolution:
 CHECK_TABLE: tuple[tuple[str, Callable[[pathlib.Path], _Resolution]], ...] = (
     ("Cargo.toml", _resolve_cargo_toml),
     ("go.mod", _resolve_go_mod),
+    ("Makefile", _resolve_makefile),
     ("pyproject.toml", _resolve_pyproject_toml),
     ("setup.py", _resolve_setup_py),
     ("package.json", _resolve_package_json),

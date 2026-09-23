@@ -83,6 +83,25 @@ class TestInferCheck(unittest.TestCase):
             result = infer_check(root)
             self.assertEqual(result.check, ["go", "test", "./..."])
 
+    def test_makefile_selects_make_test(self):
+        with TempRepo() as root:
+            write(root, "Makefile", "test:\n\tpytest\n")
+            result = infer_check(root)
+            self.assertEqual(result.check, ["make", "test"])
+            self.assertEqual(result.check_name, "make test")
+
+    def test_makefile_wins_over_pyproject_by_table_order(self):
+        """A Python project that still runs its suite through `make test`
+        (a Makefile wrapping pytest/tox/whatever) gets `make test`, not
+        `pytest` directly - the table is authored most to least likely to
+        be the project's own entry point."""
+        with TempRepo() as root:
+            write(root, "Makefile", "test:\n\tpytest\n")
+            write(root, "pyproject.toml", "[project]\nname = \"x\"\n")
+            write(root, "tests/test_x.py")
+            result = infer_check(root)
+            self.assertEqual(result.check, ["make", "test"])
+
     def test_cargo_wins_over_package_json_by_table_order(self):
         """A Rust project with a JS-based doc site still gets `cargo test`."""
         with TempRepo() as root:

@@ -598,14 +598,19 @@ def build_client(task: Task, quota: QuotaBook | None = None) -> Any:
     free tiers allow a handful of tasks a day (MEASUREMENTS §27).
     """
     quota = quota if quota is not None else QuotaBook(path=default_path())
-    # ⚠️ NO max_tokens HERE. PM finding, 2026-09-19: a flat max_tokens=4096
-    # truncated a thinking model (nvidia/openai/gpt-oss-20b) before it ever
-    # answered - `finish_reason='length'` with nothing to show for it.
-    # Leaving `max_tokens=None` lets `ProviderClient.chat` resolve the
-    # budget per model from `providers.PROVIDERS[...].model_max_tokens`/
-    # `default_max_tokens` (see `providers.resolve_max_tokens`) instead of
-    # one fixed number for every model on every provider.
-    clients = [ProviderClient(key, timeout=180.0, model=task.model, quota=quota)
+    # ⚠️ NO max_tokens, NO timeout HERE. PM findings, 2026-09-19 and
+    # 2026-09-24: a flat max_tokens=4096 truncated a thinking model
+    # (nvidia/openai/gpt-oss-20b) before it ever answered, and a flat
+    # timeout=180.0 reproducibly timed out `nvidia/z-ai/glm-5.3` on two
+    # different tasks (MEASUREMENTS.md §32/§35) - the same shape of gap
+    # twice. Leaving both `None` lets `ProviderClient.chat` resolve each
+    # per model from `providers.PROVIDERS[...]` (`model_max_tokens`/
+    # `default_max_tokens`, `model_timeout_s`/`default_timeout_s` - see
+    # `providers.resolve_max_tokens`/`resolve_timeout`) instead of one
+    # fixed number for every model on every provider. Every existing
+    # provider still resolves to today's 180s default - only a provider
+    # that sets its own `default_timeout_s`/`model_timeout_s` moves off it.
+    clients = [ProviderClient(key, model=task.model, quota=quota)
                for key in task.provider_keys()]
     return clients[0] if len(clients) == 1 else RoutedClient(clients)
 

@@ -15,9 +15,9 @@ import urllib.error
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from overmind.providers import (  # noqa: E402
-    DEFAULT_MAX_TOKENS, PROVIDERS, NoUsableModel, Provider, ProviderClient,
-    RateLimited, Usage, canonical_model, normalise_for_echo, resolve_max_tokens,
-    select_models,
+    DEFAULT_MAX_TOKENS, DEFAULT_TIMEOUT_S, PROVIDERS, NoUsableModel, Provider,
+    ProviderClient, RateLimited, Usage, canonical_model, normalise_for_echo,
+    resolve_max_tokens, resolve_timeout, select_models,
 )
 
 
@@ -34,7 +34,8 @@ class FakeTransport:
         self.calls: list[dict] = []
 
     def __call__(self, url, payload, headers, timeout):
-        self.calls.append({"url": url, "payload": payload, "headers": dict(headers)})
+        self.calls.append({"url": url, "payload": payload, "headers": dict(headers),
+                           "timeout": timeout})
         key = "models" if url.endswith("/models") else (payload or {}).get("model")
         outcome = self.responses.get(key)
         if outcome is None:
@@ -267,6 +268,80 @@ class TestMaxTokensResolution(unittest.TestCase):
         self.assertEqual(PROVIDERS["nvidia"].default_max_tokens, 16384)
         self.assertEqual(
             resolve_max_tokens(PROVIDERS["nvidia"], "openai/gpt-oss-20b"), 16384)
+
+
+class TestTimeoutResolution(unittest.TestCase):
+    """PM finding, 2026-09-24: `lanework.py`'s flat `timeout=180.0` is the
+    identical shape of gap `max_tokens` had - a global constant standing in
+    for a per-provider property, measured biting the same way
+    (MEASUREMENTS.md §32/§35: `glm-5.3` reproducibly timed out past this
+    exact value on two different tasks). `timeout` is now resolved the same
+    3-tier way as `max_tokens`: a model's own entry in
+    `Provider.model_timeout_s` if it has one, else `default_timeout_s`,
+    else `DEFAULT_TIMEOUT_S` (180.0, today's value - unchanged for every
+    existing provider) - all overridable by an explicit caller value."""
+
+    def test_resolve_timeout_uses_the_models_own_entry_when_present(self):
+        prov = Provider(key="p", base_url="http://x", secret_name="NOPE",
+                        model_timeout_s={"slow-local": 600.0}, default_timeout_s=180.0)
+        self.assertEqual(resolve_timeout(prov, "slow-local"), 600.0)
+
+    def test_resolve_timeout_falls_back_to_the_provider_default(self):
+        prov = Provider(key="p", base_url="http://x", secret_name="NOPE",
+                        model_timeout_s={"slow-local": 600.0}, default_timeout_s=180.0)
+        self.assertEqual(resolve_timeout(prov, "some-other-model"), 180.0)
+
+    def test_resolve_timeout_handles_no_model_chosen_yet(self):
+        prov = Provider(key="p", base_url="http://x", secret_name="NOPE")
+        self.assertEqual(resolve_timeout(prov, None), prov.default_timeout_s)
+
+    def test_provider_default_timeout_is_180_unless_overridden(self):
+        """Today's flat value, unchanged - existing providers must not move."""
+        prov = Provider(key="p", base_url="http://x", secret_name="NOPE")
+        self.assertEqual(prov.default_timeout_s, 180.0)
+        self.assertEqual(prov.default_timeout_s, DEFAULT_TIMEOUT_S)
+
+    def test_the_configured_value_reaches_the_transport_call(self):
+        prov = Provider(key="p", base_url="http://x", secret_name="NOPE",
+                        fallback_models=("thinker",), models_path=None,
+                        model_timeout_s={"thinker": 600.0}, default_timeout_s=180.0)
+        t = FakeTransport({"thinker": chat_body("ok")})
+        ProviderClient(prov, opener=t).chat([{"role": "user", "content": "hi"}])
+        self.assertEqual(t.calls[0]["timeout"], 600.0)
+
+    def test_the_default_applies_when_the_model_has_no_entry(self):
+        prov = Provider(key="p", base_url="http://x", secret_name="NOPE",
+                        fallback_models=("plain",), models_path=None,
+                        default_timeout_s=180.0)
+        t = FakeTransport({"plain": chat_body("ok")})
+        ProviderClient(prov, opener=t).chat([{"role": "user", "content": "hi"}])
+        self.assertEqual(t.calls[0]["timeout"], 180.0)
+
+    def test_an_explicit_chat_call_override_still_wins(self):
+        prov = Provider(key="p", base_url="http://x", secret_name="NOPE",
+                        fallback_models=("plain",), models_path=None,
+                        default_timeout_s=180.0)
+        t = FakeTransport({"plain": chat_body("ok")})
+        ProviderClient(prov, opener=t).chat([{"role": "user", "content": "hi"}],
+                                            timeout=999.0)
+        self.assertEqual(t.calls[0]["timeout"], 999.0)
+
+    def test_an_explicit_client_constructor_override_still_wins(self):
+        prov = Provider(key="p", base_url="http://x", secret_name="NOPE",
+                        fallback_models=("plain",), models_path=None,
+                        model_timeout_s={"plain": 600.0}, default_timeout_s=180.0)
+        t = FakeTransport({"plain": chat_body("ok")})
+        ProviderClient(prov, opener=t, timeout=77.0).chat(
+            [{"role": "user", "content": "hi"}])
+        self.assertEqual(t.calls[0]["timeout"], 77.0)
+
+    def test_a_real_provider_entry_has_the_unchanged_default(self):
+        """Not a fixture - the ACTUAL nvidia entry that measured a
+        real timeout (§32/§35), confirming the default is still today's
+        180s (no per-model override registered for it yet)."""
+        self.assertEqual(PROVIDERS["nvidia"].default_timeout_s, 180.0)
+        self.assertEqual(
+            resolve_timeout(PROVIDERS["nvidia"], "z-ai/glm-5.3"), 180.0)
 
 
 class TestFailover(unittest.TestCase):

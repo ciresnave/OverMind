@@ -486,6 +486,18 @@ class TestPieces(unittest.TestCase):
         self.assertIsNone(client.max_tokens,
                           "an explicit override here would defeat per-model resolution")
 
+    def test_build_client_does_not_hard_code_timeout(self):
+        """PM finding, 2026-09-24: a flat timeout=180.0 here reproducibly
+        timed out nvidia/z-ai/glm-5.3 on two different tasks
+        (MEASUREMENTS.md §32/§35) - the identical shape of gap max_tokens
+        had. ProviderClient now resolves the timeout per model/provider
+        itself (`providers.resolve_timeout`), so this must no longer pin
+        one fixed value for every provider."""
+        client = lw.build_client(lw.Task(id="x", repo=".", goal="g", check=["c"],
+                                         writable=[], provider="google"))
+        self.assertIsNone(client.timeout,
+                          "an explicit override here would defeat per-model resolution")
+
     def test_the_default_book_is_the_per_user_one(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = pathlib.Path(tmp) / "quota.json"

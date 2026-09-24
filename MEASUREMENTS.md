@@ -2096,3 +2096,67 @@ proof the day's allowance is spent. Nothing from that run survived (no `keep=Tru
 - **This piece is now parked, not abandoned**, per PM direction: retry after the weekly budget reset
   (Tue 18:00 Phoenix), when quota allowances are fresh and more providers can be tried without spending
   today's remaining allowance on a task that's already produced five non-verdicts.
+
+---
+
+## 34. 🟢🟡 CHECK_TABLE MARKERS RUN FOR REAL — 5 of 7 execute against a real fixture on BOTH CI runners; 2 skip, consistently
+
+**Observed 2026-09-24, PR #86 (`repo-probe-real-execution-85`), two full CI runs (commits `feeeff8` and
+`0935e0a`) on `tests (ubuntu-latest, *)` and `tests (windows-latest, *)`, all three Python versions each.**
+OverMind#85's finding: `repo_probe.infer_check` maps a marker file to a check argv, and every existing
+test proved the MAPPING, never that the argv actually runs - a resolver returning `["true"]` for
+everything would have passed every test. `tests/test_repo_probe_real_execution.py` adds one real, minimal
+project per `CHECK_TABLE` marker, each with a passing AND a failing variant, actually executed through
+`infer_check`'s resolved argv (mirroring `lanework._run`'s own `shutil.which`-resolved invocation, not a
+bare `subprocess.run`) - never asserted on shape, asserted on exit code.
+
+### Results - read from the CI log itself, not inferred from "usually has"
+
+| marker | scenario | ubuntu-latest | windows-latest |
+|---|---|---|---|
+| Cargo.toml | cargo | ✅ EXECUTED (pass+fail both correct) | ✅ EXECUTED (pass+fail both correct) |
+| go.mod | go | ✅ EXECUTED | ✅ EXECUTED |
+| Makefile | make | ✅ EXECUTED | ✅ EXECUTED |
+| package.json (root script) | npm | ✅ EXECUTED | ✅ EXECUTED |
+| pyproject.toml/setup.py (bare tests/) | unittest | ✅ EXECUTED | ✅ EXECUTED |
+| pyproject.toml ([tool.pytest...]) | pytest | ⏸️ SKIPPED - "pytest module not installed" | ⏸️ SKIPPED - "pytest module not installed" |
+| package.json + pnpm-workspace.yaml | pnpm-workspace | ⏸️ SKIPPED - "pnpm not installed" | ⏸️ SKIPPED - "pnpm not installed" |
+
+**5 of 7 scenarios genuinely execute on BOTH runners in this repo's real CI, identically** - `go` and
+`make`, neither of which this repo's own CI installs anywhere, are simply present on GitHub's hosted
+images (confirmed empirically, per the PM's explicit instruction not to reason from what an image
+"usually has"). **2 of 7 (`pytest`, `pnpm`) skip on both runners, for the same reason each time** - neither
+tool is present, and the skip reason names it in the log rather than reading as a bare dot.
+
+### 🔴 A real bug the fixture harness itself had, caught before it shipped
+
+Writing this file's first revision, calling `subprocess.run(result.check, ...)` directly on the resolved
+argv (`["npm", "test"]`) failed on Windows with `FileNotFoundError` - `npm`/`pnpm` are `.CMD` shims, and
+Windows `CreateProcess` cannot launch one from a bare name without a shell. **This was NOT a production
+bug**: `lanework._run` already resolves `argv[0]` through `shutil.which` before calling `subprocess.run`,
+and a direct check confirmed `lanework._run(["npm", "test"], ...)` works correctly. The fixture harness
+was calling a DIFFERENT (and on Windows, broken) invocation path than the one production actually uses -
+fixed by mirroring `_run`'s own resolution exactly, which is now the point of the exercise: a fixture
+whose own invocation doesn't match production would validate the wrong thing.
+
+### 🟡 Sourcery review, and why "5/7 EXECUTED" isn't "closed"
+
+Sourcery caught two real defects in this file's first revision, both fixed before merge:
+`pytest_available()` checked pytest's importability against the TEST PROCESS's own interpreter while
+`run_resolved_check` actually invokes whatever `python` resolves to on PATH - a mismatch could make either
+false; fixed to ask the exact resolved executable directly. Both Go fixtures pinned `go 1.22`
+unconditionally, which would reject the fixture outright on any older-but-supported Go toolchain instead
+of skipping; lowered to `go 1.16`, the lowest version the fixture code actually needs.
+
+### ⚠️ What this does and does not show
+
+- **PM's explicit instruction, honoured**: a skip is not a pass, and closing #85 for `pytest`/`pnpm`
+  would be exactly the defect the issue describes, wearing a green tick. OverMind#85 is closed only for
+  the 5 scenarios this table marks EXECUTED; the `pytest`/`pnpm` gap is tracked as its own follow-up
+  (OverMind#87), named explicitly rather than left implicit inside a closed issue.
+- **One run per scenario per OS, as most measurements in this file are.** Not a rate - a toolchain's
+  presence on a hosted runner image can change between GitHub's own image updates.
+- **The negative control (failing fixture) was manually mutation-tested** on the cargo scenario only
+  (`_resolve_cargo_toml` mutated to return an always-succeeding argv) - the failing-case test caught it,
+  the passing counterpart stayed green throughout, confirming a positive-only test would have missed it.
+  Not repeated per-marker; the mechanism (assert nonzero exit) is identical across all seven.

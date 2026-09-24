@@ -29,7 +29,6 @@ the per-scenario executed/skipped accounting from a real run.
 
 from __future__ import annotations
 
-import importlib.util
 import os
 import pathlib
 import shutil
@@ -64,10 +63,20 @@ def write(root: pathlib.Path, rel: str, text: str) -> None:
 
 
 def pytest_available() -> bool:
-    """`python` (the argv[0] for both pytest and unittest resolvers) always
-    exists - it's this process's own interpreter. Whether `pytest` the
-    MODULE is importable is the real question for that resolver."""
-    return importlib.util.find_spec("pytest") is not None
+    """⚠️ NOT `importlib.util.find_spec` AGAINST THIS PROCESS. Sourcery
+    finding on this file's own first PR revision: `run_resolved_check`
+    resolves `python` via `shutil.which` - the SAME PATH-based resolution
+    `lanework._run` uses - which can be a DIFFERENT interpreter from
+    `sys.executable` (the one running this test suite). Checking
+    `find_spec` here answers "does THIS process have pytest", not "will
+    the interpreter that ACTUALLY RUNS have pytest" - the two can disagree
+    in either direction. Ask the same interpreter `run_resolved_check`
+    would actually invoke."""
+    exe = shutil.which("python") or "python"
+    proc = subprocess.run(  # noqa: S603 - fixed argv, shell=False
+        [exe, "-c", "import pytest"], capture_output=True, timeout=30, check=False,
+    )
+    return proc.returncode == 0
 
 
 class RealExecutionCase(unittest.TestCase):
@@ -127,7 +136,12 @@ class TestGoRealExecution(RealExecutionCase):
     @unittest.skipUnless(shutil.which("go"), "go not installed")
     def test_a_real_passing_go_project_actually_passes(self):
         with TempFixture() as root:
-            write(root, "go.mod", "module fixture\n\ngo 1.22\n")
+            # ⚠️ A LOW VERSION DIRECTIVE, DELIBERATELY. Sourcery finding on
+            # this file's own first PR revision: `go 1.22` refuses to build
+            # on any installed toolchain OLDER than 1.22, unconditionally -
+            # this fixture uses no feature newer than early Go, so pin the
+            # floor low rather than to whatever's locally installed.
+            write(root, "go.mod", "module fixture\n\ngo 1.16\n")
             write(root, "fixture_test.go",
                  "package fixture\n\nimport \"testing\"\n\n"
                  "func TestPasses(t *testing.T) {\n"
@@ -138,7 +152,12 @@ class TestGoRealExecution(RealExecutionCase):
     @unittest.skipUnless(shutil.which("go"), "go not installed")
     def test_a_real_failing_go_project_actually_fails(self):
         with TempFixture() as root:
-            write(root, "go.mod", "module fixture\n\ngo 1.22\n")
+            # ⚠️ A LOW VERSION DIRECTIVE, DELIBERATELY. Sourcery finding on
+            # this file's own first PR revision: `go 1.22` refuses to build
+            # on any installed toolchain OLDER than 1.22, unconditionally -
+            # this fixture uses no feature newer than early Go, so pin the
+            # floor low rather than to whatever's locally installed.
+            write(root, "go.mod", "module fixture\n\ngo 1.16\n")
             write(root, "fixture_test.go",
                  "package fixture\n\nimport \"testing\"\n\n"
                  "func TestFails(t *testing.T) {\n"

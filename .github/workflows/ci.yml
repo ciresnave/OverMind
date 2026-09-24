@@ -73,6 +73,38 @@ jobs:
         # back to a different version reports green about something else.
         run: python -c "import sys; print(sys.version); print(sys.executable)"
 
+      # ⚠️ OverMind#87: repo_probe.CHECK_TABLE's pytest and pnpm-workspace
+      # resolvers were UNEXECUTED on every CI runner (tests/
+      # test_repo_probe_real_execution.py skipped both, on both OSes,
+      # consistently - see MEASUREMENTS.md §34). A skip that reads as a
+      # pass is the defect OverMind#85 exists to name; these two steps make
+      # the skip real coverage instead of quieter silence. Neither is a
+      # project dependency - both are CI-only, so this does not touch the
+      # "core stays stdlib-only" property pyproject.toml states.
+      - name: Install pytest (OverMind#87 - repo_probe's pytest resolver coverage)
+        run: python -m pip install --quiet pytest
+
+      - name: Enable pnpm (OverMind#87 - repo_probe's pnpm-workspace resolver coverage)
+        # ⚠️ Sourcery findings on this file's first PR revision, both real:
+        # (1) `pnpm@latest` is a moving target - a future release changing
+        #     Node.js requirements or recursive-test behaviour could break
+        #     this job, or silently change what the resolver's own test
+        #     exercises, with no change to this repo at all. Pinned to a
+        #     fixed version instead.
+        # (2) assuming `corepack` is on PATH makes the WHOLE job fail
+        #     outright if a future runner image ships Node.js without it -
+        #     exactly the fragility this coverage exists to avoid, just
+        #     moved one level up. Falls back to a direct `npm install -g`
+        #     if `corepack` isn't found, rather than hard-failing.
+        shell: bash
+        run: |
+          if command -v corepack >/dev/null 2>&1; then
+            corepack enable
+            corepack prepare pnpm@9.12.3 --activate
+          else
+            npm install -g pnpm@9.12.3
+          fi
+
       - name: Run tests
         # The suite is stdlib-only and hits no network: `mcp` is imported
         # lazily and MCP invocation is tested through a fake session.

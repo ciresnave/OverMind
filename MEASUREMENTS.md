@@ -2163,11 +2163,11 @@ of skipping; lowered to `go 1.16`, the lowest version the fixture code actually 
 
 ---
 
-## 35. 🔴 EIGHT DISPATCH ATTEMPTS ON `tools/claims/checker.py` — zero capability evidence; corrected taxonomy; one final experiment isolates the constraint to the provider, not the task
+## 35. 🔴 EIGHT DISPATCH ATTEMPTS ON `tools/claims/checker.py` — zero capability evidence; corrected taxonomy; the smaller task reproduced the same provider-side 503 and did not change the observed outcome
 
 **Observed 2026-09-19 through 2026-09-24, real `dispatch_lane_task`/`dispatch()` calls against
-`https://github.com/ciresnave/OverMind.git`, `check_profile="python-unittest"`.** §33 reported "5 attempts,
-every failure provider-side" as of 2026-09-19. Two more happened since (a post-budget-reset retry, then a
+`https://github.com/ciresnave/OverMind.git`, `check_profile="python-unittest"`.** §33's own table holds
+six attempts (#1 through #6) as of 2026-09-19. Two more happened since (a post-budget-reset retry, then a
 task-size experiment below), and the PM caught a **miscount in §33's own taxonomy** re-reading it
 2026-09-24: **"max-steps" is not a provider failure. It is ours** - the task exceeding a step budget this
 harness itself configures says nothing about the provider. The same reasoning applies to the pre-#83
@@ -2205,11 +2205,14 @@ no other outcome), with its own small test file. Prompt tokens dropped from ~27.
 above).
 
 **Attempt 8 still failed provider-side (HTTP 503), at step 4 - not a step-budget or truncation failure,
-the identical provider failure mode as attempt 7, on a task roughly a third the size.** Per the PM's own
-stated read of the three possible outcomes, this is the middle one: *"another provider-side failure -\>
-then the dispatch path itself is unreliable at any size, which is a clean, final finding."* Task size was
-not the binding constraint; a much smaller, well-scoped unit hit the identical failure a much larger one
-did. **Stopping here, per explicit instruction - no attempt 9.**
+the identical provider failure mode as attempt 7, on a task about two-thirds the prompt size (~18k against
+~27.5k - roughly a third SMALLER, not a third the size).** Per the PM's own stated read of the three
+possible outcomes, this is the middle one: *"another provider-side failure -\> then the dispatch path
+itself is unreliable at any size, which is a clean, final finding."* ⚠️ **What this single data point
+supports, precisely: making the task smaller did not change the outcome** - the same provider failure mode
+recurred. It does NOT rule out task size as *a* constraint in general (a different size, or a different
+failure mode, could still be size-sensitive) - one smaller-task run is one data point, not an elimination.
+**Stopping here, per explicit instruction - no attempt 9.**
 
 ### ⚠️ What this says, and what it explicitly does NOT say
 

@@ -63,7 +63,7 @@ from .quota import QuotaBook, daily_limit_in, monthly_limit_in
 __all__ = [
     "Provider", "PROVIDERS", "ProviderClient", "ChatResult", "Usage", "ProviderError",
     "RateLimited", "NoUsableModel", "read_secret", "normalise_for_echo",
-    "select_models", "RoutedClient", "resolve_max_tokens",
+    "select_models", "RoutedClient", "resolve_max_tokens", "resolve_timeout",
 ]
 
 #: PM finding, 2026-09-19: lanework.py hard-coded max_tokens=4096 on every
@@ -75,6 +75,15 @@ __all__ = [
 #: in `Provider.model_max_tokens` - generous enough for a thinking model's
 #: reasoning tokens plus a real answer, without being unbounded.
 DEFAULT_MAX_TOKENS = 16384
+
+#: PM finding, 2026-09-24: lanework.py also hard-coded timeout=180.0 on
+#: every request, every provider - the identical shape of gap
+#: DEFAULT_MAX_TOKENS fixed above, and measured biting the same way
+#: (§32/§35, MEASUREMENTS.md: `glm-5.3` reproducibly timed out past this
+#: exact value on two different tasks). 180s unchanged as the FALLBACK, so
+#: no existing provider's behaviour changes - only a provider that sets its
+#: own `default_timeout_s`/`model_timeout_s` moves off it.
+DEFAULT_TIMEOUT_S = 180.0
 
 USER_AGENT = "OverMind/0.2 (+https://github.com/ciresnave/OverMind)"
 
@@ -170,6 +179,21 @@ class Provider:
     #: This provider's own default when a model has no entry above.
     #: `DEFAULT_MAX_TOKENS` unless a provider is measured to need otherwise.
     default_max_tokens: int = DEFAULT_MAX_TOKENS
+    #: Per-model request TIMEOUT override, keyed by the exact model id -
+    #: same shape as `model_max_tokens`, same reason: a flat timeout tuned
+    #: for cloud round-trip latency is the wrong constant for a model whose
+    #: first-token latency scales with local hardware and context length
+    #: instead. ⚠️ MEASURED BITING ALREADY (§32/§35, MEASUREMENTS.md):
+    #: `nvidia/z-ai/glm-5.3` reproducibly timed out past the flat 180s this
+    #: used to be, on two different tasks - a timeout failure that looked
+    #: identical to every other provider failure in the ledger, which is
+    #: exactly the "connection reset" vs "model couldn't do it" distinction
+    #: this whole client exists to preserve.
+    model_timeout_s: Mapping[str, float] = field(default_factory=dict)
+    #: This provider's own default when a model has no entry above.
+    #: `DEFAULT_TIMEOUT_S` (180s, today's flat value - unchanged for every
+    #: existing provider) unless a provider is measured to need otherwise.
+    default_timeout_s: float = DEFAULT_TIMEOUT_S
 
     def resolved_base(self) -> str:
         base = self.base_url
@@ -275,6 +299,16 @@ def resolve_max_tokens(provider: Provider, model: str | None) -> int:
     if model and model in provider.model_max_tokens:
         return provider.model_max_tokens[model]
     return provider.default_max_tokens
+
+
+def resolve_timeout(provider: Provider, model: str | None) -> float:
+    """What request TIMEOUT a call to `model` should carry: that model's own
+    entry in `provider.model_timeout_s` if it has one, else the provider's
+    own default. Same resolution shape as `resolve_max_tokens`, same reason
+    `model` may be `None`."""
+    if model and model in provider.model_timeout_s:
+        return provider.model_timeout_s[model]
+    return provider.default_timeout_s
 
 
 # --------------------------------------------------------------------------- #
@@ -435,10 +469,19 @@ class ChatResult:
 class ProviderClient:
     """One OpenAI-shaped client. `provider` is the only thing that changes."""
 
-    def __init__(self, provider: str | Provider, *, timeout: float = 90.0,
+    def __init__(self, provider: str | Provider, *, timeout: float | None = None,
                  max_tokens: int | None = None, model: str | None = None,
                  opener: Any | None = None, quota: QuotaBook | None = None) -> None:
         self.provider = PROVIDERS[provider] if isinstance(provider, str) else provider
+        #: ⚠️ `None` (the default) means "no per-client override" - `chat()`
+        #: resolves the actual value per-request, per-model, from
+        #: `self.provider.model_timeout_s`/`default_timeout_s` via
+        #: `resolve_timeout` - same resolution shape as `max_tokens` below,
+        #: same reason (PM finding, 2026-09-24: a flat 180s tuned for cloud
+        #: round-trip latency is the wrong constant for a model whose
+        #: first-token latency scales with local hardware/context instead).
+        #: An explicit value here (or passed to a single `chat()` call)
+        #: still wins.
         self.timeout = timeout
         #: ⚠️ `None` (the default) means "no per-client override" - `chat()`
         #: resolves the actual value per-request, per-model, from
@@ -480,8 +523,16 @@ class ProviderClient:
     def _request(self, path: str, payload: Mapping[str, Any] | None = None,
                  timeout: float | None = None) -> dict[str, Any]:
         url = self.provider.resolved_base() + path
+        # ⚠️ Same 3-tier resolution as `max_tokens`: this call's own
+        # override, then the client's own override, then the provider's
+        # (optionally per-model) configured default - never a bare
+        # cross-provider constant. `roster()` calls this with no explicit
+        # timeout, so it lands on the provider default too.
+        effective_timeout = (timeout if timeout is not None
+                             else self.timeout if self.timeout is not None
+                             else resolve_timeout(self.provider, self.pinned_model))
         try:
-            _, body = self._open(url, payload, self._headers(), timeout or self.timeout)
+            _, body = self._open(url, payload, self._headers(), effective_timeout)
             return body
         except urllib.error.HTTPError as exc:
             text = exc.read().decode("utf-8", "replace")
@@ -537,8 +588,8 @@ class ProviderClient:
 
     def chat(self, messages: Sequence[Mapping[str, Any]], *,
              tools: Sequence[Mapping[str, Any]] | None = None,
-             max_tokens: int | None = None, temperature: float = 0.0,
-             retries_on_429: int = 2) -> ChatResult:
+             max_tokens: int | None = None, timeout: float | None = None,
+             temperature: float = 0.0, retries_on_429: int = 2) -> ChatResult:
         """One completion, failing over across candidate models.
 
         ⚠️ FAILING OVER IS NOT OPTIONAL. Free availability is per-model and
@@ -583,6 +634,12 @@ class ProviderClient:
             effective_max_tokens = (max_tokens if max_tokens is not None
                                     else self.max_tokens if self.max_tokens is not None
                                     else resolve_max_tokens(self.provider, model))
+            # ⚠️ Same resolution order as max_tokens, same reason - a
+            # per-request timeout tuned for cloud latency is the wrong
+            # constant once a local/slower model is a candidate.
+            effective_timeout = (timeout if timeout is not None
+                                 else self.timeout if self.timeout is not None
+                                 else resolve_timeout(self.provider, model))
             payload: dict[str, Any] = {
                 "model": model,
                 "messages": payload_messages,
@@ -597,7 +654,7 @@ class ProviderClient:
                 if self.quota is not None:
                     self.quota.record_request(self.provider.key, model)
                 try:
-                    body = self._request("/chat/completions", payload)
+                    body = self._request("/chat/completions", payload, timeout=effective_timeout)
                 except RateLimited as exc:
                     # ⚠️ A DAILY REFUSAL IS NOT RETRIED. Waiting two seconds does
                     # not bring back a day's allowance, and each retry is

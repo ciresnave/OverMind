@@ -2160,3 +2160,74 @@ of skipping; lowered to `go 1.16`, the lowest version the fixture code actually 
   (`_resolve_cargo_toml` mutated to return an always-succeeding argv) - the failing-case test caught it,
   the passing counterpart stayed green throughout, confirming a positive-only test would have missed it.
   Not repeated per-marker; the mechanism (assert nonzero exit) is identical across all seven.
+
+---
+
+## 35. 🔴 EIGHT DISPATCH ATTEMPTS ON `tools/claims/checker.py` — zero capability evidence; corrected taxonomy; one final experiment isolates the constraint to the provider, not the task
+
+**Observed 2026-09-19 through 2026-09-24, real `dispatch_lane_task`/`dispatch()` calls against
+`https://github.com/ciresnave/OverMind.git`, `check_profile="python-unittest"`.** §33 reported "5 attempts,
+every failure provider-side" as of 2026-09-19. Two more happened since (a post-budget-reset retry, then a
+task-size experiment below), and the PM caught a **miscount in §33's own taxonomy** re-reading it
+2026-09-24: **"max-steps" is not a provider failure. It is ours** - the task exceeding a step budget this
+harness itself configures says nothing about the provider. The same reasoning applies to the pre-#83
+output-budget truncation (attempt 2): a flat, hard-coded `max_tokens=4096` was this harness's OWN
+misconfiguration, not a provider defect - #83 fixed it, and later attempts on the SAME model no longer
+hit that failure mode, confirming it was ours to fix and now is fixed.
+
+### Corrected accounting - 8 attempts, read from the ledger, not from a running tally
+
+| # | provider/model | verdict | steps | max_tokens | cause | category |
+|---|---|---|---|---|---|---|
+| 1 | nvidia `deepseek-v4-flash-0731` | INCOMPLETE | 20 | (pre-fix) | ran out of `max_steps` | **OURS** (step budget) |
+| 2 | nvidia `openai/gpt-oss-20b` | NO_CHANGE | 8 | (pre-fix, flat 4096) | output-budget truncation | **OURS** (fixed by #83) |
+| 3 | nvidia `z-ai/glm-5.3` (pinned) | NO_CHANGE | 0 | 0 | transport timeout | provider-side |
+| 4 | nvidia `z-ai/glm-5.3` (pinned, rerun) | NO_CHANGE | 0 | 0 | transport timeout (identical) | provider-side |
+| 5 | nvidia `openai/gpt-oss-20b` (pinned, post-#83) | NO_CHANGE | 1 | 16384 | empty `choices` array | provider-side |
+| 6 | google `gemini-3.5-flash-lite` (pinned) | INCOMPLETE | 16 | 16384 | rate-limited mid-run | provider-side |
+| 7 | google `gemini-3.5-flash-lite` (pinned, post-reset) | NO_CHANGE | 7 | 16384 | HTTP 503 | provider-side |
+| 8 | google `gemini-3.5-flash-lite` (pinned, smaller task) | NO_CHANGE | 4 | 16384 | HTTP 503 (again) | provider-side |
+
+**6 of 8 are provider-side. 2 of 8 are ours**, both already understood and one already fixed. Not one of
+the eight produced a PASS, a CHECK_FAILED, or an unsupported-claim verdict - the harness never once got a
+finished answer to grade.
+
+### 🔴 The final experiment: vary task size, hold the model - a clean, final answer
+
+PM instruction, 2026-09-24: seven attempts had varied provider and model and waited out a budget reset,
+but never varied the TASK - every attempt dispatched the whole `checker.py` surface (four claim outcomes,
+git subprocess calls, comprehensive tests) at ~27.5k prompt tokens, and the furthest any got was 16 real
+steps (attempt 6) before failing. **One experiment, on the model that got furthest twice
+(`gemini-3.5-flash-lite`, pinned, held constant so the size comparison stays readable): the SMALLEST unit
+of `checker.py` that would still produce a real capability verdict** - a single function,
+`is_claim_orphaned(file, quote, repo) -> bool` (the "orphaned" classification alone, no anchor/diff logic,
+no other outcome), with its own small test file. Prompt tokens dropped from ~27.5k to ~18k (attempt 8,
+above).
+
+**Attempt 8 still failed provider-side (HTTP 503), at step 4 - not a step-budget or truncation failure,
+the identical provider failure mode as attempt 7, on a task roughly a third the size.** Per the PM's own
+stated read of the three possible outcomes, this is the middle one: *"another provider-side failure -\>
+then the dispatch path itself is unreliable at any size, which is a clean, final finding."* Task size was
+not the binding constraint; a much smaller, well-scoped unit hit the identical failure a much larger one
+did. **Stopping here, per explicit instruction - no attempt 9.**
+
+### ⚠️ What this says, and what it explicitly does NOT say
+
+**Eight dispatch attempts have produced ZERO evidence about `checker.py`'s behaviour.** Six failed
+provider-side (2 NVIDIA timeouts, 1 NVIDIA empty-choices, 1 Google rate-limit, 2 Google HTTP 503s); two
+were this harness's own doing (a step-budget exhaustion, and an output-budget cap since fixed). **This says
+NOTHING about whether `checker.py`'s design is sound, whether the task is too hard for a free-tier model,
+or whether the code (once written) would work.** An unverified claim and a refuted one look identical in a
+summary, and the standing risk after eight failures is letting "we could never verify it" drift into
+"it's probably fine" or "it's probably broken" - **neither is supported by anything measured here.**
+
+- **The dispatch path to `google`/`gemini-3.5-flash-lite` specifically has now failed twice in a row on
+  HTTP 503**, at two different task sizes - that is the closest thing to a reproducible signal in this
+  whole sequence, and it is about Google's API reliability that day, not about this repository's code.
+- **Whether to spend on a paid, non-Claude model instead of continuing free-tier attempts is explicitly
+  NOT decided here** - CireSnave's call, per the PM, informed by this data rather than speculated from it.
+- **`claims/piece2-parked` stays parked**, gated on `checker.py` existing - piece 2 (render/registry/CLI)
+  was itself written and verified successfully by a free-tier model (`nvidia/z-ai/glm-5.3`) earlier in this
+  same sequence, so the gap is specific to `checker.py`'s own dispatch attempts, not free-tier dispatch in
+  general. **Parked as of 2026-09-24; this entry is the up-to-date record of why, so "parked pending
+  checker.py" does not outlive its own blocker unnoticed.**

@@ -269,7 +269,7 @@ dependencies = [
 
 [[package]]
 name = "lane-restart"
-version = "0.3.32"
+version = "0.4.0"
 dependencies = [
  "chrono",
  "portable-pty",

@@ -2,7 +2,10 @@
 //! `with-secret` - WITH-SECRET-DESIGN.md. ⚠️ Stops ACCIDENTAL exposure only (§3).
 
 pub mod approval;
+pub mod audit;
 pub mod consent;
+pub mod dumpcheck;
 pub mod identity;
 pub mod mask;
+pub mod run;
 pub mod vault;

@@ -36,7 +36,7 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Iterable, Mapping, Protocol, Sequence
 
 __all__ = [
@@ -286,6 +286,11 @@ class LedgerEntry:
     executed: bool
     result_repr: str | None = None
     error: str | None = None
+    #: Which fork(s) this entry came from, outermost first; `()` for the run
+    #: that owns the ledger. ⚠️ LINEAGE IS DATA, NOT NARRATIVE: a parent that
+    #: learned what its fork did only from the fork's summary would be trusting
+    #: testimony, which is exactly what this ledger exists to replace.
+    lineage: tuple[str, ...] = ()
 
 
 class Ledger:
@@ -299,6 +304,7 @@ class Ledger:
 
     def __init__(self) -> None:
         self._entries: list[LedgerEntry] = []
+        self._forks: dict[int, Any] = {}
 
     def append(self, entry: LedgerEntry) -> None:
         self._entries.append(entry)
@@ -312,6 +318,32 @@ class Ledger:
     @property
     def entries(self) -> tuple[LedgerEntry, ...]:
         return tuple(self._entries)
+
+    def absorb(self, child: "Ledger", *, fork_id: str, fork_seq: int,
+               record: Any = None) -> None:
+        """Append a fork's ledger to this one, renumbered and tagged.
+
+        `fork_seq` is the seq of THIS ledger's entry for the fork call itself;
+        `record` (anything with `to_dict()`) is kept against it and serialised
+        with that row. ⚠️ HELD BY REFERENCE: the fork's cost is finalised only
+        when the parent run ends, after this call.
+        """
+        if child is self:
+            raise ValueError("a ledger cannot absorb itself")
+        if not fork_id:
+            raise ValueError("fork_id must be non-empty: it is the lineage tag")
+        if not any(e.seq == fork_seq for e in self._entries):
+            raise ValueError(f"no entry with seq {fork_seq} to attach the fork to")
+        if fork_seq in self._forks:
+            # ⚠️ A second absorb would count every effect of the fork twice.
+            raise ValueError(f"fork {fork_id!r} at seq {fork_seq} was already absorbed")
+        for e in child.entries:
+            self._entries.append(replace(e, seq=len(self._entries),
+                                         lineage=(fork_id,) + e.lineage))
+        self._forks[fork_seq] = record
+
+    def fork_record(self, seq: int) -> Any | None:
+        return self._forks.get(seq)
 
     def digest(self, limit: int = 12) -> str:
         """A compact record of what has already happened, for the model to read.
@@ -336,7 +368,8 @@ class Ledger:
         lines = []
         for entry in self._entries[-limit:]:
             args = ", ".join(f"{k}={v!r}" for k, v in sorted(entry.call.arguments.items()))
-            head = f"{entry.seq}. {entry.call.name}({args[:160]})"
+            mark = f"[fork {'/'.join(entry.lineage)}] " if entry.lineage else ""
+            head = f"{entry.seq}. {mark}{entry.call.name}({args[:160]})"
             if not entry.decision.allowed:
                 lines.append(f"{head} -> REFUSED: {entry.decision.reason}")
             elif entry.error is not None:
@@ -378,8 +411,9 @@ class Ledger:
         return name in self.executed_tools()
 
     def to_json(self) -> str:
-        return json.dumps([
-            {
+        rows = []
+        for e in self._entries:
+            row = {
                 "seq": e.seq,
                 "tool": e.call.name,
                 "arguments": dict(e.call.arguments),
@@ -389,9 +423,13 @@ class Ledger:
                 "reason": e.decision.reason,
                 "executed": e.executed,
                 "error": e.error,
+                "lineage": list(e.lineage),
             }
-            for e in self._entries
-        ], indent=2)
+            record = self._forks.get(e.seq)
+            if record is not None:
+                row["fork"] = record.to_dict()
+            rows.append(row)
+        return json.dumps(rows, indent=2)
 
 
 # --------------------------------------------------------------------------- #

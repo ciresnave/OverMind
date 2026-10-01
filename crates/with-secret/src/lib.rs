@@ -6,6 +6,7 @@ pub mod audit;
 pub mod consent;
 pub mod dpapi;
 pub mod dumpcheck;
+pub mod hello;
 pub mod identity;
 pub mod mask;
 pub mod run;

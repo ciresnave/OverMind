@@ -41,10 +41,13 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from typing import Any, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 from .gate import GatedExecutor, Ledger, detect_smuggled_tool_call
 from .providers import ChatResult, ProviderClient, Usage, normalise_for_echo
+
+if TYPE_CHECKING:
+    from .fork import ForkConfig
 
 __all__ = ["AgentRun", "StopReason", "run_agent"]
 
@@ -54,6 +57,9 @@ class StopReason:
     MAX_STEPS = "max-steps"
     PROTOCOL_FAILURE = "protocol-failure"   # smuggled tool calls, twice
     PROVIDER_ERROR = "provider-error"
+    #: Something INSIDE the loop raised (a policy, a fact source). Only a fork
+    #: reports it: a fork's ledger must survive to be absorbed (fork.run_fork).
+    HARNESS_ERROR = "harness-error"
     NO_PROGRESS = "no-progress"             # same call repeated, twice over
     #: 🔴 The reply was CUT OFF by the output budget, not finished. Measured
     #: three times on three models, each time read as the model being unable or
@@ -84,6 +90,12 @@ class AgentRun:
     #: One run is normally one model throughout, so this is representative
     #: of the whole run's budget, not just its final step.
     max_tokens: int = 0
+    #: Each successful model call's usage, in order. ⚠️ `usage` is the SUM and
+    #: cannot say how the context grew; the fork cost model needs the shape.
+    call_usage: list[Usage] = field(default_factory=list)
+    #: Every fork this run completed, in order (fork.ForkResult). Their effects
+    #: are ALSO on `ledger`, tagged with lineage - that copy is the evidence.
+    forks: list[Any] = field(default_factory=list)
 
     @property
     def executed_tools(self) -> tuple[str, ...]:
@@ -160,7 +172,10 @@ def run_agent(client: ProviderClient, executor: GatedExecutor,
               system: str = "", max_steps: int = 8,
               max_tokens: int | None = None,
               context_mode: str = "transcript",
-              offer: str = "as-given") -> AgentRun:
+              offer: str = "as-given",
+              history: Sequence[Mapping[str, Any]] | None = None,
+              fork: "ForkConfig | None" = None,
+              time_sensitive: bool = False) -> AgentRun:
     """Drive one task to completion through the gate.
 
     `tools` are OpenAI-shaped schemas; `executor` holds the callables. The two
@@ -222,15 +237,47 @@ def run_agent(client: ProviderClient, executor: GatedExecutor,
     of what, but not the model's own reasoning between steps. Whether that
     reasoning was load-bearing is the question, and it is measurable rather than
     arguable - `probe/ledger_context.py` runs both arms over the same task.
+
+    `history`, when given, is the conversation to CONTINUE: the first request
+    is a copy of it plus `task` as a user turn. Used by forks. ⚠️ Copied, never
+    appended to - the caller's list is the parent's context.
+
+    `fork`, when given, offers the model a `fork` tool (fork.fork_schema) that
+    runs a sub-task in a copy of this conversation and returns a curated
+    summary plus the copy's ledger (fork.py). The caller's policies must cover
+    `fork` or it is refused like any uncovered tool. `time_sensitive` is
+    recorded on every fork's cost record (CireSnave's ruling: latency governs
+    only for a task deemed time-sensitive; otherwise cost does).
     """
     if offer not in ("as-given", "permitted"):
         raise ValueError(f"offer must be 'as-given' or 'permitted', not {offer!r}")
     if context_mode not in ("transcript", "ledger", "ledger+closure"):
         raise ValueError(f"context_mode must be 'transcript', 'ledger' or "
                          f"'ledger+closure', not {context_mode!r}")
-    messages: list[dict[str, Any]] = []
-    if system:
-        messages.append({"role": "system", "content": system})
+    if fork is not None:
+        from .fork import FORK_TOOL, execute_fork, fork_schema   # fork.py imports this module
+        if context_mode != "transcript":
+            raise ValueError("fork requires context_mode='transcript': a fork continues "
+                             "its parent's transcript, and the ledger modes have none")
+        if any((t.get("function") or {}).get("name") == FORK_TOOL for t in tools):
+            raise ValueError(f"the caller's tools already name {FORK_TOOL!r}")
+        if FORK_TOOL in executor.tools:
+            raise ValueError(f"the executor already registers {FORK_TOOL!r}")
+        tools = [*tools, fork_schema()]
+    if history is not None:
+        if context_mode != "transcript":
+            raise ValueError("history requires context_mode='transcript': the ledger "
+                             "modes rebuild the prompt every step and would discard it")
+        if system:
+            raise ValueError("pass the system message inside history, not as system=; "
+                             "a second system message would break the shared prefix")
+        if not history:
+            raise ValueError("history must not be empty; omit it to start fresh")
+        messages: list[dict[str, Any]] = [dict(m) for m in history]
+    else:
+        messages = []
+        if system:
+            messages.append({"role": "system", "content": system})
     messages.append({"role": "user", "content": task})
 
     offered_but_refused: list[str] = []
@@ -281,6 +328,16 @@ def run_agent(client: ProviderClient, executor: GatedExecutor,
     #: correction forever.
     notes: list[str] = []
 
+    call_usage: list[Usage] = []
+    forks: list[Any] = []
+
+    def finish(run: AgentRun) -> AgentRun:
+        run.call_usage = list(call_usage)
+        for f in forks:
+            f.cost.finalize(call_usage)
+        run.forks = list(forks)
+        return run
+
     for step in range(max_steps):
         if context_mode.startswith("ledger"):
             # ⚠️ REBUILT, NOT APPENDED. The transcript is deliberately thrown
@@ -299,13 +356,14 @@ def run_agent(client: ProviderClient, executor: GatedExecutor,
         try:
             result = client.chat(messages, tools=tools, max_tokens=max_tokens)
         except Exception as exc:                       # noqa: BLE001 - reported, not hidden
-            return AgentRun(final_text="", stop_reason=StopReason.PROVIDER_ERROR,
+            return finish(AgentRun(final_text="", stop_reason=StopReason.PROVIDER_ERROR,
                             steps=step, ledger=executor.gate.ledger, messages=messages,
                             usage=spent, offered_but_refused=offered_but_refused,
                             max_tokens=result.max_tokens if result else 0,
-                            error=f"{type(exc).__name__}: {exc}")
+                            error=f"{type(exc).__name__}: {exc}"))
 
         spent = spent + result.usage
+        call_usage.append(result.usage)
         messages.append(normalise_for_echo(result.message))
         calls = result.tool_calls
 
@@ -314,14 +372,14 @@ def run_agent(client: ProviderClient, executor: GatedExecutor,
             # A truncated reply has no tool calls and often no text, which is
             # indistinguishable from a model that had nothing to say - and I
             # misread exactly that three times before the harness could tell me.
-            return AgentRun(
+            return finish(AgentRun(
                 final_text=result.content, stop_reason=StopReason.TRUNCATED,
                 steps=step + 1, ledger=executor.gate.ledger, messages=messages,
                 model=result.model, provider=result.provider, usage=spent,
                 offered_but_refused=offered_but_refused, max_tokens=result.max_tokens,
                 error=(f"the reply was cut off by the output budget "
                        f"(finish_reason={result.finish_reason!r}); raise max_tokens. "
-                       f"A thinking model spends this budget BEFORE it answers."))
+                       f"A thinking model spends this budget BEFORE it answers.")))
 
         if not calls:
             # ⚠️ Before believing "it is finished", check whether it TRIED to call
@@ -330,14 +388,14 @@ def run_agent(client: ProviderClient, executor: GatedExecutor,
             if smuggled:
                 smuggle_strikes += 1
                 if smuggle_strikes > 1:
-                    return AgentRun(
+                    return finish(AgentRun(
                         final_text=result.content, stop_reason=StopReason.PROTOCOL_FAILURE,
                         steps=step + 1, ledger=executor.gate.ledger, messages=messages,
                         model=result.model, provider=result.provider, usage=spent,
                         offered_but_refused=offered_but_refused, max_tokens=result.max_tokens,
                         error=f"model wrote tool-call JSON into its message twice "
                               f"({', '.join(smuggled)}) instead of emitting a tool call",
-                    )
+                    ))
                 correction = (
                     f"You wrote what looks like a call to {smuggled[0]} inside your "
                     f"message. That does nothing - it was not executed. Emit it as a "
@@ -350,13 +408,13 @@ def run_agent(client: ProviderClient, executor: GatedExecutor,
                 # correction and neither side able to see the loop.
                 notes.append(correction)
                 continue
-            return AgentRun(final_text=result.content, stop_reason=StopReason.COMPLETED,
+            return finish(AgentRun(final_text=result.content, stop_reason=StopReason.COMPLETED,
                             steps=step + 1, ledger=executor.gate.ledger, messages=messages,
                             model=result.model, provider=result.provider, usage=spent,
-                            offered_but_refused=offered_but_refused, max_tokens=result.max_tokens)
+                            offered_but_refused=offered_but_refused, max_tokens=result.max_tokens))
 
         repeated_twice = False
-        for call in calls:
+        for index, call in enumerate(calls):
             fn = call.get("function") or {}
             name = fn.get("name") or ""
             args = _parse_arguments(fn.get("arguments"))
@@ -387,24 +445,38 @@ def run_agent(client: ProviderClient, executor: GatedExecutor,
                 continue
 
             repeat_count = 1
-            # THE ONLY PATH TO AN EFFECT.
-            outcome = executor.execute(name, args, actor=f"{result.provider}:{result.model}")
+            # THE ONLY PATH TO AN EFFECT - a fork call included (execute_fork
+            # runs it through this same gate).
+            actor = f"{result.provider}:{result.model}"
+            if fork is not None and name == FORK_TOOL:
+                outcome, forked = execute_fork(
+                    client, executor, tools, messages=messages, calls=calls, index=index,
+                    args=args, actor=actor, config=fork, time_sensitive=time_sensitive,
+                    parent_call_index=len(call_usage) - 1, parent_model=result.model,
+                    fork_id=f"f{len(forks) + 1}")
+                if forked is not None:
+                    forks.append(forked)
+                    # ⚠️ The fork's calls are this run's spend; `call_usage`
+                    # stays this loop's own calls, which the cost model needs.
+                    spent = spent + forked.run.usage + forked.cost.curation
+            else:
+                outcome = executor.execute(name, args, actor=actor)
             content = outcome.as_tool_content()
             last_results[signature] = content
             messages.append(_tool_result_message(call.get("id", ""), name, content))
 
         if repeated_twice:
-            return AgentRun(final_text=result.content, stop_reason=StopReason.NO_PROGRESS,
+            return finish(AgentRun(final_text=result.content, stop_reason=StopReason.NO_PROGRESS,
                             steps=step + 1, ledger=executor.gate.ledger, messages=messages,
                             model=result.model, provider=result.provider, usage=spent,
                             offered_but_refused=offered_but_refused, max_tokens=result.max_tokens,
                             error="the model repeated an identical call after being told it had "
-                                  "already been made")
+                                  "already been made"))
 
-    return AgentRun(final_text=result.content if result else "",
+    return finish(AgentRun(final_text=result.content if result else "",
                     stop_reason=StopReason.MAX_STEPS, steps=max_steps,
                     ledger=executor.gate.ledger, messages=messages,
                     model=result.model if result else None,
                     provider=result.provider if result else None, usage=spent,
                     offered_but_refused=offered_but_refused,
-                    max_tokens=result.max_tokens if result else 0)
+                    max_tokens=result.max_tokens if result else 0))

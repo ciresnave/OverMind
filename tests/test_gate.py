@@ -295,6 +295,106 @@ class TestLedgerIsTheEvidence(unittest.TestCase):
         self.assertEqual(rows[0]["arguments"], {"a": 1})
 
 
+class TestLedgerAbsorbsAForksEvidence(unittest.TestCase):
+    """⚠️ A fork's summary is testimony; its ledger is the evidence. Absorbing
+    puts every effect a fork caused on the parent's own ledger, tagged with
+    where it came from, so `did()` and `executed_tools()` see it."""
+
+    def entry(self, seq, name, executed=True, lineage=()):
+        from overmind.gate import LedgerEntry, ToolCall, Decision
+        return LedgerEntry(seq, ToolCall(name=name), Decision.allow("ok", "p"),
+                           executed=executed, result_repr="ok", lineage=lineage)
+
+    def parent_with_fork_call(self):
+        parent = Ledger()
+        parent.append(self.entry(0, "list_entities"))
+        parent.append(self.entry(1, "fork"))
+        return parent
+
+    def test_child_entries_follow_the_fork_entry_renumbered_and_tagged(self):
+        parent = self.parent_with_fork_call()
+        child = Ledger()
+        child.append(self.entry(0, "write_file"))
+        child.append(self.entry(1, "run_check"))
+        parent.absorb(child, fork_id="f1", fork_seq=1)
+        rows = parent.entries
+        self.assertEqual([e.seq for e in rows], [0, 1, 2, 3])
+        self.assertEqual([e.call.name for e in rows],
+                         ["list_entities", "fork", "write_file", "run_check"])
+        self.assertEqual([e.lineage for e in rows], [(), (), ("f1",), ("f1",)])
+
+    def test_absorbed_effects_count_as_done(self):
+        parent = self.parent_with_fork_call()
+        child = Ledger()
+        child.append(self.entry(0, "write_file"))
+        parent.absorb(child, fork_id="f1", fork_seq=1)
+        self.assertTrue(parent.was_executed("write_file"))
+
+    def test_nested_lineage_is_kept_outermost_first(self):
+        parent = self.parent_with_fork_call()
+        child = Ledger()
+        child.append(self.entry(0, "write_file", lineage=("g7",)))
+        parent.absorb(child, fork_id="f1", fork_seq=1)
+        self.assertEqual(parent.entries[-1].lineage, ("f1", "g7"))
+
+    def test_the_child_ledger_is_not_modified(self):
+        parent = self.parent_with_fork_call()
+        child = Ledger()
+        child.append(self.entry(0, "write_file"))
+        parent.absorb(child, fork_id="f1", fork_seq=1)
+        self.assertEqual(child.entries[0].seq, 0)
+        self.assertEqual(child.entries[0].lineage, ())
+
+    def test_absorbing_itself_is_refused(self):
+        parent = self.parent_with_fork_call()
+        with self.assertRaises(ValueError):
+            parent.absorb(parent, fork_id="f1", fork_seq=1)
+
+    def test_an_unknown_fork_seq_is_refused(self):
+        parent = self.parent_with_fork_call()
+        with self.assertRaises(ValueError):
+            parent.absorb(Ledger(), fork_id="f1", fork_seq=9)
+
+    def test_absorbing_twice_at_one_seq_is_refused(self):
+        """⚠️ Twice would duplicate evidence: every effect would count double."""
+        parent = self.parent_with_fork_call()
+        parent.absorb(Ledger(), fork_id="f1", fork_seq=1)
+        with self.assertRaises(ValueError):
+            parent.absorb(Ledger(), fork_id="f1", fork_seq=1)
+
+    def test_an_empty_fork_id_is_refused(self):
+        parent = self.parent_with_fork_call()
+        with self.assertRaises(ValueError):
+            parent.absorb(Ledger(), fork_id="", fork_seq=1)
+
+    def test_to_json_carries_lineage_and_the_fork_record(self):
+        import json
+
+        class Record:
+            def to_dict(self):
+                return {"fork_id": "f1", "inline_tokens": 10}
+        parent = self.parent_with_fork_call()
+        child = Ledger()
+        child.append(self.entry(0, "write_file"))
+        record = Record()
+        parent.absorb(child, fork_id="f1", fork_seq=1, record=record)
+        rows = json.loads(parent.to_json())
+        self.assertEqual(rows[2]["lineage"], ["f1"])
+        self.assertEqual(rows[0]["lineage"], [])
+        self.assertEqual(rows[1]["fork"], {"fork_id": "f1", "inline_tokens": 10})
+        self.assertNotIn("fork", rows[0])
+        self.assertIs(parent.fork_record(1), record)
+        self.assertIsNone(parent.fork_record(0))
+
+    def test_digest_marks_forked_entries(self):
+        parent = self.parent_with_fork_call()
+        child = Ledger()
+        child.append(self.entry(0, "write_file"))
+        parent.absorb(child, fork_id="f1", fork_seq=1)
+        last = parent.digest().splitlines()[-1]
+        self.assertTrue(last.startswith("2. [fork f1] write_file("), last)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
 

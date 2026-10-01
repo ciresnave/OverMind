@@ -28,6 +28,8 @@ the shape below by a week; read it for the FAM/MCP/PTY edges, not for how a lane
   writes.
 - **`src/overmind/agent.py`** — the loop `lanework.py` drives. Every effect goes through the gate;
   the ledger is the only record consulted afterwards.
+- **`src/overmind/fork.py`** — fork-and-curate: a gated, depth-1 copy of the agent that returns a
+  summary (testimony) and its ledger (evidence).
 - **`src/overmind/mcp_tools.py`** — MCP as an alternative tool source, so an agent can be a
   participant in a fabric rather than a gated script. ⚠️ The gate stays at tool execution; `gate.py`
   is untouched by it. Not currently used by `lanework.py`, which has its own six tools.

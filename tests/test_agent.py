@@ -404,5 +404,84 @@ class TestTruncationStopsTheLoopWithTheRightReason(unittest.TestCase):
         self.assertEqual(run.stop_reason, StopReason.COMPLETED)
 
 
+class TestRunFromHistory(unittest.TestCase):
+    """A fork starts from its parent's messages. ⚠️ It must COPY them: a fork
+    that appended to its parent's list would put its whole transcript into
+    the parent's context, which is the one thing forking exists to prevent."""
+
+    HISTORY = [{"role": "system", "content": "rules"},
+               {"role": "user", "content": "the parent's task"},
+               {"role": "assistant", "content": "working on it"}]
+
+    def test_first_request_is_history_then_the_task(self):
+        client = ScriptedClient([{"role": "assistant", "content": "done"}])
+        gate, ex = build_gate([DenyUnlessDeclared(reversible=frozenset())])
+        run_agent(client, ex, TOOLS, "the sub-task", history=self.HISTORY)
+        self.assertEqual(client.seen[0],
+                         self.HISTORY + [{"role": "user", "content": "the sub-task"}])
+
+    def test_history_is_not_mutated(self):
+        history = [dict(m) for m in self.HISTORY]
+        client = ScriptedClient([{"role": "assistant", "content": "done"}])
+        gate, ex = build_gate([DenyUnlessDeclared(reversible=frozenset())])
+        run_agent(client, ex, TOOLS, "the sub-task", history=history)
+        self.assertEqual(history, self.HISTORY)
+
+    def test_history_with_system_is_refused(self):
+        gate, ex = build_gate([DenyUnlessDeclared(reversible=frozenset())])
+        with self.assertRaises(ValueError):
+            run_agent(ScriptedClient([]), ex, TOOLS, "t", history=self.HISTORY, system="x")
+
+    def test_empty_history_is_refused(self):
+        gate, ex = build_gate([DenyUnlessDeclared(reversible=frozenset())])
+        with self.assertRaises(ValueError):
+            run_agent(ScriptedClient([]), ex, TOOLS, "t", history=[])
+
+    def test_history_in_ledger_mode_is_refused(self):
+        """⚠️ Ledger mode rebuilds the prompt every step, so it would silently
+        discard the history it was given."""
+        gate, ex = build_gate([DenyUnlessDeclared(reversible=frozenset())])
+        for mode in ("ledger", "ledger+closure"):
+            with self.assertRaises(ValueError):
+                run_agent(ScriptedClient([]), ex, TOOLS, "t", history=self.HISTORY,
+                          context_mode=mode)
+
+
+class TestCallUsageIsRecordedPerCall(unittest.TestCase):
+    """The fork's cost model needs each call's usage, not only the sum."""
+
+    def client(self, turns):
+        from overmind.providers import Usage
+
+        class UsageClient:
+            def __init__(self, turns): self.turns = list(turns)
+            def chat(self, messages, tools=None, max_tokens=None, **kw):
+                item = self.turns.pop(0)
+                if isinstance(item, Exception):
+                    raise item
+                msg, (p, c) = item
+                return ChatResult(message=dict(msg), model="m", provider="p", latency_s=0.0,
+                                  usage=Usage(p, c, p + c, reported=True))
+        return UsageClient(turns)
+
+    def test_one_entry_per_call_in_order(self):
+        gate, ex = build_gate([DenyUnlessDeclared(reversible=frozenset({"list_entities"}))],
+                              tools={"list_entities": Spy()})
+        run = run_agent(self.client([(tool_turn("list_entities"), (100, 10)),
+                                     ({"role": "assistant", "content": "done"}, (150, 20))]),
+                        ex, TOOLS, "go")
+        self.assertEqual([(u.prompt_tokens, u.completion_tokens) for u in run.call_usage],
+                         [(100, 10), (150, 20)])
+
+    def test_a_failed_call_adds_no_entry(self):
+        gate, ex = build_gate([DenyUnlessDeclared(reversible=frozenset({"list_entities"}))],
+                              tools={"list_entities": Spy()})
+        run = run_agent(self.client([(tool_turn("list_entities"), (100, 10)),
+                                     RuntimeError("boom")]),
+                        ex, TOOLS, "go")
+        self.assertEqual(run.stop_reason, StopReason.PROVIDER_ERROR)
+        self.assertEqual(len(run.call_usage), 1)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

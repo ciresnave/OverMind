@@ -108,5 +108,88 @@ class TestCurateNow(unittest.TestCase):
             curate_now(ScriptedClient([]), self.MESSAGES + [tool_turn("x")])
 
 
+class TestForkCost(unittest.TestCase):
+    """Worked numbers, so the formula is pinned rather than re-derived.
+    work: 1000+100, 1300+150, 1700+200 -> work 4450, growth 1700+200-1000 = 900.
+    parent: call 0 emitted the fork (1000+50); call 1 prompt 1200.
+    returned = 1200 - 1000 - 50 = 150."""
+
+    def cost(self, **kw):
+        from overmind.fork import ForkCost
+        base = dict(fork_id="f1", time_sensitive=False,
+                    work_calls=(U(1000, 100), U(1300, 150), U(1700, 200)),
+                    curation=U(1900, 80), parent_call_index=0)
+        base.update(kw)
+        return ForkCost(**base)
+
+    def test_few_parent_turns_after_makes_inline_cheaper(self):
+        c = self.cost()
+        c.finalize([U(1000, 50), U(1200, 40), U(1300, 30)])
+        self.assertEqual(c.growth, 900)
+        self.assertEqual(c.returned_tokens, 150)
+        self.assertEqual(c.parent_calls_after, 2)
+        self.assertEqual(c.inline_tokens, 4450 + 900 * 2)            # 6250
+        self.assertEqual(c.fork_tokens, 4450 + 1980 + 150 * 2)       # 6730
+        self.assertEqual(c.cheaper, "inline")
+
+    def test_many_parent_turns_after_makes_the_fork_cheaper(self):
+        c = self.cost()
+        c.finalize([U(1000, 50), U(1200, 40)] + [U(1300, 30)] * 9)
+        self.assertEqual(c.parent_calls_after, 10)
+        self.assertEqual(c.inline_tokens, 4450 + 900 * 10)           # 13450
+        self.assertEqual(c.fork_tokens, 4450 + 1980 + 150 * 10)      # 7930
+        self.assertEqual(c.cheaper, "fork")
+
+    def test_a_fork_that_completed_on_its_own_has_zero_curation(self):
+        c = self.cost(curation=Usage.zero())
+        c.finalize([U(1000, 50), U(1200, 40)])
+        self.assertEqual(c.fork_tokens, 4450 + 0 + 150 * 1)
+
+    def test_unreported_usage_gives_none_not_zero(self):
+        c = self.cost(work_calls=(U(1000, 100), Usage()))
+        c.finalize([U(1000, 50), U(1200, 40)])
+        self.assertIsNone(c.growth)
+        self.assertIsNone(c.inline_tokens)
+        self.assertIsNone(c.fork_tokens)
+        self.assertIsNone(c.cheaper)
+
+    def test_unreported_parent_usage_gives_no_returned_tokens(self):
+        c = self.cost()
+        c.finalize([U(1000, 50), Usage()])
+        self.assertIsNone(c.returned_tokens)
+        self.assertIsNone(c.fork_tokens)
+        self.assertEqual(c.inline_tokens, 4450 + 900 * 1)
+
+    def test_no_parent_call_after_the_fork(self):
+        c = self.cost()
+        c.finalize([U(1000, 50)])
+        self.assertEqual(c.parent_calls_after, 0)
+        self.assertIsNone(c.returned_tokens)
+        self.assertEqual(c.inline_tokens, 4450)
+
+    def test_a_fork_that_never_reached_a_model(self):
+        c = self.cost(work_calls=())
+        c.finalize([U(1000, 50), U(1200, 40)])
+        self.assertIsNone(c.growth)
+        self.assertIsNone(c.inline_tokens)
+
+    def test_not_finalised_means_unknown(self):
+        c = self.cost()
+        self.assertIsNone(c.parent_calls_after)
+        self.assertIsNone(c.inline_tokens)
+
+    def test_to_dict_carries_the_flag_both_arms_and_the_basis(self):
+        c = self.cost(time_sensitive=True, parent_model="m1", fork_model="m1")
+        c.finalize([U(1000, 50), U(1200, 40), U(1300, 30)])
+        d = c.to_dict()
+        self.assertEqual(d["fork_id"], "f1")
+        self.assertIs(d["time_sensitive"], True)
+        self.assertEqual(d["inline_tokens"], 6250)
+        self.assertEqual(d["fork_tokens"], 6730)
+        self.assertEqual(d["cheaper"], "inline")
+        self.assertEqual(d["parent_model"], "m1")
+        self.assertIn("provider-reported", d["basis"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -101,10 +101,9 @@ plaintext it already holds.
 Least privilege (e) limits how much damage a leaked secret can do. It is a procedure for
 CireSnave and the PM when they provision each credential, and no tool can enforce it.
 
-## 4. Measured 2026-10-01 (Task 0 spike, on CireSnave's machine) — PARTIAL
+## 4. Measured 2026-10-01 (Task 0 spike, on CireSnave's machine)
 
-Run from the OverMind lane's Bash tool. 3b and 3c (the Hello dialog) need CireSnave at the
-desktop and are still to do.
+Run from the OverMind lane's Bash tool. 3b and 3c ran with CireSnave at the desktop.
 
 - `windows` crate version: 0.62.2. API changes from the plan's code:
   - `AsyncStatus`, `IAsyncInfo` and `IAsyncOperation` moved out of `windows::Foundation` into the
@@ -115,8 +114,16 @@ desktop and are still to do.
     `cargo add` list).
   - `LocalFree`, `HLOCAL`, `HWND`, `factory` and `CryptProtectData`: no change.
 - DPAPI round trip (3a): `dpapi roundtrip equal: true  blob != plain: true`.
-- Hello availability: `Available` (`UserConsentVerifierAvailability(0)`). Owner window that
-  works: PENDING (3b/3c).
+- Hello availability: `Available` (`UserConsentVerifierAvailability(0)`).
+- Owner window (3b/3c), run from the lane's Bash tool:
+  - 3b `GetForegroundWindow`: a non-null HWND; the dialog appeared; CireSnave approved it, and the
+    result was `Verified` (0).
+  - 3c `GetConsoleWindow`: **null HWND (0x0)**, because the Bash tool has no console window. The
+    dialog still appeared (CireSnave confirmed it); he cancelled it, and the result was `Canceled` (6).
+  - Both work on this machine. **Default: `Foreground`**, because it hands Hello a real owner,
+    while `Console` works only by Hello's tolerance of a null owner.
+  - `cargo test -p with-secret -- --ignored live_hello` (default owner): dialog shown, cancelled,
+    `Denied`: pass.
 - Hook protocol (3d), Claude Code 2.1.287, headless `claude -p` in a scratch dir outside every
   repo; each result read from the session transcript, not from the model's account:
   - (i) `updatedToolOutput` replaces Bash output: **yes, but only in object form.** The string

@@ -66,6 +66,9 @@ C:/Projects/.claude-hooks/with-secret.exe NAME --reason "why, in at least 10 cha
 ```
 
 - Call it from the Bash tool with `timeout: 600000`: the Hello prompt waits up to 9 minutes.
+- ⚠️ From Git Bash, prefix `MSYS_NO_PATHCONV=1` when the command has slash flags such as
+  `cmd /c`. Otherwise MSYS rewrites `/c` to `C:/`, cmd starts interactively and does nothing, and
+  CireSnave approves a command that is not the one you meant (measured on spike day, 2026-10-01).
 - The prompt on CireSnave's screen names the secret, the lane, the command, the reason and when
   the approval would expire. Nothing is released until he approves.
 - The secret is set as `VAR` in that one child's environment and nowhere else. The child's stdout

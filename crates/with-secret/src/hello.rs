@@ -8,8 +8,8 @@ use crate::consent::{Consent, ConsentOutcome};
 
 #[derive(Clone, Copy, Debug, Default)]
 pub enum Owner {
-    // ⚠️ The default is set from Task 0's measurement (WITH-SECRET-DESIGN.md
-    // §4). PENDING: 3b/3c have not run yet; confirm or move it on spike day.
+    // ⚠️ Set from Task 0's measurement (WITH-SECRET-DESIGN.md §4): both owners
+    // showed the dialog, but from a lane's Bash tool GetConsoleWindow is null.
     #[default]
     Foreground,
     Console,

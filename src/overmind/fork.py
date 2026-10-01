@@ -20,9 +20,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
+from .agent import AgentRun, StopReason, _tool_result_message, run_agent
+from .gate import FactSource, ForbidTools, Gate, GatedExecutor, Ledger, Policy
 from .providers import Usage
 
-__all__ = ["CURATE_INSTRUCTION", "Curation", "ForkCost", "curate_now"]
+__all__ = ["CURATE_INSTRUCTION", "Curation", "FORK_TOOL", "ForkConfig", "ForkCost",
+           "ForkFacts", "ForkResult", "curate_now", "fork_schema", "run_fork"]
 
 #: ⚠️ "State results, not steps": the harness hands the parent the fork's
 #: ledger separately, so a narrative of what was run is redundant at best and
@@ -186,3 +189,142 @@ class ForkCost:
             "basis": "provider-reported tokens; not dollars; not net of provider-side "
                      "prompt caching; returned_tokens is an upper bound",
         }
+
+
+FORK_TOOL = "fork"
+
+#: Appended to the fork's task. ⚠️ The fork's FINAL message is its summary, so
+#: it is asked for up front; `curate_now` covers a fork that never gets there.
+FORK_BRIEF_TAIL = (
+    "When the sub-task is done, reply in plain text with no tool call. That reply "
+    "is all the agent that forked you will read of your work besides your "
+    "execution ledger: say what you found, what you changed and what is "
+    "unfinished. Do not retell your steps.")
+
+NOT_RUN = ("NOT RUN: the agent that forked you will make this call after you "
+           "return. Do not make it yourself.")
+
+
+def fork_schema() -> dict[str, Any]:
+    return {"type": "function", "function": {
+        "name": FORK_TOOL,
+        "description": (
+            "Run a self-contained sub-task in a copy of yourself. The copy sees this "
+            "whole conversation, does the work, and returns only a curated summary "
+            "plus its execution ledger, so the sub-task's exploration does not fill "
+            "your own context. Use it for work whose intermediate output you will "
+            "not need."),
+        "parameters": {"type": "object",
+                       "properties": {"task": {"type": "string", "description":
+                                               "What the copy must do and report back."}},
+                       "required": ["task"]}}}
+
+
+@dataclass(frozen=True)
+class ForkConfig:
+    max_steps: int = 8
+    max_tokens: int | None = None
+    #: ⚠️ ADDED to the parent's policies, never instead of them. Any denial wins
+    #: (gate.Gate), so adding a policy can only take capability away.
+    extra_policies: tuple[Policy, ...] = ()
+
+
+class ForkFacts:
+    """The parent's facts, with the fork's own executed tools appended.
+
+    ⚠️ ONLY WHERE THE PARENT ALREADY REPORTS `executed_tools`. A parent that
+    does not wire its ledger into its facts can never satisfy a
+    RequirePrecondition; filling the gap from the fork's ledger would make the
+    fork stronger than its parent.
+    """
+
+    def __init__(self, parent: FactSource, child: Ledger) -> None:
+        self._parent = parent
+        self._child = child
+
+    def fact(self, key: str, **params: Any) -> Any:
+        value = self._parent.fact(key, **params)
+        if key == "executed_tools" and value is not None:
+            return tuple(value) + self._child.executed_tools()
+        return value
+
+
+@dataclass
+class ForkResult:
+    fork_id: str
+    run: AgentRun
+    #: ⚠️ TESTIMONY. `run.ledger` is the evidence.
+    summary: str
+    curated_by: str            # "completion" | "curate_now" | "none"
+    cost: ForkCost
+
+    def __str__(self) -> str:
+        """What the PARENT MODEL reads as the fork call's result: the summary
+        AND the ledger, each labelled for what it is."""
+        nl = chr(10)
+        return nl.join([
+            f"[fork {self.fork_id} ended: {self.run.stop_reason}; "
+            f"summary from {self.curated_by}]",
+            "Summary (the fork's own account - testimony):",
+            self.summary or "(no summary)",
+            "",
+            "Execution ledger (what actually ran - evidence):",
+            self.run.ledger.digest(),
+        ])
+
+    def __repr__(self) -> str:
+        # ⚠️ The parent ledger stores repr(result)[:500]; keep the evidence in
+        # the absorbed entries, not in a truncated blob.
+        return (f"ForkResult({self.fork_id!r}, stop={self.run.stop_reason!r}, "
+                f"curated_by={self.curated_by!r}, "
+                f"executed={list(self.run.executed_tools)!r})")
+
+
+def run_fork(client: Any, parent_executor: GatedExecutor,
+             tools: Sequence[Mapping[str, Any]], *,
+             history: Sequence[Mapping[str, Any]], fork_call_id: str,
+             pending: Sequence[tuple[str, str]], task: str, fork_id: str,
+             config: ForkConfig, time_sensitive: bool, parent_call_index: int,
+             parent_model: str | None) -> ForkResult:
+    """Run one fork to its end and curate it. Writes nothing to the parent's
+    ledger - the caller absorbs `result.run.ledger` once the fork call has its
+    own seq there.
+
+    ⚠️ THE FORK IS OFFERED THE PARENT'S TOOL LIST UNCHANGED, `fork` INCLUDED.
+    The schemas are part of the rendered prompt; removing one would change the
+    prefix the fork shares with its parent and defeat prefix caching, which is
+    the efficiency case for forking at all. Depth 1 is enforced by the gate
+    refusing `fork`, not by hiding it.
+    """
+    child_ledger = Ledger()
+    gate = Gate([*parent_executor.gate.policies, *config.extra_policies,
+                 ForbidTools(frozenset({FORK_TOOL}),
+                             reason="a fork cannot fork (depth limit 1)")],
+                facts=ForkFacts(parent_executor.gate.facts, child_ledger),
+                ledger=child_ledger)
+    executor = GatedExecutor(gate, {k: v for k, v in parent_executor.tools.items()
+                                    if k != FORK_TOOL})
+
+    seed = [dict(m) for m in history]
+    seed.append(_tool_result_message(fork_call_id, FORK_TOOL,
+                                     f"Forked as {fork_id}. You are now the fork; "
+                                     f"your instructions follow."))
+    for call_id, name in pending:
+        seed.append(_tool_result_message(call_id, name, NOT_RUN))
+
+    run = run_agent(client, executor, tools, f"{task}\n\n{FORK_BRIEF_TAIL}",
+                    history=seed, max_steps=config.max_steps,
+                    max_tokens=config.max_tokens)
+
+    if run.stop_reason == StopReason.COMPLETED:
+        summary, curated_by, curation = run.final_text, "completion", Usage.zero()
+    else:
+        cur = curate_now(client, run.messages, tools=tools, max_tokens=config.max_tokens)
+        summary, curation = cur.text, cur.usage
+        curated_by = "curate_now" if cur.error is None and cur.text else "none"
+
+    cost = ForkCost(fork_id=fork_id, time_sensitive=time_sensitive,
+                    work_calls=tuple(run.call_usage), curation=curation,
+                    parent_call_index=parent_call_index,
+                    parent_model=parent_model, fork_model=run.model)
+    return ForkResult(fork_id, run, summary, curated_by, cost)

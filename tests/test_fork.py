@@ -191,5 +191,201 @@ class TestForkCost(unittest.TestCase):
         self.assertIn("provider-reported", d["basis"])
 
 
+def gate_and_executor(reversible, tools=None, facts=None, extra=()):
+    from overmind.gate import DenyUnlessDeclared, Gate, GatedExecutor, Ledger
+    gate = Gate([*extra, DenyUnlessDeclared(reversible=frozenset(reversible))],
+                facts=facts, ledger=Ledger())
+    return GatedExecutor(gate, tools or {})
+
+
+class Spy:
+    def __init__(self, result="ok"):
+        self.calls = []
+        self.result = result
+
+    def __call__(self, **kw):
+        self.calls.append(kw)
+        return self.result
+
+
+TOOLS = [
+    {"type": "function", "function": {"name": "write_file", "description": "w",
+     "parameters": {"type": "object", "properties": {"path": {"type": "string"}}}}},
+    {"type": "function", "function": {"name": "list_entities", "description": "l",
+     "parameters": {"type": "object", "properties": {}}}},
+]
+
+HISTORY = [{"role": "system", "content": "rules"},
+           {"role": "user", "content": "the parent's task"},
+           tool_turn("fork", '{"task": "investigate"}', call_id="cF")]
+
+
+def fork(client, executor, *, tools=None, pending=(), config=None, task="investigate"):
+    from overmind.fork import ForkConfig, fork_schema, run_fork
+    return run_fork(client, executor, tools if tools is not None else TOOLS + [fork_schema()],
+                    history=HISTORY, fork_call_id="cF", pending=pending, task=task,
+                    fork_id="f1", config=config or ForkConfig(), time_sensitive=False,
+                    parent_call_index=0, parent_model="scripted")
+
+
+class TestRunFork(unittest.TestCase):
+    def setUp(self):
+        self.write = Spy("written")
+        self.ex = gate_and_executor({"write_file", "list_entities", "fork"},
+                                    tools={"write_file": self.write})
+
+    def test_seed_is_parent_history_then_fork_result_then_the_task(self):
+        client = ScriptedClient([{"role": "assistant", "content": "S"}])
+        fork(client, self.ex, task="investigate X")
+        first = client.seen[0]
+        self.assertEqual(first[:3], HISTORY)
+        self.assertEqual(first[3]["role"], "tool")
+        self.assertEqual(first[3]["tool_call_id"], "cF")
+        self.assertEqual(first[-1]["role"], "user")
+        self.assertTrue(first[-1]["content"].startswith("investigate X"))
+
+    def test_fork_sees_the_same_tools_as_the_parent(self):
+        from overmind.fork import fork_schema
+        client = ScriptedClient([{"role": "assistant", "content": "S"}])
+        offered = TOOLS + [fork_schema()]
+        fork(client, self.ex, tools=offered)
+        self.assertEqual(client.seen_tools[0], offered)
+
+    def test_a_completed_fork_curates_itself(self):
+        client = ScriptedClient([tool_turn("write_file", '{"path": "a"}'),
+                                 {"role": "assistant", "content": "wrote a"}])
+        res = fork(client, self.ex)
+        self.assertEqual(res.summary, "wrote a")
+        self.assertEqual(res.curated_by, "completion")
+        self.assertEqual(self.write.calls, [{"path": "a"}])
+        self.assertTrue(res.run.did("write_file"))
+
+    def test_the_parent_ledger_is_untouched(self):
+        """Absorbing is the caller's job (execute_fork), after the fork call
+        itself has its own seq on the parent's ledger."""
+        client = ScriptedClient([tool_turn("write_file", '{"path": "a"}'),
+                                 {"role": "assistant", "content": "wrote a"}])
+        fork(client, self.ex)
+        self.assertEqual(len(self.ex.gate.ledger), 0)
+
+    def test_a_fork_that_runs_out_of_steps_is_asked_to_curate(self):
+        from overmind.fork import CURATE_INSTRUCTION, ForkConfig
+        client = ScriptedClient([tool_turn("write_file", '{"path": "a"}', "c1"),
+                                 tool_turn("write_file", '{"path": "b"}', "c2"),
+                                 {"role": "assistant", "content": "interim: a and b"}])
+        res = fork(client, self.ex, config=ForkConfig(max_steps=2))
+        self.assertEqual(res.run.stop_reason, "max-steps")
+        self.assertEqual(client.seen[-1][-1], {"role": "user", "content": CURATE_INSTRUCTION})
+        self.assertEqual(res.summary, "interim: a and b")
+        self.assertEqual(res.curated_by, "curate_now")
+
+    def test_provider_failure_mid_fork_keeps_the_evidence(self):
+        client = ScriptedClient([tool_turn("write_file", '{"path": "a"}'),
+                                 RuntimeError("down"), RuntimeError("still down")])
+        res = fork(client, self.ex)
+        self.assertEqual(res.run.stop_reason, "provider-error")
+        self.assertEqual(res.curated_by, "none")
+        self.assertEqual(res.summary, "")
+        self.assertTrue(res.run.did("write_file"), "the effect that DID run was lost")
+
+    def test_a_fork_cannot_fork(self):
+        client = ScriptedClient([tool_turn("fork", '{"task": "deeper"}'),
+                                 {"role": "assistant", "content": "S"}])
+        res = fork(client, self.ex)
+        denied = res.run.ledger.denied()
+        self.assertEqual([e.call.name for e in denied], ["fork"])
+        self.assertEqual(denied[0].decision.policy, "forbid-tools")
+        self.assertEqual(len(client.seen), 2, "a nested fork reached a model")
+
+    def test_extra_policies_only_take_away(self):
+        from overmind.fork import ForkConfig
+        from overmind.gate import ForbidTools
+        client = ScriptedClient([tool_turn("write_file", '{"path": "a"}'),
+                                 {"role": "assistant", "content": "S"}])
+        res = fork(client, self.ex, config=ForkConfig(
+            extra_policies=(ForbidTools(frozenset({"write_file"})),)))
+        self.assertEqual(self.write.calls, [])
+        self.assertFalse(res.run.did("write_file"))
+
+    def test_the_parents_policies_still_bind_the_fork(self):
+        from overmind.gate import ForbidTools
+        ex = gate_and_executor({"write_file", "fork"}, tools={"write_file": self.write},
+                               extra=(ForbidTools(frozenset({"write_file"})),))
+        client = ScriptedClient([tool_turn("write_file", '{"path": "a"}'),
+                                 {"role": "assistant", "content": "S"}])
+        fork(client, ex)
+        self.assertEqual(self.write.calls, [])
+
+    def test_calls_after_fork_in_the_same_turn_get_not_run_placeholders(self):
+        client = ScriptedClient([{"role": "assistant", "content": "S"}])
+        fork(client, self.ex, pending=[("c9", "list_entities")])
+        first = client.seen[0]
+        placeholder = first[4]
+        self.assertEqual(placeholder["tool_call_id"], "c9")
+        self.assertIn("NOT RUN", placeholder["content"])
+
+    def test_cost_is_recorded_unfinalised(self):
+        client = ScriptedClient([({"role": "assistant", "content": "S"}, U(500, 20))])
+        res = fork(client, self.ex)
+        self.assertEqual(res.cost.fork_id, "f1")
+        self.assertEqual([u.total_tokens for u in res.cost.work_calls], [520])
+        self.assertTrue(res.cost.curation.reported)
+        self.assertEqual(res.cost.curation.total_tokens, 0)
+        self.assertIsNone(res.cost.parent_calls_after)
+        self.assertEqual(res.cost.fork_model, "scripted")
+
+    def test_str_shows_summary_and_ledger_labelled(self):
+        client = ScriptedClient([tool_turn("write_file", '{"path": "a"}'),
+                                 {"role": "assistant", "content": "wrote a"}])
+        text = str(fork(client, self.ex))
+        self.assertIn("testimony", text)
+        self.assertIn("evidence", text)
+        self.assertIn("wrote a", text)
+        self.assertIn("write_file(path='a') -> OK", text)
+
+
+class TestForkFacts(unittest.TestCase):
+    def ledger_with(self, *names):
+        from overmind.gate import Decision, Ledger, LedgerEntry, ToolCall
+        ledger = Ledger()
+        for i, n in enumerate(names):
+            ledger.append(LedgerEntry(i, ToolCall(name=n), Decision.allow(), executed=True))
+        return ledger
+
+    def test_executed_tools_is_parent_then_child(self):
+        from overmind.fork import ForkFacts
+        from overmind.gate import StaticFacts
+        parent = StaticFacts({"executed_tools": ("list_entities",)})
+        facts = ForkFacts(parent, self.ledger_with("write_file"))
+        self.assertEqual(facts.fact("executed_tools"), ("list_entities", "write_file"))
+
+    def test_no_escalation_when_parent_does_not_wire_executed_tools(self):
+        """⚠️ A parent whose facts never report executed_tools can never
+        satisfy RequirePrecondition. Its fork must not gain that power from
+        its own ledger - that would make the fork stronger than its parent."""
+        from overmind.fork import ForkFacts
+        from overmind.gate import StaticFacts
+        facts = ForkFacts(StaticFacts(), self.ledger_with("list_entities"))
+        self.assertIsNone(facts.fact("executed_tools"))
+
+    def test_other_facts_pass_through(self):
+        from overmind.fork import ForkFacts
+        from overmind.gate import StaticFacts
+        facts = ForkFacts(StaticFacts({"sender_vouched": True}), self.ledger_with())
+        self.assertIs(facts.fact("sender_vouched"), True)
+
+    def test_a_precondition_met_in_the_parent_holds_in_the_fork(self):
+        from overmind.fork import ForkFacts
+        from overmind.gate import (DenyUnlessDeclared, Gate, GatedExecutor, Ledger,
+                                   RequirePrecondition, StaticFacts)
+        child = Ledger()
+        gate = Gate([RequirePrecondition(tool="write_file", requires="list_entities"),
+                     DenyUnlessDeclared(reversible=frozenset({"write_file"}))],
+                    facts=ForkFacts(StaticFacts({"executed_tools": ("list_entities",)}), child),
+                    ledger=child)
+        out = GatedExecutor(gate, {"write_file": Spy()}).execute("write_file", {"path": "a"})
+        self.assertTrue(out.executed)
+
+
 if __name__ == "__main__":
     unittest.main()

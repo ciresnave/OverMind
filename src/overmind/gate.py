@@ -122,6 +122,25 @@ class StaticFacts:
         return self._values.get(key)
 
 
+class LedgerFacts:
+    """`executed_tools` read LIVE from a ledger; every other fact from `base`.
+
+    ⚠️ THE ONLY SOURCE A FORK MAY EXTEND (fork.ForkFacts). A static
+    `executed_tools` never grows, so its holder can never newly satisfy a
+    RequirePrecondition; a fork that appended its own ledger to one would gain
+    a power its parent lacks. This type is how a parent says "mine grows".
+    """
+
+    def __init__(self, ledger: "Ledger", base: FactSource | None = None) -> None:
+        self._ledger = ledger
+        self._base = base
+
+    def fact(self, key: str, **params: Any) -> Any:
+        if key == "executed_tools":
+            return self._ledger.executed_tools()
+        return None if self._base is None else self._base.fact(key, **params)
+
+
 # --------------------------------------------------------------------------- #
 # Policies
 # --------------------------------------------------------------------------- #

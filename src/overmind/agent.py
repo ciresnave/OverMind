@@ -57,6 +57,9 @@ class StopReason:
     MAX_STEPS = "max-steps"
     PROTOCOL_FAILURE = "protocol-failure"   # smuggled tool calls, twice
     PROVIDER_ERROR = "provider-error"
+    #: Something INSIDE the loop raised (a policy, a fact source). Only a fork
+    #: reports it: a fork's ledger must survive to be absorbed (fork.run_fork).
+    HARNESS_ERROR = "harness-error"
     NO_PROGRESS = "no-progress"             # same call repeated, twice over
     #: 🔴 The reply was CUT OFF by the output budget, not finished. Measured
     #: three times on three models, each time read as the model being unable or
@@ -453,6 +456,9 @@ def run_agent(client: ProviderClient, executor: GatedExecutor,
                     fork_id=f"f{len(forks) + 1}")
                 if forked is not None:
                     forks.append(forked)
+                    # ⚠️ The fork's calls are this run's spend; `call_usage`
+                    # stays this loop's own calls, which the cost model needs.
+                    spent = spent + forked.run.usage + forked.cost.curation
             else:
                 outcome = executor.execute(name, args, actor=actor)
             content = outcome.as_tool_content()

@@ -354,10 +354,33 @@ class TestForkFacts(unittest.TestCase):
 
     def test_executed_tools_is_parent_then_child(self):
         from overmind.fork import ForkFacts
-        from overmind.gate import StaticFacts
-        parent = StaticFacts({"executed_tools": ("list_entities",)})
+        from overmind.gate import LedgerFacts
+        parent = LedgerFacts(self.ledger_with("list_entities"))
         facts = ForkFacts(parent, self.ledger_with("write_file"))
         self.assertEqual(facts.fact("executed_tools"), ("list_entities", "write_file"))
+
+    def test_no_escalation_when_parent_executed_tools_is_static(self):
+        """⚠️ A STATIC executed_tools never grows, so a parent holding one can
+        never newly satisfy a RequirePrecondition. Appending the fork's own
+        ledger to it would let the fork do what its parent cannot."""
+        from overmind.fork import ForkFacts
+        from overmind.gate import StaticFacts
+        facts = ForkFacts(StaticFacts({"executed_tools": ()}), self.ledger_with("list_entities"))
+        self.assertEqual(facts.fact("executed_tools"), ())
+
+    def test_a_static_parent_precondition_still_binds_the_fork(self):
+        from overmind.gate import RequirePrecondition, StaticFacts
+        write = Spy()
+        ex = gate_and_executor({"write_file", "list_entities", "fork"},
+                               tools={"write_file": write, "list_entities": Spy()},
+                               facts=StaticFacts({"executed_tools": ()}),
+                               extra=(RequirePrecondition(tool="write_file",
+                                                          requires="list_entities"),))
+        client = ScriptedClient([tool_turn("list_entities", call_id="k1"),
+                                 tool_turn("write_file", '{"path": "f"}', "k2"),
+                                 {"role": "assistant", "content": "S"}])
+        fork(client, ex)
+        self.assertEqual(write.calls, [], "the fork escaped a precondition its parent cannot meet")
 
     def test_no_escalation_when_parent_does_not_wire_executed_tools(self):
         """⚠️ A parent whose facts never report executed_tools can never
@@ -514,6 +537,53 @@ class TestForkInTheAgentLoop(unittest.TestCase):
         ex = gate_and_executor({"fork"}, tools={"fork": Spy()})
         with self.assertRaises(ValueError):
             run_agent(ScriptedClient([]), ex, TOOLS, "t", fork=ForkConfig())
+
+    def test_an_unexpected_exception_in_the_fork_keeps_the_evidence(self):
+        """⚠️ Not a provider error: a policy (or fact source, or anything else
+        inside the child loop) raising. The write that already ran must still
+        reach the parent's ledger - the summary is lost, the evidence is not."""
+        from overmind.agent import run_agent
+        from overmind.fork import ForkConfig
+        from overmind.gate import DenyUnlessDeclared, Gate, GatedExecutor, Ledger
+
+        class Boom:
+            name = "boom"
+
+            def applies_to(self, call):
+                return call.name == "list_entities"
+
+            def decide(self, call, facts):
+                raise RuntimeError("policy bug")
+
+        gate = Gate([Boom(), DenyUnlessDeclared(reversible=frozenset(
+            {"write_file", "list_entities", "fork"}))], ledger=Ledger())
+        ex = GatedExecutor(gate, {"write_file": self.write, "list_entities": self.listing})
+        client = ScriptedClient([tool_turn("fork", '{"task": "w"}', "cF"),
+                                 tool_turn("write_file", '{"path": "a"}', "k1"),
+                                 tool_turn("list_entities", call_id="k2"),
+                                 {"role": "assistant", "content": "parent done"}])
+        run = run_agent(client, ex, TOOLS, "t", fork=ForkConfig())
+        self.assertEqual(self.write.calls, [{"path": "a"}])
+        self.assertIn(("write_file", ("f1",)),
+                      [(e.call.name, e.lineage) for e in run.ledger.entries])
+        self.assertTrue(run.did("write_file"))
+        self.assertEqual(run.forks[0].curated_by, "none")
+        self.assertIn("policy bug", run.forks[0].run.error)
+
+    def test_parent_usage_includes_fork_spend(self):
+        """`AgentRun.usage` is what the run COST. A fork's calls are the
+        parent's spend; `call_usage` stays the parent's own calls (the cost
+        model needs that shape)."""
+        turns = [
+            (tool_turn("fork", '{"task": "write a"}', "cF"), U(1000, 50)),
+            (tool_turn("write_file", '{"path": "a"}', "k1"), U(1100, 60)),
+            ({"role": "assistant", "content": "wrote a"}, U(1300, 40)),
+            ({"role": "assistant", "content": "parent done"}, U(1200, 10)),
+        ]
+        run = self.run_parent(turns)
+        self.assertEqual(run.usage.total_tokens, 1050 + 1160 + 1340 + 1210)
+        self.assertTrue(run.usage.reported)
+        self.assertEqual([u.total_tokens for u in run.call_usage], [1050, 1210])
 
     def test_two_forks_get_distinct_ids(self):
         run = self.run_parent([

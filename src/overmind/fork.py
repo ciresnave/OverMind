@@ -21,8 +21,8 @@ from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
 from .agent import AgentRun, StopReason, _tool_result_message, run_agent
-from .gate import (FactSource, ForbidTools, Gate, GatedExecutor, Ledger, Policy,
-                   ToolOutcome)
+from .gate import (FactSource, ForbidTools, Gate, GatedExecutor, Ledger, LedgerFacts,
+                   Policy, ToolOutcome)
 from .providers import Usage
 
 __all__ = ["CURATE_INSTRUCTION", "Curation", "FORK_TOOL", "ForkConfig", "ForkCost",
@@ -234,10 +234,11 @@ class ForkConfig:
 class ForkFacts:
     """The parent's facts, with the fork's own executed tools appended.
 
-    ⚠️ ONLY WHERE THE PARENT ALREADY REPORTS `executed_tools`. A parent that
-    does not wire its ledger into its facts can never satisfy a
-    RequirePrecondition; filling the gap from the fork's ledger would make the
-    fork stronger than its parent.
+    ⚠️ ONLY WHERE THE PARENT'S `executed_tools` IS LIVE (gate.LedgerFacts). A
+    parent that reports none, or a static tuple, can never newly satisfy a
+    RequirePrecondition; extending its answer from the fork's ledger would make
+    the fork stronger than its parent. Checking `is not None` alone let a
+    static `()` through - found in the final review.
     """
 
     def __init__(self, parent: FactSource, child: Ledger) -> None:
@@ -246,7 +247,7 @@ class ForkFacts:
 
     def fact(self, key: str, **params: Any) -> Any:
         value = self._parent.fact(key, **params)
-        if key == "executed_tools" and value is not None:
+        if key == "executed_tools" and isinstance(self._parent, LedgerFacts):
             return tuple(value) + self._child.executed_tools()
         return value
 
@@ -314,12 +315,24 @@ def run_fork(client: Any, parent_executor: GatedExecutor,
     for call_id, name in pending:
         seed.append(_tool_result_message(call_id, name, NOT_RUN))
 
-    run = run_agent(client, executor, tools, f"{task}\n\n{FORK_BRIEF_TAIL}",
-                    history=seed, max_steps=config.max_steps,
-                    max_tokens=config.max_tokens)
+    try:
+        run = run_agent(client, executor, tools, f"{task}\n\n{FORK_BRIEF_TAIL}",
+                        history=seed, max_steps=config.max_steps,
+                        max_tokens=config.max_tokens)
+    except Exception as exc:                       # noqa: BLE001 - reported, not hidden
+        # ⚠️ THE EVIDENCE OUTLIVES THE LOOP. Effects already in `child_ledger`
+        # happened; letting this propagate would leave the parent recording
+        # only "fork -> ERROR" and understating what was done. The transcript
+        # and per-call usage died with the loop, so there is nothing to curate
+        # and the spend is unknown (Usage() is reported=False), not zero.
+        run = AgentRun(final_text="", stop_reason=StopReason.HARNESS_ERROR, steps=0,
+                       ledger=child_ledger, messages=seed, usage=Usage(),
+                       error=f"{type(exc).__name__}: {exc}")
 
     if run.stop_reason == StopReason.COMPLETED:
         summary, curated_by, curation = run.final_text, "completion", Usage.zero()
+    elif run.stop_reason == StopReason.HARNESS_ERROR:
+        summary, curated_by, curation = "", "none", Usage.zero()
     else:
         cur = curate_now(client, run.messages, tools=tools, max_tokens=config.max_tokens)
         summary, curation = cur.text, cur.usage

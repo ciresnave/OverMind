@@ -2,7 +2,7 @@
 //! Windows Hello consent - design §2.2. ⚠️ The ONE approval channel no agent
 //! can answer: it needs CireSnave's PIN or biometric at the desktop.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crate::consent::{Consent, ConsentOutcome};
 
@@ -36,6 +36,7 @@ fn ask_windows(
     prompt: &str,
     wait: Duration,
 ) -> windows::core::Result<ConsentOutcome> {
+    use std::time::Instant;
     use windows::core::{factory, Interface, HSTRING};
     use windows::Security::Credentials::UI::{
         UserConsentVerificationResult as R, UserConsentVerifier, UserConsentVerifierAvailability,

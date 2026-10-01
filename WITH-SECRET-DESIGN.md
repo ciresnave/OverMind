@@ -92,6 +92,42 @@ plaintext it already holds.
   protect against other processes running as this same user.
 - Masking finds exact matches only. A value that has been transformed in any way (URL-encoded,
   split, base64-encoded) passes through.
+- An approval covers its secret for the whole window, not one command. Until the window ends,
+  the approved requester can run other commands with the same secret. Per-command scoping was
+  considered and declined by the PM on 2026-10-01; the Hello prompt (naming the command and
+  reason) and a short `--window-mins` are the controls. This is an accepted limit.
 
 Least privilege (e) limits how much damage a leaked secret can do. It is a procedure for
 CireSnave and the PM when they provision each credential, and no tool can enforce it.
+
+## 4. Measured 2026-10-01 (Task 0 spike, on CireSnave's machine) — PARTIAL
+
+Run from the OverMind lane's Bash tool. 3b and 3c (the Hello dialog) need CireSnave at the
+desktop and are still to do.
+
+- `windows` crate version: 0.62.2. API changes from the plan's code:
+  - `AsyncStatus`, `IAsyncInfo` and `IAsyncOperation` moved out of `windows::Foundation` into the
+    `windows-future` crate, which `windows` does not re-export. Added `windows-future = "0.3.2"`
+    as a direct dependency; it must stay the version `windows` itself uses, or the types differ.
+  - The blocking wait is `.join()`, not `.get()`.
+  - `GetConsoleWindow` needs the `windows` feature `Win32_System_Console` (missing from the plan's
+    `cargo add` list).
+  - `LocalFree`, `HLOCAL`, `HWND`, `factory` and `CryptProtectData`: no change.
+- DPAPI round trip (3a): `dpapi roundtrip equal: true  blob != plain: true`.
+- Hello availability: `Available` (`UserConsentVerifierAvailability(0)`). Owner window that
+  works: PENDING (3b/3c).
+- Hook protocol (3d), Claude Code 2.1.287, headless `claude -p` in a scratch dir outside every
+  repo; each result read from the session transcript, not from the model's account:
+  - (i) `updatedToolOutput` replaces Bash output: **yes, but only in object form.** The string
+    form (`"REPLACED"`) was ignored: the hook ran, and the tool result stayed `hello`.
+  - (ii) Result field: `tool_response`, an object:
+    `{"stdout":"hello","stderr":"","interrupted":false,"isImage":false,"noOutputExpected":false}`.
+  - (iii) `updatedToolOutput` accepts: **object only** for Bash, in the shape
+    `{"stdout":..,"stderr":..,"interrupted":..,"isImage":..}`. With it, the model's tool result
+    AND the transcript's `toolUseResult` both held the replacement. The raw value did not appear
+    in that transcript (control: the same search finds it in the string-form run's transcript).
+  - (iv) PreToolUse JSON deny: works. The call was blocked, and the model saw
+    `PreToolUse:Bash hook error: spike deny`.
+  - Consequence for Task 8: `post-tool-use` must emit the object form, copying `tool_response`
+    and masking `stdout` and `stderr`. The hook's own stdin carries the raw output, so the hook
+    must never log its input.

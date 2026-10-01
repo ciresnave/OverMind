@@ -910,6 +910,7 @@ dependencies = [
  "sha2",
  "tempfile",
  "windows",
+ "windows-future",
  "windows-sys",
 ]
 

@@ -4,6 +4,7 @@
 //! except the one child `with-secret` starts.
 
 use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
@@ -83,15 +84,71 @@ pub trait Protector {
     fn unprotect(&self, blob: &[u8]) -> Result<Vec<u8>, String>;
 }
 
+pub const VAULT_FILE: &str = "vault.bin";
+pub const MASKS_FILE: &str = "masks.json";
+pub const KEY_FILE: &str = "approvals.key";
+pub const APPROVALS_FILE: &str = "approvals.json";
+pub const AUDIT_FILE: &str = "access.log";
+
+pub fn default_dir() -> Result<PathBuf, String> {
+    let base = std::env::var_os("LOCALAPPDATA").ok_or("LOCALAPPDATA is not set")?;
+    Ok(PathBuf::from(base).join("OverMind").join("with-secret"))
+}
+
 /// Write via a sibling temp file and rename, so a crash never leaves a
 /// half-written vault - which `load` would then refuse.
-///
-/// Pulled forward from plan Task 2 (verbatim) because `approval.rs` (Task 5)
-/// needs it; Task 2 adds `VaultStore` and the file-name constants around it.
-pub(crate) fn write_atomic(path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
+pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let tmp = path.with_extension("tmp");
     std::fs::write(&tmp, bytes).map_err(|e| format!("write {}: {e}", tmp.display()))?;
     std::fs::rename(&tmp, path).map_err(|e| format!("rename to {}: {e}", path.display()))
+}
+
+pub struct VaultStore<P: Protector> {
+    pub dir: PathBuf,
+    pub protector: P,
+}
+
+impl<P: Protector> VaultStore<P> {
+    pub fn load(&self) -> Result<Vault, String> {
+        let path = self.dir.join(VAULT_FILE);
+        let blob = match std::fs::read(&path) {
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vault::default()),
+            Err(e) => return Err(format!("read {}: {e}", path.display())),
+        };
+        let plain = self
+            .protector
+            .unprotect(&blob)
+            .map_err(|e| format!("the vault exists but cannot be decrypted: {e}"))?;
+        serde_json::from_slice(&plain)
+            .map_err(|e| format!("the vault decrypted but is not valid: {e}"))
+    }
+
+    /// `masks` is the already-serialised `masks.json` (`mask::masks_json`), so
+    /// this module never depends on `mask.rs`.
+    pub fn save(&self, vault: &Vault, masks: Vec<u8>) -> Result<(), String> {
+        std::fs::create_dir_all(&self.dir)
+            .map_err(|e| format!("create {}: {e}", self.dir.display()))?;
+        let plain = serde_json::to_vec(vault).map_err(|e| e.to_string())?;
+        let blob = self.protector.protect(&plain)?;
+        write_atomic(&self.dir.join(VAULT_FILE), &blob)?;
+        write_atomic(&self.dir.join(MASKS_FILE), &masks)
+    }
+
+    pub fn approval_key(&self) -> Result<Vec<u8>, String> {
+        let path = self.dir.join(KEY_FILE);
+        match std::fs::read(&path) {
+            Ok(blob) => self.protector.unprotect(&blob),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                std::fs::create_dir_all(&self.dir).map_err(|e| e.to_string())?;
+                let mut key = vec![0u8; 32];
+                getrandom::fill(&mut key).map_err(|e| format!("random key: {e}"))?;
+                write_atomic(&path, &self.protector.protect(&key)?)?;
+                Ok(key)
+            }
+            Err(e) => Err(format!("read {}: {e}", path.display())),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -158,5 +215,80 @@ mod tests {
         let back: Vault = serde_json::from_slice(&serde_json::to_vec(&v).unwrap()).unwrap();
         assert_eq!(back.secrets["TJ_DB"].value, "postgres://x:yyyyyyyyyyyy@h/d");
         assert_eq!(back.secrets["TJ_DB"].access, Access::Read);
+    }
+
+    /// Reversible, keyed, and NOT identity - so a test can tell "stored
+    /// protected" from "stored plain". Not security; DPAPI is the real one.
+    struct XorProtector(u8);
+    impl Protector for XorProtector {
+        fn protect(&self, p: &[u8]) -> Result<Vec<u8>, String> {
+            Ok(p.iter().map(|b| b ^ self.0).collect())
+        }
+        fn unprotect(&self, b: &[u8]) -> Result<Vec<u8>, String> {
+            Ok(b.iter().map(|x| x ^ self.0).collect())
+        }
+    }
+    struct FailingProtector;
+    impl Protector for FailingProtector {
+        fn protect(&self, _: &[u8]) -> Result<Vec<u8>, String> {
+            Err("no".into())
+        }
+        fn unprotect(&self, _: &[u8]) -> Result<Vec<u8>, String> {
+            Err("cannot decrypt".into())
+        }
+    }
+
+    #[test]
+    fn missing_vault_is_empty_not_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = VaultStore {
+            dir: dir.path().into(),
+            protector: XorProtector(0x5a),
+        };
+        assert!(store.load().unwrap().secrets.is_empty());
+    }
+
+    #[test]
+    fn save_then_load_round_trips_and_the_file_is_not_plaintext() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = VaultStore {
+            dir: dir.path().into(),
+            protector: XorProtector(0x5a),
+        };
+        let mut v = Vault::default();
+        v.secrets
+            .insert("TJ_DB".into(), secret("postgres://x:supersecretvalue@h/d"));
+        store.save(&v, b"[]".to_vec()).unwrap();
+        let raw = std::fs::read(dir.path().join("vault.bin")).unwrap();
+        assert!(!String::from_utf8_lossy(&raw).contains("supersecretvalue"));
+        assert_eq!(store.load().unwrap(), v);
+        assert_eq!(std::fs::read(dir.path().join("masks.json")).unwrap(), b"[]");
+    }
+
+    #[test]
+    fn an_undecryptable_vault_is_an_error_not_an_empty_vault() {
+        // ⚠️ Treating it as empty would let `vault set` silently overwrite
+        // every stored secret with a one-entry vault.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("vault.bin"), b"garbage").unwrap();
+        let store = VaultStore {
+            dir: dir.path().into(),
+            protector: FailingProtector,
+        };
+        assert!(store.load().is_err());
+    }
+
+    #[test]
+    fn approval_key_is_created_once_and_stored_protected() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = VaultStore {
+            dir: dir.path().into(),
+            protector: XorProtector(0x5a),
+        };
+        let k1 = store.approval_key().unwrap();
+        let k2 = store.approval_key().unwrap();
+        assert_eq!(k1.len(), 32);
+        assert_eq!(k1, k2);
+        assert_ne!(std::fs::read(dir.path().join("approvals.key")).unwrap(), k1);
     }
 }

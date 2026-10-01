@@ -4,6 +4,7 @@
 pub mod approval;
 pub mod audit;
 pub mod consent;
+pub mod dpapi;
 pub mod dumpcheck;
 pub mod identity;
 pub mod mask;

@@ -83,6 +83,17 @@ pub trait Protector {
     fn unprotect(&self, blob: &[u8]) -> Result<Vec<u8>, String>;
 }
 
+/// Write via a sibling temp file and rename, so a crash never leaves a
+/// half-written vault - which `load` would then refuse.
+///
+/// Pulled forward from plan Task 2 (verbatim) because `approval.rs` (Task 5)
+/// needs it; Task 2 adds `VaultStore` and the file-name constants around it.
+pub(crate) fn write_atomic(path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, bytes).map_err(|e| format!("write {}: {e}", tmp.display()))?;
+    std::fs::rename(&tmp, path).map_err(|e| format!("rename to {}: {e}", path.display()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

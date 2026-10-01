@@ -260,6 +260,9 @@ class ForkResult:
     summary: str
     curated_by: str            # "completion" | "curate_now" | "none"
     cost: ForkCost
+    #: Why the summary is missing or incomplete: the curation call failed,
+    #: called a tool, or was cut off. None when it is whole.
+    curation_error: str | None = None
 
     def __str__(self) -> str:
         """What the PARENT MODEL reads as the fork call's result: the summary
@@ -267,12 +270,15 @@ class ForkResult:
         nl = chr(10)
         return nl.join([
             f"[fork {self.fork_id} ended: {self.run.stop_reason}; "
-            f"summary from {self.curated_by}]",
+            f"summary from {self.curated_by}"
+            + (f"; {self.curation_error}]" if self.curation_error else "]"),
             "Summary (the fork's own account - testimony):",
             self.summary or "(no summary)",
             "",
             "Execution ledger (what actually ran - evidence):",
-            self.run.ledger.digest(),
+            # ⚠️ ALL OF IT. The fork's ledger is bounded by its max_steps,
+            # and a cut here hid its earliest effects from the parent model.
+            self.run.ledger.digest(limit=max(1, len(self.run.ledger))),
         ])
 
     def __repr__(self) -> str:
@@ -299,6 +305,12 @@ def run_fork(client: Any, parent_executor: GatedExecutor,
     the efficiency case for forking at all. Depth 1 is enforced by the gate
     refusing `fork`, not by hiding it.
     """
+    if type(parent_executor.gate) is not Gate:
+        # ⚠️ The fork's gate is rebuilt from the parent's policies. A subclass's
+        # own behaviour would not survive that, so refuse rather than run the
+        # fork under a weaker gate than its parent's.
+        raise TypeError(f"cannot fork under {type(parent_executor.gate).__name__}: "
+                        f"only a plain Gate can be rebuilt for the fork")
     child_ledger = Ledger()
     gate = Gate([*parent_executor.gate.policies, *config.extra_policies,
                  ForbidTools(frozenset({FORK_TOOL}),
@@ -329,20 +341,28 @@ def run_fork(client: Any, parent_executor: GatedExecutor,
                        ledger=child_ledger, messages=seed, usage=Usage(),
                        error=f"{type(exc).__name__}: {exc}")
 
+    curation_error: str | None = None
     if run.stop_reason == StopReason.COMPLETED:
         summary, curated_by, curation = run.final_text, "completion", Usage.zero()
     elif run.stop_reason == StopReason.HARNESS_ERROR:
         summary, curated_by, curation = "", "none", Usage.zero()
     else:
         cur = curate_now(client, run.messages, tools=tools, max_tokens=config.max_tokens)
-        summary, curation = cur.text, cur.usage
-        curated_by = "curate_now" if cur.error is None and cur.text else "none"
+        curation, curation_error = cur.usage, cur.error
+        if cur.error is None and cur.text:
+            summary, curated_by = cur.text, "curate_now"
+            if cur.truncated:
+                curation_error = "the summary was cut off by the output budget"
+        else:
+            # ⚠️ No summary means NO summary: text that came with a refused
+            # tool call is not one, and curated_by="none" must not sit beside it.
+            summary, curated_by = "", "none"
 
     cost = ForkCost(fork_id=fork_id, time_sensitive=time_sensitive,
                     work_calls=tuple(run.call_usage), curation=curation,
                     parent_call_index=parent_call_index,
                     parent_model=parent_model, fork_model=run.model)
-    return ForkResult(fork_id, run, summary, curated_by, cost)
+    return ForkResult(fork_id, run, summary, curated_by, cost, curation_error)
 
 
 def execute_fork(client: Any, executor: GatedExecutor,
@@ -366,6 +386,10 @@ def execute_fork(client: Any, executor: GatedExecutor,
                     for c in calls[index + 1:])
 
     def bound(task: str) -> ForkResult:
+        # ⚠️ Raised inside the gated call, so it is recorded as the fork call's
+        # error and no child run starts.
+        if not isinstance(task, str) or not task.strip():
+            raise TypeError(f"task must be a non-empty string, not {task!r}")
         return run_fork(client, executor, tools, history=history,
                         fork_call_id=call.get("id") or "", pending=pending, task=task,
                         fork_id=fork_id, config=config, time_sensitive=time_sensitive,

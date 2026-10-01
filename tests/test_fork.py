@@ -387,5 +387,143 @@ class TestForkFacts(unittest.TestCase):
         self.assertTrue(out.executed)
 
 
+class TestForkInTheAgentLoop(unittest.TestCase):
+    """End to end. ONE client serves parent and fork - sequential, so the
+    scripted turns are consumed parent, fork..., parent."""
+
+    def setUp(self):
+        self.write = Spy("written")
+        self.listing = Spy("alice")
+        self.ex = gate_and_executor({"write_file", "list_entities", "fork"},
+                                    tools={"write_file": self.write,
+                                           "list_entities": self.listing})
+
+    def run_parent(self, turns, **kw):
+        from overmind.agent import run_agent
+        from overmind.fork import ForkConfig
+        self.client = ScriptedClient(turns)
+        return run_agent(self.client, self.ex, TOOLS, "parent task",
+                         fork=kw.pop("fork", ForkConfig()), **kw)
+
+    def happy(self):
+        return [
+            tool_turn("fork", '{"task": "write a"}', "cF"),             # parent
+            tool_turn("write_file", '{"path": "a"}', "k1",
+                      content="SCRATCH-THOUGHT-XYZ"),                     # fork
+            {"role": "assistant", "content": "wrote a"},                 # fork summary
+            {"role": "assistant", "content": "parent done"},             # parent
+        ]
+
+    def test_the_forks_effects_land_on_the_parents_ledger_with_lineage(self):
+        run = self.run_parent(self.happy())
+        self.assertEqual(run.stop_reason, "completed")
+        self.assertEqual(self.write.calls, [{"path": "a"}])
+        names = [(e.call.name, e.lineage) for e in run.ledger.entries]
+        self.assertEqual(names, [("fork", ()), ("write_file", ("f1",))])
+        self.assertTrue(run.did("write_file"))
+        self.assertEqual(len(run.forks), 1)
+
+    def test_the_parent_never_sees_the_forks_transcript(self):
+        run = self.run_parent(self.happy())
+        parent_next = self.client.seen[-1]
+        flat = chr(10).join(str(m.get("content")) for m in parent_next)
+        self.assertNotIn("SCRATCH-THOUGHT-XYZ", flat)
+        self.assertIn("wrote a", flat)                       # testimony
+        self.assertIn("write_file(path='a') -> OK", flat)     # evidence
+
+    def test_fork_and_parent_share_the_prefix(self):
+        """The fork's first request and the parent's next request both begin
+        with the parent's first request plus the assistant turn calling fork."""
+        self.run_parent(self.happy())
+        parent_first, fork_first, parent_next = (self.client.seen[0], self.client.seen[1],
+                                                 self.client.seen[3])
+        n = len(parent_first) + 1           # + the assistant turn that called fork
+        self.assertEqual(fork_first[:n], parent_next[:n])
+        self.assertEqual(fork_first[:len(parent_first)], parent_first)
+        self.assertEqual(fork_first[n - 1]["tool_calls"][0]["id"], "cF")
+        self.assertEqual(self.client.seen_tools[1], self.client.seen_tools[0])
+
+    def test_cost_is_finalised_and_on_the_ledger(self):
+        import json
+        turns = [
+            (tool_turn("fork", '{"task": "write a"}', "cF"), U(1000, 50)),
+            (tool_turn("write_file", '{"path": "a"}', "k1"), U(1100, 60)),
+            ({"role": "assistant", "content": "wrote a"}, U(1300, 40)),
+            ({"role": "assistant", "content": "parent done"}, U(1200, 10)),
+        ]
+        run = self.run_parent(turns, time_sensitive=True)
+        cost = run.forks[0].cost
+        self.assertEqual(cost.parent_calls_after, 1)
+        self.assertEqual(cost.returned_tokens, 1200 - 1000 - 50)
+        rows = json.loads(run.ledger.to_json())
+        self.assertIs(rows[0]["fork"]["time_sensitive"], True)
+        self.assertEqual(rows[0]["fork"]["inline_tokens"], cost.inline_tokens)
+        self.assertEqual(rows[0]["fork"]["fork_tokens"], cost.fork_tokens)
+
+    def test_calls_after_fork_in_the_same_turn(self):
+        both = {"role": "assistant", "content": None, "tool_calls": [
+            {"id": "cF", "type": "function",
+             "function": {"name": "fork", "arguments": '{"task": "write a"}'}},
+            {"id": "cL", "type": "function",
+             "function": {"name": "list_entities", "arguments": "{}"}}]}
+        run = self.run_parent([both,
+                               {"role": "assistant", "content": "wrote nothing"},
+                               {"role": "assistant", "content": "parent done"}])
+        self.assertEqual(len(self.listing.calls), 1, "the later call was not run exactly once")
+        names = [(e.call.name, e.lineage) for e in run.ledger.entries]
+        self.assertEqual(names, [("fork", ()), ("list_entities", ())])
+        fork_first = self.client.seen[1]
+        self.assertTrue(any(m.get("tool_call_id") == "cL" and "NOT RUN" in m["content"]
+                            for m in fork_first))
+
+    def test_fork_with_bad_arguments_starts_nothing(self):
+        run = self.run_parent([tool_turn("fork", '{"oops": 1}', "cF"),
+                               {"role": "assistant", "content": "parent done"}])
+        entry = run.ledger.entries[0]
+        self.assertEqual(entry.call.name, "fork")
+        self.assertIsNotNone(entry.error)
+        self.assertEqual(len(self.client.seen), 2, "a child run was started")
+        self.assertEqual(run.forks, [])
+
+    def test_a_gate_that_does_not_cover_fork_refuses_it(self):
+        from overmind.agent import run_agent
+        from overmind.fork import ForkConfig
+        ex = gate_and_executor({"write_file"}, tools={"write_file": self.write})
+        client = ScriptedClient([tool_turn("fork", '{"task": "x"}', "cF"),
+                                 {"role": "assistant", "content": "parent done"}])
+        run = run_agent(client, ex, TOOLS, "t", fork=ForkConfig())
+        self.assertEqual(len(client.seen), 2)
+        self.assertFalse(run.ledger.entries[0].decision.allowed)
+        self.assertEqual(run.forks, [])
+
+    def test_without_fork_config_no_fork_tool_is_offered(self):
+        from overmind.agent import run_agent
+        client = ScriptedClient([{"role": "assistant", "content": "done"}])
+        run_agent(client, self.ex, TOOLS, "t")
+        self.assertEqual(client.seen_tools[0], TOOLS)
+
+    def test_refused_configurations(self):
+        from overmind.agent import run_agent
+        from overmind.fork import ForkConfig, fork_schema
+        with self.assertRaises(ValueError):
+            run_agent(ScriptedClient([]), self.ex, TOOLS, "t", fork=ForkConfig(),
+                      context_mode="ledger")
+        with self.assertRaises(ValueError):
+            run_agent(ScriptedClient([]), self.ex, TOOLS + [fork_schema()], "t",
+                      fork=ForkConfig())
+        ex = gate_and_executor({"fork"}, tools={"fork": Spy()})
+        with self.assertRaises(ValueError):
+            run_agent(ScriptedClient([]), ex, TOOLS, "t", fork=ForkConfig())
+
+    def test_two_forks_get_distinct_ids(self):
+        run = self.run_parent([
+            tool_turn("fork", '{"task": "one"}', "cF1"),
+            {"role": "assistant", "content": "did one"},
+            tool_turn("fork", '{"task": "two"}', "cF2"),
+            {"role": "assistant", "content": "did two"},
+            {"role": "assistant", "content": "parent done"}])
+        self.assertEqual([f.fork_id for f in run.forks], ["f1", "f2"])
+
+
 if __name__ == "__main__":
     unittest.main()

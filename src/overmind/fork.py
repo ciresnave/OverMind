@@ -21,11 +21,13 @@ from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
 from .agent import AgentRun, StopReason, _tool_result_message, run_agent
-from .gate import FactSource, ForbidTools, Gate, GatedExecutor, Ledger, Policy
+from .gate import (FactSource, ForbidTools, Gate, GatedExecutor, Ledger, Policy,
+                   ToolOutcome)
 from .providers import Usage
 
 __all__ = ["CURATE_INSTRUCTION", "Curation", "FORK_TOOL", "ForkConfig", "ForkCost",
-           "ForkFacts", "ForkResult", "curate_now", "fork_schema", "run_fork"]
+           "ForkFacts", "ForkResult", "curate_now", "execute_fork", "fork_schema",
+           "run_fork"]
 
 #: ⚠️ "State results, not steps": the harness hands the parent the fork's
 #: ledger separately, so a narrative of what was run is redundant at best and
@@ -328,3 +330,40 @@ def run_fork(client: Any, parent_executor: GatedExecutor,
                     parent_call_index=parent_call_index,
                     parent_model=parent_model, fork_model=run.model)
     return ForkResult(fork_id, run, summary, curated_by, cost)
+
+
+def execute_fork(client: Any, executor: GatedExecutor,
+                 tools: Sequence[Mapping[str, Any]], *,
+                 messages: Sequence[Mapping[str, Any]], calls: Sequence[Mapping[str, Any]],
+                 index: int, args: Mapping[str, Any], actor: str, config: ForkConfig,
+                 time_sensitive: bool, parent_call_index: int,
+                 parent_model: str | None, fork_id: str
+                 ) -> tuple[ToolOutcome, "ForkResult | None"]:
+    """Run `calls[index]` (a fork call) through the PARENT'S gate, then absorb
+    the fork's ledger into the parent's.
+
+    ⚠️ THE FORK CALL GOES THROUGH THE GATE LIKE ANY OTHER. A caller whose
+    policies do not cover `fork` gets it refused, and no child run starts. The
+    callable is bound per call (it needs this turn's messages) on a view that
+    shares the parent's gate and ledger, so nothing about the gate changes.
+    """
+    call = calls[index]
+    history = [dict(m) for m in messages]       # NOW: results are appended after
+    pending = tuple(((c.get("id") or ""), ((c.get("function") or {}).get("name") or ""))
+                    for c in calls[index + 1:])
+
+    def bound(task: str) -> ForkResult:
+        return run_fork(client, executor, tools, history=history,
+                        fork_call_id=call.get("id") or "", pending=pending, task=task,
+                        fork_id=fork_id, config=config, time_sensitive=time_sensitive,
+                        parent_call_index=parent_call_index, parent_model=parent_model)
+
+    view = GatedExecutor(executor.gate, {**executor.tools, FORK_TOOL: bound})
+    fork_seq = len(executor.gate.ledger)        # the seq execute() will give it
+    outcome = view.execute(FORK_TOOL, args, actor=actor)
+    result = outcome.result if isinstance(outcome.result, ForkResult) else None
+    if outcome.executed and outcome.error is None and result is not None:
+        executor.gate.ledger.absorb(result.run.ledger, fork_id=fork_id,
+                                    fork_seq=fork_seq, record=result.cost)
+        return outcome, result
+    return outcome, None

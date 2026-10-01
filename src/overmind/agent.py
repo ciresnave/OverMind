@@ -41,10 +41,13 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from typing import Any, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 from .gate import GatedExecutor, Ledger, detect_smuggled_tool_call
 from .providers import ChatResult, ProviderClient, Usage, normalise_for_echo
+
+if TYPE_CHECKING:
+    from .fork import ForkConfig
 
 __all__ = ["AgentRun", "StopReason", "run_agent"]
 
@@ -87,6 +90,9 @@ class AgentRun:
     #: Each successful model call's usage, in order. ⚠️ `usage` is the SUM and
     #: cannot say how the context grew; the fork cost model needs the shape.
     call_usage: list[Usage] = field(default_factory=list)
+    #: Every fork this run completed, in order (fork.ForkResult). Their effects
+    #: are ALSO on `ledger`, tagged with lineage - that copy is the evidence.
+    forks: list[Any] = field(default_factory=list)
 
     @property
     def executed_tools(self) -> tuple[str, ...]:
@@ -164,7 +170,9 @@ def run_agent(client: ProviderClient, executor: GatedExecutor,
               max_tokens: int | None = None,
               context_mode: str = "transcript",
               offer: str = "as-given",
-              history: Sequence[Mapping[str, Any]] | None = None) -> AgentRun:
+              history: Sequence[Mapping[str, Any]] | None = None,
+              fork: "ForkConfig | None" = None,
+              time_sensitive: bool = False) -> AgentRun:
     """Drive one task to completion through the gate.
 
     `tools` are OpenAI-shaped schemas; `executor` holds the callables. The two
@@ -230,12 +238,29 @@ def run_agent(client: ProviderClient, executor: GatedExecutor,
     `history`, when given, is the conversation to CONTINUE: the first request
     is a copy of it plus `task` as a user turn. Used by forks. ⚠️ Copied, never
     appended to - the caller's list is the parent's context.
+
+    `fork`, when given, offers the model a `fork` tool (fork.fork_schema) that
+    runs a sub-task in a copy of this conversation and returns a curated
+    summary plus the copy's ledger (fork.py). The caller's policies must cover
+    `fork` or it is refused like any uncovered tool. `time_sensitive` is
+    recorded on every fork's cost record (CireSnave's ruling: latency governs
+    only for a task deemed time-sensitive; otherwise cost does).
     """
     if offer not in ("as-given", "permitted"):
         raise ValueError(f"offer must be 'as-given' or 'permitted', not {offer!r}")
     if context_mode not in ("transcript", "ledger", "ledger+closure"):
         raise ValueError(f"context_mode must be 'transcript', 'ledger' or "
                          f"'ledger+closure', not {context_mode!r}")
+    if fork is not None:
+        from .fork import FORK_TOOL, execute_fork, fork_schema   # fork.py imports this module
+        if context_mode != "transcript":
+            raise ValueError("fork requires context_mode='transcript': a fork continues "
+                             "its parent's transcript, and the ledger modes have none")
+        if any((t.get("function") or {}).get("name") == FORK_TOOL for t in tools):
+            raise ValueError(f"the caller's tools already name {FORK_TOOL!r}")
+        if FORK_TOOL in executor.tools:
+            raise ValueError(f"the executor already registers {FORK_TOOL!r}")
+        tools = [*tools, fork_schema()]
     if history is not None:
         if context_mode != "transcript":
             raise ValueError("history requires context_mode='transcript': the ledger "
@@ -301,9 +326,13 @@ def run_agent(client: ProviderClient, executor: GatedExecutor,
     notes: list[str] = []
 
     call_usage: list[Usage] = []
+    forks: list[Any] = []
 
     def finish(run: AgentRun) -> AgentRun:
         run.call_usage = list(call_usage)
+        for f in forks:
+            f.cost.finalize(call_usage)
+        run.forks = list(forks)
         return run
 
     for step in range(max_steps):
@@ -382,7 +411,7 @@ def run_agent(client: ProviderClient, executor: GatedExecutor,
                             offered_but_refused=offered_but_refused, max_tokens=result.max_tokens))
 
         repeated_twice = False
-        for call in calls:
+        for index, call in enumerate(calls):
             fn = call.get("function") or {}
             name = fn.get("name") or ""
             args = _parse_arguments(fn.get("arguments"))
@@ -413,8 +442,19 @@ def run_agent(client: ProviderClient, executor: GatedExecutor,
                 continue
 
             repeat_count = 1
-            # THE ONLY PATH TO AN EFFECT.
-            outcome = executor.execute(name, args, actor=f"{result.provider}:{result.model}")
+            # THE ONLY PATH TO AN EFFECT - a fork call included (execute_fork
+            # runs it through this same gate).
+            actor = f"{result.provider}:{result.model}"
+            if fork is not None and name == FORK_TOOL:
+                outcome, forked = execute_fork(
+                    client, executor, tools, messages=messages, calls=calls, index=index,
+                    args=args, actor=actor, config=fork, time_sensitive=time_sensitive,
+                    parent_call_index=len(call_usage) - 1, parent_model=result.model,
+                    fork_id=f"f{len(forks) + 1}")
+                if forked is not None:
+                    forks.append(forked)
+            else:
+                outcome = executor.execute(name, args, actor=actor)
             content = outcome.as_tool_content()
             last_results[signature] = content
             messages.append(_tool_result_message(call.get("id", ""), name, content))

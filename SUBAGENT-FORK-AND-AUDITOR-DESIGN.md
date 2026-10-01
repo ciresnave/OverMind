@@ -1,6 +1,9 @@
 # Subagent fork-and-curate, and the auditor — design proposal
 
-**Status: PROPOSAL. Nothing in this file is built.** Written 2026-09-30 by the portfolio PM, from a design
+**Status: fork-and-curate (§2 item 1, sequential) BUILT in `src/overmind/fork.py` -
+see `docs/superpowers/plans/2026-10-01-fork-and-curate.md`. Parallel forks (§4.5, §6
+merge semantics), the automatic fork-or-inline policy (§4.1 - data now collected on
+every fork's ledger entry), and the auditor (§3) are NOT built.** Written 2026-09-30 by the portfolio PM, from a design
 CireSnave worked out with Muse (his name for that instance: Pip) and refined here. Every claim below is
 marked **MEASURED** (verified against `origin/main` of the named repo, this session, dated) or **ASSUMPTION**
 (inferred, not yet confirmed against OverMind's own code — the OverMind lane should verify or refute these

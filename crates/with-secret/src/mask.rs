@@ -26,7 +26,7 @@ impl StreamMasker {
             .filter(|(_, v)| !v.is_empty())
             .map(|(n, v)| (v.as_bytes().to_vec(), label(n).into_bytes()))
             .collect();
-        needles.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+        needles.sort_by_key(|n| std::cmp::Reverse(n.0.len()));
         Self {
             needles,
             carry: Vec::new(),
@@ -129,7 +129,7 @@ pub fn mask_with_hashes(text: &str, masks: &[HashMask]) -> (String, usize) {
         .filter(|m| m.len > 0)
         .map(|m| (m, unhex(&m.salt_hex)))
         .collect();
-    sorted.sort_by(|a, b| b.0.len.cmp(&a.0.len));
+    sorted.sort_by_key(|m| std::cmp::Reverse(m.0.len));
     let bytes = text.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut hits = 0;

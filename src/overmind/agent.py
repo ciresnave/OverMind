@@ -110,6 +110,27 @@ class AgentRun:
         return self.ledger.was_executed(tool)
 
 
+def _call_signature(call: Mapping[str, Any]) -> tuple[str, dict[str, Any], tuple[str, str]]:
+    fn = call.get("function") or {}
+    name = fn.get("name") or ""
+    args = _parse_arguments(fn.get("arguments"))
+    return name, args, (name, json.dumps(args, sort_keys=True, default=str))
+
+
+def _turn_ends_run(calls: Sequence[Mapping[str, Any]],
+                   signature: tuple[str, str] | None, count: int) -> bool:
+    """Whether run_agent's repeat check will STOP a call in this turn. Mirrors
+    its loop exactly and executes nothing."""
+    for call in calls:
+        sig = _call_signature(call)[2]
+        if sig != signature:
+            signature, count = sig, 0
+        if count >= 2:
+            return True
+        count += 1
+    return False
+
+
 def _tool_result_message(call_id: str, name: str, content: str) -> dict[str, Any]:
     return {"role": "tool", "tool_call_id": call_id or "call_1",
             "name": name, "content": content}
@@ -245,7 +266,8 @@ def run_agent(client: ProviderClient, executor: GatedExecutor,
     `fork`, when given, offers the model a `fork` tool (fork.fork_schema) that
     runs a sub-task in a copy of this conversation and returns a curated
     summary plus the copy's ledger (fork.py). The caller's policies must cover
-    `fork` or it is refused like any uncovered tool. `time_sensitive` is
+    `fork`: a gate that always refuses it is a ValueError here, and one that
+    refuses a particular call refuses it like any other tool. `time_sensitive` is
     recorded on every fork's cost record (CireSnave's ruling: latency governs
     only for a task deemed time-sensitive; otherwise cost does).
     """
@@ -263,6 +285,12 @@ def run_agent(client: ProviderClient, executor: GatedExecutor,
             raise ValueError(f"the caller's tools already name {FORK_TOOL!r}")
         if FORK_TOOL in executor.tools:
             raise ValueError(f"the executor already registers {FORK_TOOL!r}")
+        if executor.gate.certainly_denied([FORK_TOOL]):
+            # ⚠️ Its schema would be paid for on every turn and never usable
+            # (the measured cost note below). Asking for forks under a gate
+            # that always refuses them is a configuration error.
+            raise ValueError(f"the gate always refuses {FORK_TOOL!r}; declare it in "
+                             f"the policies or do not pass fork=")
         tools = [*tools, fork_schema()]
     if history is not None:
         if context_mode != "transcript":
@@ -364,6 +392,11 @@ def run_agent(client: ProviderClient, executor: GatedExecutor,
 
         spent = spent + result.usage
         call_usage.append(result.usage)
+        # ⚠️ EVERY CALL, NOT ONLY AT finish(). A fork's cost record is on the
+        # ledger from absorption on, and a run that dies by exception never
+        # reaches finish().
+        for f in forks:
+            f.cost.finalize(call_usage)
         messages.append(normalise_for_echo(result.message))
         calls = result.tool_calls
 
@@ -414,11 +447,12 @@ def run_agent(client: ProviderClient, executor: GatedExecutor,
                             offered_but_refused=offered_but_refused, max_tokens=result.max_tokens))
 
         repeated_twice = False
+        # ⚠️ KNOWN BEFORE ANYTHING RUNS: a turn holding a third identical call
+        # ends the run NO_PROGRESS. A fork in that turn would be a whole child
+        # run whose result nobody reads, so it is not started.
+        ends_run = _turn_ends_run(calls, repeat_signature, repeat_count)
         for index, call in enumerate(calls):
-            fn = call.get("function") or {}
-            name = fn.get("name") or ""
-            args = _parse_arguments(fn.get("arguments"))
-            signature = (name, json.dumps(args, sort_keys=True, default=str))
+            name, args, signature = _call_signature(call)
             if signature != repeat_signature:
                 repeat_signature, repeat_count = signature, 0
             count = repeat_count
@@ -448,6 +482,12 @@ def run_agent(client: ProviderClient, executor: GatedExecutor,
             # THE ONLY PATH TO AN EFFECT - a fork call included (execute_fork
             # runs it through this same gate).
             actor = f"{result.provider}:{result.model}"
+            if fork is not None and name == FORK_TOOL and ends_run:
+                messages.append(_tool_result_message(
+                    call.get("id", ""), name,
+                    "NOT RUN: a call in this turn repeats one that was already "
+                    "stopped, so the run ends now and the fork was not started."))
+                continue
             if fork is not None and name == FORK_TOOL:
                 outcome, forked = execute_fork(
                     client, executor, tools, messages=messages, calls=calls, index=index,
@@ -456,6 +496,7 @@ def run_agent(client: ProviderClient, executor: GatedExecutor,
                     fork_id=f"f{len(forks) + 1}")
                 if forked is not None:
                     forks.append(forked)
+                    forked.cost.finalize(call_usage)
                     # ⚠️ The fork's calls are this run's spend; `call_usage`
                     # stays this loop's own calls, which the cost model needs.
                     spent = spent + forked.run.usage + forked.cost.curation

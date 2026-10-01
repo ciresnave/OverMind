@@ -508,10 +508,24 @@ class TestForkInTheAgentLoop(unittest.TestCase):
         self.assertEqual(len(self.client.seen), 2, "a child run was started")
         self.assertEqual(run.forks, [])
 
-    def test_a_gate_that_does_not_cover_fork_refuses_it(self):
+    def test_a_gate_that_refuses_fork_at_call_time_starts_nothing(self):
+        """A gate that ALWAYS refuses fork is a config error (TestDeferredMinors);
+        one whose refusal depends on the call still gets the call, and refuses."""
         from overmind.agent import run_agent
         from overmind.fork import ForkConfig
-        ex = gate_and_executor({"write_file"}, tools={"write_file": self.write})
+        from overmind.gate import Decision
+
+        class NotNow:
+            name = "not-now"
+
+            def applies_to(self, call):
+                return call.name == "fork"
+
+            def decide(self, call, facts):
+                return Decision.deny("not now", policy=self.name)
+
+        ex = gate_and_executor({"write_file", "fork"}, tools={"write_file": self.write},
+                               extra=(NotNow(),))
         client = ScriptedClient([tool_turn("fork", '{"task": "x"}', "cF"),
                                  {"role": "assistant", "content": "parent done"}])
         run = run_agent(client, ex, TOOLS, "t", fork=ForkConfig())
@@ -593,6 +607,170 @@ class TestForkInTheAgentLoop(unittest.TestCase):
             {"role": "assistant", "content": "did two"},
             {"role": "assistant", "content": "parent done"}])
         self.assertEqual([f.fork_id for f in run.forks], ["f1", "f2"])
+
+
+class TestDeferredMinors(unittest.TestCase):
+    """The seven minors #101's final review deferred, one test (or two) each."""
+
+    def setUp(self):
+        self.write = Spy("written")
+        self.listing = Spy("alice")
+        self.ex = gate_and_executor({"write_file", "list_entities", "fork"},
+                                    tools={"write_file": self.write,
+                                           "list_entities": self.listing})
+
+    def run_parent(self, turns, ex=None, **kw):
+        from overmind.agent import run_agent
+        from overmind.fork import ForkConfig
+        self.client = ScriptedClient(turns)
+        return run_agent(self.client, ex or self.ex, TOOLS, "parent task",
+                         fork=kw.pop("fork", ForkConfig()), **kw)
+
+    # 1 -------------------------------------------------------------------- #
+    def test_the_parent_reads_the_whole_fork_ledger(self):
+        """⚠️ The ledger is the evidence. Cutting it to the last 12 entries
+        hid the fork's earliest effects from the parent model."""
+        from overmind.fork import ForkConfig
+        turns = [tool_turn("write_file", '{"path": "p%d"}' % i, f"k{i}") for i in range(14)]
+        turns.append({"role": "assistant", "content": "wrote 14"})
+        res = fork(ScriptedClient(turns), self.ex, config=ForkConfig(max_steps=20))
+        text = str(res)
+        self.assertNotIn("omitted", text)
+        self.assertIn("write_file(path='p0') -> OK", text)
+        self.assertIn("write_file(path='p13') -> OK", text)
+
+    # 2 -------------------------------------------------------------------- #
+    def test_a_task_that_is_not_a_string_starts_nothing(self):
+        for args in ('{"task": 5}', '{"task": ""}', '{"task": "   "}'):
+            with self.subTest(args=args):
+                run = self.run_parent([tool_turn("fork", args, "cF"),
+                                       {"role": "assistant", "content": "parent done"}])
+                entry = run.ledger.entries[0]
+                self.assertEqual(entry.call.name, "fork")
+                self.assertIsNotNone(entry.error)
+                self.assertEqual(len(self.client.seen), 2, "a child run was started")
+                self.assertEqual(run.forks, [])
+
+    # 3 -------------------------------------------------------------------- #
+    def test_an_uncurated_fork_carries_no_summary(self):
+        """curated_by="none" beside a non-empty summary is a contradiction:
+        text that came with a refused tool call is not a summary."""
+        from overmind.fork import ForkConfig
+        client = ScriptedClient([tool_turn("write_file", '{"path": "a"}', "k1"),
+                                 tool_turn("write_file", '{"path": "b"}', "k2",
+                                           content="partial words")])
+        res = fork(client, self.ex, config=ForkConfig(max_steps=1))
+        self.assertEqual(res.curated_by, "none")
+        self.assertEqual(res.summary, "")
+        self.assertIn("tool", res.curation_error)
+        self.assertIn("tool", str(res))
+
+    def test_a_truncated_curation_is_reported(self):
+        from overmind.fork import ForkConfig
+
+        class CutLast(ScriptedClient):
+            def chat(self, messages, tools=None, max_tokens=None, **kw):
+                r = super().chat(messages, tools, max_tokens)
+                if not self.turns:
+                    r.finish_reason = "length"
+                return r
+        client = CutLast([tool_turn("write_file", '{"path": "a"}', "k1"),
+                          {"role": "assistant", "content": "half a sum"}])
+        res = fork(client, self.ex, config=ForkConfig(max_steps=1))
+        self.assertEqual(res.curated_by, "curate_now")
+        self.assertEqual(res.summary, "half a sum")
+        self.assertIn("cut off", res.curation_error)
+        self.assertIn("cut off", str(res))
+
+    def test_a_clean_fork_has_no_curation_error(self):
+        res = fork(ScriptedClient([{"role": "assistant", "content": "S"}]), self.ex)
+        self.assertIsNone(res.curation_error)
+
+    # 4 -------------------------------------------------------------------- #
+    def test_a_gate_subclass_is_refused_not_silently_flattened(self):
+        """The fork builds a plain Gate. A subclass's extra behaviour would be
+        lost inside the fork, so the fork refuses to start instead."""
+        from overmind.gate import DenyUnlessDeclared, Gate, GatedExecutor, Ledger
+
+        class StricterGate(Gate):
+            pass
+        gate = StricterGate([DenyUnlessDeclared(reversible=frozenset(
+            {"write_file", "fork"}))], ledger=Ledger())
+        ex = GatedExecutor(gate, {"write_file": self.write})
+        run = self.run_parent([tool_turn("fork", '{"task": "w"}', "cF"),
+                               {"role": "assistant", "content": "parent done"}], ex=ex)
+        self.assertIn("StricterGate", run.ledger.entries[0].error)
+        self.assertEqual(len(self.client.seen), 2, "a child run was started")
+        self.assertEqual(run.forks, [])
+
+    # 5 -------------------------------------------------------------------- #
+    def test_no_fork_runs_in_a_turn_that_ends_the_run(self):
+        """A turn holding a STOPPED repeat ends the run NO_PROGRESS. A fork in
+        that turn is a whole child run whose result nobody will read."""
+        listing = {"id": "cL3", "type": "function",
+                   "function": {"name": "list_entities", "arguments": "{}"}}
+        forking = {"id": "cF", "type": "function",
+                   "function": {"name": "fork", "arguments": '{"task": "w"}'}}
+        cases = {
+            # two earlier turns made the call twice, so this one is STOPPED
+            "repeat-first": [tool_turn("list_entities", call_id="cL1"),
+                             tool_turn("list_entities", call_id="cL2"),
+                             {"role": "assistant", "content": None,
+                              "tool_calls": [listing, forking]}],
+            # after the fork: run, ALREADY CALLED, STOPPED
+            "fork-first": [{"role": "assistant", "content": None,
+                            "tool_calls": [forking, listing, dict(listing, id="cL4"),
+                                           dict(listing, id="cL5")]}],
+        }
+        for order, turns in cases.items():
+            with self.subTest(order=order):
+                run = self.run_parent(turns + [{"role": "assistant",
+                                                "content": "fork summary"}])
+                self.assertEqual(run.stop_reason, "no-progress")
+                self.assertEqual(run.forks, [])
+                self.assertNotIn("fork", [e.call.name for e in run.ledger.entries])
+                fork_reply = [m for m in run.messages if m.get("tool_call_id") == "cF"]
+                self.assertEqual(len(fork_reply), 1)
+                self.assertIn("NOT RUN", fork_reply[0]["content"])
+
+    # 6 -------------------------------------------------------------------- #
+    def test_fork_with_a_gate_that_always_refuses_it_is_a_config_error(self):
+        """Offering a schema the gate will always refuse pays for it every turn
+        and can never be used (agent.py's measured cost note)."""
+        from overmind.agent import run_agent
+        from overmind.fork import ForkConfig
+        ex = gate_and_executor({"write_file"}, tools={"write_file": self.write})
+        with self.assertRaises(ValueError):
+            run_agent(ScriptedClient([]), ex, TOOLS, "t", fork=ForkConfig())
+
+    # 7 -------------------------------------------------------------------- #
+    def test_cost_is_finalised_even_if_the_parent_run_raises(self):
+        """The cost record sits on the parent's ledger from the moment of
+        absorption. A run that dies by exception never reaches finish(), and
+        the record must not be left unfinalised there."""
+        import json
+        from overmind.gate import DenyUnlessDeclared, Gate, GatedExecutor, Ledger
+
+        class Boom:
+            name = "boom"
+
+            def applies_to(self, call):
+                return call.name == "list_entities"
+
+            def decide(self, call, facts):
+                raise RuntimeError("policy bug")
+
+        gate = Gate([Boom(), DenyUnlessDeclared(reversible=frozenset(
+            {"write_file", "list_entities", "fork"}))], ledger=Ledger())
+        ex = GatedExecutor(gate, {"write_file": self.write, "list_entities": self.listing})
+        turns = [(tool_turn("fork", '{"task": "w"}', "cF"), U(1000, 50)),
+                 ({"role": "assistant", "content": "did w"}, U(1100, 20)),
+                 (tool_turn("list_entities", call_id="k2"), U(1200, 10))]
+        with self.assertRaises(RuntimeError):
+            self.run_parent(turns, ex=ex)
+        rows = json.loads(gate.ledger.to_json())
+        self.assertEqual(rows[0]["fork"]["parent_calls_after"], 1)
+        self.assertEqual(rows[0]["fork"]["returned_tokens"], 1200 - 1000 - 50)
 
 
 if __name__ == "__main__":

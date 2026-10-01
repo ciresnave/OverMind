@@ -1,6 +1,7 @@
 # `with-secret` — secret storage with per-use owner approval: design
 
-**Status: DESIGN, approved by the PM 2026-10-01 — not built.** Implementation plan:
+**Status: BUILT (crates/with-secret); the live Hello checks (T0 3b/3c, T8 step 5) are pending.
+Hooks wired: no.** Design approved by the PM 2026-10-01. Implementation plan:
 `docs/superpowers/plans/2026-10-01-with-secret.md`. Source: board item 81 in
 `C:\Projects\CIRESNAVE-DECISIONS.md`.
 

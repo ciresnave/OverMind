@@ -129,18 +129,27 @@ on the installed binary, with `WITH_SECRET_DIR` pointed at a scratch dir. It has
 seen in a live session, which needs a stored value (§3).
 
 How `pre-tool-use` reads a command (0.5.4):
-- It splits the command as the tool's own shell would: POSIX rules for Bash, PowerShell rules for
-  PowerShell. A `|` or `;` inside quotes is not a separator, so `git grep -E 'a|printenv|b'` is
-  allowed.
-- Substitutions (`$(...)`, `(...)`, and POSIX backticks), even inside double quotes, are checked
-  as commands of their own.
-- Quotes are trusted only when the command word is a fixed program name and no word names a
-  program that runs a string as code (`bash`/`sh -c`, `eval`, `iex`, `xargs`, `sudo`, `env`, ...).
-  In that case, or for a variable or a substitution as the command word, or a quote that cannot
-  be followed to its end, every separator counts again, quoted or not, as before 0.5.4.
+- It parses the command as the tool's own shell would: POSIX (bash 5.3) rules for Bash, and
+  PowerShell 7 rules for PowerShell. That covers quotes, escapes, `$'...'`, line continuations,
+  `#` comments, PowerShell `<# #>` comments and here-strings. A `|` or `;` inside quotes is not a
+  separator, so `git grep -E 'a|printenv|b'` is allowed.
+- Nested code is checked as commands of its own: `$(...)`, `(...)`, POSIX backticks, bash 5.3
+  `${ ...; }` and PowerShell `{ ... }` blocks, even inside double quotes. Its text also stays in
+  the command around it, whose argument it may be (`ls $(echo env:)`).
+- The commands this parse finds are always checked. On top of that, the pre-0.5.4 check, which
+  ignores quotes and splits at every `|`, `;`, `&&`, `||` and newline, also applies unless the
+  quotes can be trusted. They are trusted only when every command word is a fixed program name and
+  no word names a program that runs a string as code (`bash`/`sh -c`, `eval`, `iex`, `xargs`,
+  `sudo`, `env`, `find -exec sh`, ...). The old check also applies whenever the parse gives up: an
+  unterminated quote, an unmatched bracket, a bash heredoc (`<<`), PowerShell's `--%`, or a
+  comment or here-string start it cannot place for sure.
+- So it denies everything the pre-0.5.4 check denied, except where the real shell does not run a
+  dump. 4 million random commands per shell were compared against the pre-0.5.4 check: every
+  difference was a dump word inside quotes, a comment or a here-string, a continuation joining
+  words, a `&` putting a command in the background, or a syntax error.
 - Limit: a quoted string that a non-evaluator program runs itself (a `git -c core.pager='...'`
-  value, an `awk` `system()` call) is not inspected. This check is for accidents (§1), not the
-  gate.
+  value, an `awk` `system()` call) is not inspected. Neither is a command name the shell builds
+  from escapes (`pr\intenv`). This check is for accidents (§1), not the gate.
 - `with-secret run` keeps the quote-unaware check, because its child's argv, joined with spaces,
   has already lost its quoting.
 

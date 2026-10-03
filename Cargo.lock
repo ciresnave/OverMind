@@ -294,7 +294,7 @@ dependencies = [
 
 [[package]]
 name = "lane-restart"
-version = "0.5.3"
+version = "0.5.4"
 dependencies = [
  "chrono",
  "portable-pty",
@@ -899,7 +899,7 @@ dependencies = [
 
 [[package]]
 name = "with-secret"
-version = "0.5.3"
+version = "0.5.4"
 dependencies = [
  "chrono",
  "getrandom",

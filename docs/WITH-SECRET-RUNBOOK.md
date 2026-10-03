@@ -37,7 +37,9 @@ CireSnave and the PM when they provision each credential, and no tool can enforc
 1. Build: `cargo build --release -p with-secret`.
 2. **The PM installs it** at `C:\Projects\.claude-hooks\with-secret.exe`, the same way
    `lane-restart.exe` is installed: by full path, keeping any previous binary under a versioned
-   name (`with-secret.<version>.exe`). It is not on `PATH`; always call it by full path.
+   name (`with-secret.<version>.exe`). It is not on `PATH`; always call it by full path. Record
+   its SHA-256 beside it in `C:\Projects\.claude-hooks\with-secret.sha256`, as
+   `lane-restart.sha256` is (RESTART-TOOL-DESIGN.md §12.9).
 3. Check it: `C:/Projects/.claude-hooks/with-secret.exe vault check`. Expected:
    `DPAPI round trip: ok`. `check` never shows a Hello prompt.
 
@@ -120,7 +122,31 @@ holds no hooks):
 ⚠️ **Applying this is CireSnave's or the PM's step.** It is shared configuration that every lane
 loads; a lane never applies it.
 
-Measured on Claude Code 2.1.287 (design §4, and this build's own binary as the hook):
+**Applied** by the PM on 2026-10-02 at about 23:27Z (the settings.json mtime). On 2026-10-03 a
+lane saw `pre-tool-use` deny one of its own Bash calls in a session that had started before the
+change, so Claude Code loads the change without a restart. `post-tool-use` masking was checked
+on the installed binary, with `WITH_SECRET_DIR` pointed at a scratch dir. It has not yet been
+seen in a live session, which needs a stored value (§3).
+
+How `pre-tool-use` reads a command (0.5.4):
+- It splits the command as the tool's own shell would: POSIX rules for Bash, PowerShell rules for
+  PowerShell. A `|` or `;` inside quotes is not a separator, so `git grep -E 'a|printenv|b'` is
+  allowed.
+- Substitutions (`$(...)`, `(...)`, and POSIX backticks), even inside double quotes, are checked
+  as commands of their own.
+- Quotes are trusted only when the command word is a fixed program name and no word names a
+  program that runs a string as code (`bash`/`sh -c`, `eval`, `iex`, `xargs`, `sudo`, `env`, ...).
+  In that case, or for a variable or a substitution as the command word, or a quote that cannot
+  be followed to its end, every separator counts again, quoted or not, as before 0.5.4.
+- Limit: a quoted string that a non-evaluator program runs itself (a `git -c core.pager='...'`
+  value, an `awk` `system()` call) is not inspected. This check is for accidents (§1), not the
+  gate.
+- `with-secret run` keeps the quote-unaware check, because its child's argv, joined with spaces,
+  has already lost its quoting.
+
+Measured on Claude Code 2.1.287 (design §4, and this build's own binary as the hook). ⚠️ Not
+re-measured on 2.1.288 (installed by 2026-10-03): the object-form `updatedToolOutput` claim below
+is unverified there.
 
 - `updatedToolOutput` replaces a tool's output **only as an object** in the tool's own result
   shape (`{stdout, stderr, interrupted, isImage}` for Bash and PowerShell; `{type, file:{...}}` for

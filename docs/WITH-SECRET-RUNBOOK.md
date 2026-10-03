@@ -138,18 +138,21 @@ How `pre-tool-use` reads a command (0.5.4):
   the command around it, whose argument it may be (`ls $(echo env:)`).
 - The commands this parse finds are always checked. On top of that, the pre-0.5.4 check, which
   ignores quotes and splits at every `|`, `;`, `&&`, `||` and newline, also applies unless the
-  quotes can be trusted. They are trusted only when every command word is a fixed program name and
-  no word names a program that runs a string as code (`bash`/`sh -c`, `eval`, `iex`, `xargs`,
-  `sudo`, `env`, `find -exec sh`, ...). The old check also applies whenever the parse gives up: an
-  unterminated quote, an unmatched bracket, a bash heredoc (`<<`), PowerShell's `--%`, or a
-  comment or here-string start it cannot place for sure.
-- So it denies everything the pre-0.5.4 check denied, except where the real shell does not run a
-  dump. 4 million random commands per shell were compared against the pre-0.5.4 check: every
-  difference was a dump word inside quotes, a comment or a here-string, a continuation joining
-  words, a `&` putting a command in the background, or a syntax error.
-- Limit: a quoted string that a non-evaluator program runs itself (a `git -c core.pager='...'`
-  value, an `awk` `system()` call) is not inspected. Neither is a command name the shell builds
-  from escapes (`pr\intenv`). This check is for accidents (§1), not the gate.
+  quotes can be trusted. They are trusted only when every command word is a fixed program name
+  that runs no string itself (`.`, `source`, `trap`), no word names a program that runs a string
+  as code (`bash`/`sh -c`, `eval`, `iex`, `xargs`, `sudo`, `env`, `ssh`, `parallel`, ...), and no
+  option does (`-exec`, `--exec`, `*pager*`, `*editor*`, git's `-c`/`-x`/`-O`). The commands are
+  also checked with their quotes and escapes removed (`pr\intenv` runs `printenv`). The old check
+  also applies whenever the parse gives up: an unterminated quote, an unmatched bracket, a bash
+  heredoc (`<<`), PowerShell's `--%`, `${...}` or smart quotes, or a comment or here-string start
+  it cannot place for sure. Where a comment starts was checked against bash 5.3 and pwsh 7.6.
+- The aim: deny everything the pre-0.5.4 check denied, except where the real shell does not run a
+  dump (a dump word inside quotes, a comment or a here-string, words joined by a continuation, a
+  `&` putting a command in the background, a syntax error). How that was tested is in the PR
+  that made the change.
+- Limit: a quoted string that some other program runs itself (an `awk` `system()` call, a
+  `python -c` script) is not inspected, and the old check did not catch those either. This check
+  is for accidents (§1), not the gate.
 - `with-secret run` keeps the quote-unaware check, because its child's argv, joined with spaces,
   has already lost its quoting.
 

@@ -78,8 +78,8 @@ fn wrapped_command(args: &[&str]) -> Option<String> {
 
 /// Programs that run a string, an argument list or their stdin as a command.
 /// A quoted string anywhere in a command line that has one of these may be
-/// code, so quotes are not trusted there (`shell_dump_reason`).
-const EVALUATORS: [&str; 27] = [
+/// code, so quotes are not trusted there (`quotes_are_trusted`).
+const EVALUATORS: &[&str] = &[
     "sh",
     "bash",
     "zsh",
@@ -102,12 +102,36 @@ const EVALUATORS: [&str; 27] = [
     "sudo",
     "doas",
     "su",
+    "runuser",
     "xargs",
+    "parallel",
+    "ssh",
+    "timeout",
+    "watch",
+    "stdbuf",
+    "setsid",
+    "flock",
+    "chroot",
+    "unshare",
+    "nsenter",
+    "script",
+    "expect",
+    "screen",
+    "tmux",
+    "strace",
+    "ltrace",
     "iex",
     "invoke-expression",
     "start-process",
     "invoke-command",
+    "start-job",
+    "start-threadjob",
+    "start",
 ];
+
+/// Evaluators only as the command word: `. file`, `source file` and
+/// `trap '...' EXIT` run code, while `find .` or `git add .` do not.
+const COMMAND_EVALUATORS: &[&str] = &[".", "source", "trap"];
 
 /// Programs that run the rest of their own command line as a command.
 const WRAPPERS: [&str; 15] = [
@@ -171,9 +195,10 @@ fn loose_reason(cmd: &str) -> Option<String> {
 /// word, so that it denies at least everything the pre-0.5.4 check did.
 fn segment_reason(seg: &str) -> Option<String> {
     let all: Vec<&str> = seg.split_whitespace().collect();
-    command_start(&all)
-        .and_then(|start| reason_from(seg, &all[start..]))
-        .or_else(|| reason_from(seg, &all))
+    let start = command_start(&all);
+    start
+        .and_then(|s| reason_from(seg, &all[s..]))
+        .or_else(|| (start != Some(0)).then(|| reason_from(seg, &all)).flatten())
 }
 
 fn reason_from(seg: &str, toks: &[&str]) -> Option<String> {
@@ -247,8 +272,6 @@ enum Mode {
     Code,
     /// `( ... )`, `$( ... )`, `@( ... )`: code, ended by `)`.
     Sub,
-    /// POSIX `` `...` ``: code, ended by a backtick.
-    Tick,
     /// PowerShell `{ ... }` script block, or a bash 5.3 `${ ...; }` /
     /// `${| ...; }` command substitution: code, ended by `}`.
     Block,
@@ -262,6 +285,29 @@ enum Mode {
     HereDouble,
 }
 
+/// PowerShell reads U+2018-U+201B as single quotes and U+201C-U+201E as
+/// double quotes, even to close an ASCII-opened string.
+fn is_smart_quote(c: char) -> bool {
+    ('\u{2018}'..='\u{201E}').contains(&c)
+}
+
+/// POSIX backtick body as the inner shell sees it: `` \` ``, `\\` and `\$`
+/// lose their backslash; every other backslash stays.
+fn unescape_backticks(body: &[char]) -> String {
+    let mut out = String::new();
+    let mut k = 0;
+    while k < body.len() {
+        if body[k] == '\\' && matches!(body.get(k + 1), Some('`' | '\\' | '$')) {
+            out.push(body[k + 1]);
+            k += 2;
+        } else {
+            out.push(body[k]);
+            k += 1;
+        }
+    }
+    out
+}
+
 /// The commands `shell` would run, honouring its quotes and comments.
 ///
 /// Code nested in a command - `$(...)`, `(...)`, POSIX backticks, bash 5.3
@@ -273,7 +319,10 @@ enum Mode {
 ///
 /// `None` when the text cannot be followed to the end (an unterminated
 /// quote, substitution, block or block comment, or an unmatched `)` or
-/// PowerShell `}`): the caller then falls back to `loose_reason`.
+/// PowerShell `}`), or uses something not modelled here (a bash heredoc,
+/// PowerShell's `--%`, `${...}` or smart quotes), or where it is unsure
+/// whether a comment or here-string starts. The caller then falls back to
+/// `loose_reason`.
 fn shell_segments(cmd: &str, shell: Shell) -> Option<Vec<String>> {
     let c: Vec<char> = cmd.chars().collect();
     let at = |i: usize, s: &str| {
@@ -283,43 +332,26 @@ fn shell_segments(cmd: &str, shell: Shell) -> Option<Vec<String>> {
     };
     let posix = shell == Shell::Posix;
     let esc = if posix { '\\' } else { '`' };
-    // After PowerShell's `--%` the rest of the line is passed on as it is -
-    // quotes and `#` included - up to a `|` or newline. Not modelled.
-    if !posix && cmd.contains("--%") {
+    // Not modelled: after `--%` the rest of the line is passed on as it is;
+    // `${...}` is a variable whose name may hold quotes; smart quotes.
+    if !posix && (cmd.contains("--%") || cmd.contains("${") || c.iter().any(|&x| is_smart_quote(x)))
+    {
         return None;
     }
-    // ⚠️ Where a comment or a here-string starts must match the shell
-    // exactly: misreading one pairs its quotes with later ones and can hide
-    // real code. Each returns Some(true) where it surely starts, Some(false)
-    // where it surely does not (inside a word: `a#b`, `${#x}`, `x@"`), and
-    // None where this parser is unsure - then the whole parse gives up and
-    // the pre-0.5.4 split decides.
-    let prev = |i: usize| i.checked_sub(1).map(|p| c[p]);
-    let comment_starts = |i: usize| match prev(i) {
-        None => Some(true),
-        Some(p) if p.is_whitespace() => Some(true),
-        // bash: a word starts after a metacharacter
-        Some(p) if posix && matches!(p, ';' | '&' | '|' | '(' | ')' | '<' | '>') => Some(true),
-        Some(_) if posix => Some(false),
-        Some(p) if p.is_ascii_alphanumeric() || p == '_' => Some(false),
-        Some(_) => None,
-    };
-    let here_string_starts = |i: usize| match prev(i) {
-        None => Some(true),
-        Some(p) if p.is_whitespace() || matches!(p, '(' | '|' | ';' | '&' | '{' | '=' | ',') => {
-            Some(true)
-        }
-        Some(p) if p.is_ascii_alphanumeric() || p == '_' => Some(false),
-        Some(_) => None,
-    };
     let mut out: Vec<String> = Vec::new();
     // One buffer per open code context: the outer command keeps building
     // while nested code's own commands are collected separately.
     let mut curs: Vec<String> = vec![String::new()];
     let mut stack: Vec<Mode> = vec![Mode::Code];
-    // Per open Sub / Tick / Block: where its text starts, to copy into the
-    // command around it when it closes (`None`: copy nothing).
+    // Per open Sub / Block: where its text starts, to copy into the command
+    // around it when it closes (`None`: copy nothing).
     let mut opens: Vec<Option<usize>> = Vec::new();
+    // ⚠️ Is the next character at the start of a word? A `#` (and a
+    // PowerShell `<#` or here-string) only means something there, and
+    // misreading one pairs its quotes with later ones and can hide real code.
+    // `Some` only where the rule was checked against bash 5.3 / pwsh 7;
+    // `None` (unsure) makes a `#`, `<#` or here-string give the parse up.
+    let mut word_start: Option<bool> = Some(true);
     let mut i = 0;
     while i < c.len() {
         let ch = c[i];
@@ -336,31 +368,42 @@ fn shell_segments(cmd: &str, shell: Shell) -> Option<Vec<String>> {
             i += if c.get(i + 1) == Some(&'\n') { 2 } else { 3 };
             continue;
         }
-        let code = matches!(mode, Mode::Code | Mode::Sub | Mode::Tick | Mode::Block);
-        let cur = curs.last_mut()?;
+        let code = matches!(mode, Mode::Code | Mode::Sub | Mode::Block);
+        let in_double = matches!(mode, Mode::Double | Mode::HereDouble);
 
-        // -- opening nested code: the same in code and in double quotes --
+        // POSIX backticks: bash finds the closing backtick without regard
+        // to quotes, then runs the body as a script of its own.
+        if posix && ch == '`' && (code || in_double) {
+            let mut k = i + 1;
+            while k < c.len() && c[k] != '`' {
+                k += if c[k] == '\\' { 2 } else { 1 };
+            }
+            if k >= c.len() {
+                return None;
+            }
+            out.extend(shell_segments(&unescape_backticks(&c[i + 1..k]), shell)?);
+            curs.last_mut()?.extend(&c[i..=k]);
+            word_start = Some(false);
+            i = k + 1;
+            continue;
+        }
+
+        // opening nested code: the same in code and in double quotes
         let opens_sub = ch == '$' && c.get(i + 1) == Some(&'(');
         let opens_funsub = posix
             && ch == '$'
             && c.get(i + 1) == Some(&'{')
             && c.get(i + 2).is_some_and(|n| n.is_whitespace() || *n == '|');
-        let opens_tick = posix && ch == '`' && mode != Mode::Tick;
-        let in_double = matches!(mode, Mode::Double | Mode::HereDouble);
-        if (code || in_double) && (opens_sub || opens_funsub || opens_tick) {
+        if (code || in_double) && (opens_sub || opens_funsub) {
             opens.push(Some(i));
             curs.push(String::new());
-            stack.push(if opens_sub {
-                Mode::Sub
-            } else if opens_funsub {
-                Mode::Block
-            } else {
-                Mode::Tick
-            });
-            i += if opens_tick { 1 } else { 2 };
+            stack.push(if opens_sub { Mode::Sub } else { Mode::Block });
+            word_start = if posix { Some(true) } else { None };
+            i += 2;
             continue;
         }
 
+        let cur = curs.last_mut()?;
         match mode {
             Mode::Single => {
                 cur.push(ch);
@@ -387,7 +430,8 @@ fn shell_segments(cmd: &str, shell: Shell) -> Option<Vec<String>> {
                 i += 1;
             }
             Mode::HereSingle => {
-                if ch == '\n' && at(i + 1, "'@") {
+                // a line ends at `\n` or a lone `\r`; `'@` must open it
+                if matches!(ch, '\n' | '\r') && at(i + 1, "'@") {
                     cur.push_str("\n'@");
                     stack.pop();
                     i += 3;
@@ -410,7 +454,8 @@ fn shell_segments(cmd: &str, shell: Shell) -> Option<Vec<String>> {
                         stack.pop();
                         i += 1;
                     }
-                } else if mode == Mode::HereDouble && ch == '\n' && at(i + 1, "\"@") {
+                } else if mode == Mode::HereDouble && matches!(ch, '\n' | '\r') && at(i + 1, "\"@")
+                {
                     cur.push_str("\n\"@");
                     stack.pop();
                     i += 3;
@@ -419,36 +464,63 @@ fn shell_segments(cmd: &str, shell: Shell) -> Option<Vec<String>> {
                     i += 1;
                 }
             }
-            Mode::Code | Mode::Sub | Mode::Tick | Mode::Block => {
+            Mode::Code | Mode::Sub | Mode::Block => {
                 // closing nested code: its last command comes out, and its
                 // text goes back into the command around it
                 let closes = match mode {
                     Mode::Sub => ch == ')',
-                    Mode::Tick => ch == '`',
                     Mode::Block => ch == '}',
                     _ => false,
                 };
                 if closes {
                     out.extend(curs.pop());
                     stack.pop();
-                    if let Some(start) = opens.pop()? {
+                    let start = opens.pop()?;
+                    if let Some(start) = start {
                         curs.last_mut()?.extend(&c[start..=i]);
                     }
+                    // a substitution's text continues the word; after a bare
+                    // subshell's `)` a word starts (bash)
+                    word_start = match (posix, start) {
+                        (true, Some(_)) => Some(false),
+                        (true, None) => Some(true),
+                        (false, _) => None,
+                    };
                     i += 1;
                     continue;
                 }
+                let here_header = !posix && {
+                    let q = c.get(i + 1);
+                    let mut k = i + 2;
+                    while matches!(c.get(k), Some(' ' | '\t')) {
+                        k += 1;
+                    }
+                    ch == '@'
+                        && matches!(q, Some('\'' | '"'))
+                        && (c.get(k) == Some(&'\n') || at(k, "\r\n"))
+                };
                 if ch == esc {
                     cur.push(ch);
                     cur.extend(c.get(i + 1));
+                    word_start = Some(false);
                     i += 2;
-                } else if posix && at(i, "<<") && !at(i, "<<<") {
+                } else if posix && at(i, "<<") && !at(i, "<<<") && (i == 0 || c[i - 1] != '<') {
                     // A heredoc's body is data whose quotes do not pair with
                     // the code's, and an unquoted one runs `$(...)`. Not
                     // modelled.
                     return None;
-                } else if !posix && at(i, "<#") {
-                    // a PowerShell block comment runs to `#>`
-                    if comment_starts(i)? {
+                } else if ch == '#' || (!posix && at(i, "<#")) {
+                    if !word_start? {
+                        cur.push(ch);
+                        word_start = Some(false);
+                        i += 1;
+                    } else if ch == '#' {
+                        // a comment runs to the end of the line, quotes and all
+                        while i < c.len() && c[i] != '\n' && (posix || c[i] != '\r') {
+                            i += 1;
+                        }
+                    } else {
+                        // a PowerShell block comment runs to `#>`
                         i += 2;
                         while i < c.len() && !at(i, "#>") {
                             i += 1;
@@ -457,66 +529,86 @@ fn shell_segments(cmd: &str, shell: Shell) -> Option<Vec<String>> {
                             return None;
                         }
                         i += 2;
-                    } else {
-                        cur.push(ch);
-                        i += 1;
+                        word_start = None;
                     }
-                } else if ch == '#' && comment_starts(i)? {
-                    // a comment runs to the end of the line, quotes and all
-                    while i < c.len() && c[i] != '\n' {
+                } else if here_header {
+                    if !word_start? {
+                        cur.push(ch);
+                        word_start = None;
                         i += 1;
+                    } else {
+                        let single = c[i + 1] == '\'';
+                        cur.push_str(if single { "@'" } else { "@\"" });
+                        stack.push(if single {
+                            Mode::HereSingle
+                        } else {
+                            Mode::HereDouble
+                        });
+                        word_start = None;
+                        i += 2;
                     }
                 } else if posix && ch == '$' && c.get(i + 1) == Some(&'\'') {
                     cur.push_str("$'");
                     stack.push(Mode::AnsiC);
+                    word_start = Some(false);
                     i += 2;
-                } else if ch == '\'' {
+                } else if ch == '\'' || ch == '"' {
                     cur.push(ch);
-                    stack.push(Mode::Single);
-                    i += 1;
-                } else if ch == '"' {
-                    cur.push(ch);
-                    stack.push(Mode::Double);
-                    i += 1;
-                } else if !posix
-                    && ["@'\n", "@'\r\n", "@\"\n", "@\"\r\n"]
-                        .iter()
-                        .any(|h| at(i, h))
-                    && here_string_starts(i)?
-                {
-                    let single = c[i + 1] == '\'';
-                    cur.push_str(if single { "@'" } else { "@\"" });
-                    stack.push(if single {
-                        Mode::HereSingle
+                    stack.push(if ch == '\'' {
+                        Mode::Single
                     } else {
-                        Mode::HereDouble
+                        Mode::Double
                     });
-                    i += 2;
+                    // a closed quote leaves bash mid-word; pwsh: unchecked
+                    word_start = if posix { Some(false) } else { None };
+                    i += 1;
                 } else if ch == '(' {
                     // a bare `(` where a command starts is a subshell or
                     // group: nothing of it stays in the (empty) command
                     opens.push((!cur.trim().is_empty()).then_some(i));
                     curs.push(String::new());
                     stack.push(Mode::Sub);
+                    word_start = if posix { Some(true) } else { None };
                     i += 1;
                 } else if !posix && ch == '{' {
                     opens.push(Some(i));
                     curs.push(String::new());
                     stack.push(Mode::Block);
+                    word_start = None;
                     i += 1;
                 } else if ch == ')' || (!posix && ch == '}') {
                     return None; // unmatched
                 } else if at(i, "&&") || at(i, "||") {
                     out.push(std::mem::take(cur));
+                    word_start = if posix { Some(true) } else { None };
                     i += 2;
+                } else if ch == '&'
+                    && ((i > 0 && matches!(c[i - 1], '<' | '>')) || c.get(i + 1) == Some(&'>'))
+                {
+                    // `>&2`, `2>&1`, `<&3`, `&>file`: part of a redirection
+                    cur.push(ch);
+                    word_start = Some(false);
+                    i += 1;
                 } else if matches!(ch, '|' | ';' | '\n' | '&') {
                     // POSIX `{`/`}` are reserved words, special only where a
                     // command starts (`command_start`); elsewhere they are
                     // plain arguments.
                     out.push(std::mem::take(cur));
+                    word_start = if posix || matches!(ch, ';' | '\n') {
+                        Some(true)
+                    } else {
+                        None
+                    };
                     i += 1;
                 } else {
                     cur.push(ch);
+                    word_start = if ch.is_whitespace() || (posix && matches!(ch, '<' | '>')) {
+                        Some(true)
+                    } else if posix || ch.is_ascii_alphanumeric() || ch == '_' {
+                        Some(false)
+                    } else {
+                        None
+                    };
                     i += 1;
                 }
             }
@@ -534,12 +626,27 @@ fn shell_segments(cmd: &str, shell: Shell) -> Option<Vec<String>> {
     )
 }
 
+/// Would an option make the program run a string as a command
+/// (`find -exec`, `git rebase --exec`, `--pager=...`, `--editor`)?
+fn runs_code_option(word: &str) -> bool {
+    let w = word.to_ascii_lowercase();
+    w.starts_with('-')
+        && !w.starts_with("--no-")
+        && [
+            "exec", "-ok", "pager", "extcmd", "editor", "shell", "command",
+        ]
+        .iter()
+        .any(|k| w.contains(k))
+}
+
 /// May this command's quotes be trusted? Only when its command word is a
 /// plain, fixed program name - not a variable or a substitution, whatever
-/// it expands to is unknown - and no word in it names an evaluator, which
-/// covers one passed as an argument (`find . -exec sh -c '...'`). A
-/// PowerShell string or here-string as a pipeline's first element is a
-/// value, not a command.
+/// it expands to is unknown - that does not run a string as code itself
+/// (`COMMAND_EVALUATORS`), when no word in it names an evaluator - which
+/// covers one passed as an argument (`find . -exec sh -c '...'`) - and no
+/// option makes the program run a string (`runs_code_option`, git's `-c`,
+/// `-x`, `-O`). A PowerShell string or here-string as a pipeline's first
+/// element is a value, not a command.
 fn quotes_are_trusted(seg: &str, shell: Shell) -> bool {
     let toks: Vec<&str> = seg.split_whitespace().collect();
     let Some(first) = command_start(&toks).map(|i| toks[i]) else {
@@ -553,15 +660,22 @@ fn quotes_are_trusted(seg: &str, shell: Shell) -> bool {
         && word.chars().all(|c| {
             c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '/' | '\\' | ':' | '+' | '-')
         });
+    let name = image(first);
+    let all = words(seg, shell);
     fixed
-        && !words(seg, shell)
-            .iter()
-            .any(|w| EVALUATORS.contains(&image(w).as_str()))
+        && !COMMAND_EVALUATORS.contains(&name.as_str())
+        && !all.iter().any(|w| EVALUATORS.contains(&image(w).as_str()))
+        && !all.iter().any(|w| runs_code_option(w))
+        && !(name == "git"
+            && all
+                .iter()
+                .any(|w| matches!(w.as_str(), "-c" | "-x") || w.starts_with("-O")))
 }
 
 /// A command's words as its shell reads them: split at whitespace outside
 /// quotes, with quotes and escapes removed - so `"sh"` and `$'sh'` are the
-/// word `sh`, and `"x | env"` is one word, not `env`.
+/// word `sh`, and `"x | env"` is one word, not `env`. Inside POSIX double
+/// quotes `\` escapes only `$`, a backtick, `"`, `\` and newline.
 fn words(seg: &str, shell: Shell) -> Vec<String> {
     let posix = shell == Shell::Posix;
     let esc = if posix { '\\' } else { '`' };
@@ -588,7 +702,9 @@ fn words(seg: &str, shell: Shell) -> Vec<String> {
                 _ => cur.push(ch),
             },
             Some(_) => {
-                if ch == esc {
+                if ch == esc
+                    && (!posix || matches!(chars.peek(), Some('$' | '`' | '"' | '\\' | '\n')))
+                {
                     cur.extend(chars.next());
                 } else if ch == '"' {
                     quote = None;
@@ -624,9 +740,10 @@ fn words(seg: &str, shell: Shell) -> Vec<String> {
 }
 
 /// For the hook: `cmd` as the tool's own shell parses it. The commands the
-/// parse finds are always checked. Quotes are honoured - `git grep -E
-/// 'a|printenv|b'` is one `git` command and nothing more - only when the
-/// quoting can be followed and every command's word is trusted
+/// parse finds are always checked, as written and with their quotes and
+/// escapes removed (`pr\intenv` runs `printenv`). Quotes are honoured -
+/// `git grep -E 'a|printenv|b'` is one `git` command and nothing more - only
+/// when the quoting can be followed and every command is trusted
 /// (`quotes_are_trusted`); otherwise the pre-0.5.4 quote-unaware check is
 /// applied as well.
 pub fn shell_dump_reason(cmd: &str, shell: Shell) -> Option<String> {
@@ -634,8 +751,12 @@ pub fn shell_dump_reason(cmd: &str, shell: Shell) -> Option<String> {
         return Some("lists every environment variable".into());
     }
     let segs = shell_segments(cmd, shell);
-    if let Some(why) = segs.iter().flatten().find_map(|s| segment_reason(s)) {
-        return Some(why);
+    let parsed = segs
+        .iter()
+        .flatten()
+        .find_map(|s| segment_reason(s).or_else(|| segment_reason(&words(s, shell).join(" "))));
+    if parsed.is_some() {
+        return parsed;
     }
     match segs {
         Some(segs) if segs.iter().all(|s| quotes_are_trusted(s, shell)) => None,
@@ -768,6 +889,9 @@ mod tests {
             "git commit -m \"use bash | sh here\"",
             // a continuation joins the lines: this is `ls set`
             "ls \\\n set",
+            "cat <<< 'a|printenv'",
+            "git --no-pager grep -E 'a|printenv'",
+            "echo 'a'#'b|printenv'",
             "echo ${#x}",
             "echo a#b",
             "git grep 'a|printenv' # look for both",
@@ -879,6 +1003,39 @@ mod tests {
             // .env reads, quoted or not
             "cat \".env\"",
             "cat 'apps/api/.env.local' | grep x",
+            // found by review, each checked against bash 5.3 with a marker:
+            // a `#` mid-word is not a comment (after a continuation, a
+            // substitution, an escaped character)
+            "echo x\\\n#;printenv",
+            "echo $(date)#;printenv",
+            "echo $((1))#;printenv",
+            "cat <(date)#;printenv",
+            "echo a\\ #;printenv",
+            "echo \\;#;printenv",
+            "echo 'a'#;printenv",
+            // bash finds a closing backtick without regard to quotes
+            "echo `echo '`\nprintenv\necho '`",
+            // `>&` is a redirection, not a background `&`
+            "cat >&2 .env",
+            "cat 2>&1 .env",
+            // in POSIX double quotes `\` escapes only `$`, backtick, `"`, `\`
+            "\"C:\\Program Files\\Git\\bin\\bash.exe\" -c 'x; printenv '",
+            // a command name built from escapes
+            "pr\\intenv",
+            // programs that run a quoted string as code
+            "echo 'x; printenv ' | source /dev/stdin",
+            ". <(echo 'x; printenv ')",
+            "trap 'x; printenv ' EXIT",
+            "git rebase --exec 'x; printenv ' HEAD~1",
+            "git -c core.pager='less; printenv ' log",
+            "ssh host 'x; printenv '",
+            "parallel 'x; printenv ' ::: 1",
+            "find . -exec $SHELL -c 'x; printenv ' \\;",
+            "find . -exec \"$SHELL\" -c 'x; printenv ' \\;",
+            "find . -exec $'\\x73h' -c 'x; printenv ' \\;",
+            "find . -exec /bin/s? -c 'x; printenv ' \\;",
+            // an evaluator spelled in ANSI-C quotes is still `sh`
+            "ionice $'sh' -c 'x; printenv '",
         ] {
             assert!(bash(c).is_some(), "{c:?} was allowed");
         }
@@ -902,7 +1059,7 @@ mod tests {
             // a quote inside a comment is not a quote
             "Write-Output 1 # '\ngci env:\n#'",
             "<# ' #> gci env: # '",
-            // unsure where a comment starts: the old split decides
+            // after `;` a comment starts (checked against pwsh 7.6)
             "Write-Output 1;# '\ngci env:\n#'",
             // after `--%` a `#` is passed on, not a comment; `|` still pipes
             "Write-Output --% #'|gci env:",
@@ -917,9 +1074,31 @@ mod tests {
             "Write-Output 'unterminated ; gci env:",
             "Write-Output \"unterminated ; gci env:",
             "Get-Content '.env'",
+            // found by review, each checked against pwsh 7.6 with a marker:
+            "Get-ChildItem 2>&1 env:",
+            // smart quotes are quotes to PowerShell
+            "Write-Output 'a\u{2018}; gci env:; \u{2018}b'",
+            "Write-Output \"a\u{201C}; gci env:; \u{201C}b\"",
+            // `${...}` is a variable; a quote in its name is no quote
+            "Write-Output ${a '} ; gci env: ; ${'}",
+            // a here-string header may end in spaces; a lone CR ends a line
+            "Write-Output @' \nit's `\n'@\ngci env:\n#'",
+            "Write-Output @'\na\r'@\ngci env:\n'@ #'",
+            // a `#` after an escaped space is mid-word
+            "Write-Output a` #;gci env:",
         ] {
             assert!(ps(c).is_some(), "{c:?} was allowed");
         }
+    }
+
+    /// Nested wrappers are read in linear time; the first-word fallback
+    /// once doubled the work per level (`nice` x20 took 9.5 s).
+    #[test]
+    fn nested_wrappers_are_linear() {
+        let cmd = format!("{}x", "nice ".repeat(200));
+        let t = std::time::Instant::now();
+        assert!(bash(&cmd).is_none());
+        assert!(t.elapsed() < std::time::Duration::from_secs(2));
     }
 
     /// `with-secret run` checks its child's argv joined with spaces, which has
@@ -928,17 +1107,18 @@ mod tests {
     fn the_argv_check_stays_quote_unaware() {
         assert!(command_dump_reason("git grep -E 'a|printenv|b'").is_some());
         assert!(command_dump_reason("cargo test").is_none());
+        // `sh -c x; "printenv"` joined from argv: sh runs `printenv`
+        assert!(command_dump_reason("sh -c x; \"printenv\"").is_some());
     }
 
-    /// The fallback keeps the original five-separator split as well as the
-    /// wider one: an extra separator alone can cut a command off from its
-    /// own arguments.
     #[test]
     fn the_first_word_is_still_read_as_before() {
         // not a dump in either shell, but the pre-0.5.4 check denied it
         assert!(segment_reason("A=1\\declare").is_some());
     }
 
+    /// The fallback splits exactly as before 0.5.4: a wider split could cut
+    /// a command off from its own arguments.
     #[test]
     fn the_fallback_still_splits_the_original_way() {
         assert!(loose_reason("type ) .env").is_some());

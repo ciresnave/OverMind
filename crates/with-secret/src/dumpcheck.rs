@@ -351,6 +351,20 @@ fn shell_segments(cmd: &str, shell: Shell) -> Option<Vec<String>> {
     // misreading one pairs its quotes with later ones and can hide real code.
     // `Some` only where the rule was checked against bash 5.3 / pwsh 7;
     // `None` (unsure) makes a `#`, `<#` or here-string give the parse up.
+    //
+    //   after ...                     bash         pwsh
+    //   start, whitespace, newline    Some(true)   Some(true)
+    //   `;`                           Some(true)   Some(true)
+    //   `|`, `&`, `&&`, `||`          Some(true)   None
+    //   `<`, `>`                      Some(true)   None
+    //   `(` / `$(` / `${ ` opening    Some(true)   None
+    //   a bare subshell's `)`         Some(true)   None
+    //   a substitution's `)`/`}`/`` ` `` Some(false)  None
+    //   a quote (once closed)         Some(false)  None
+    //   an escaped character          Some(false)  Some(false)
+    //   a word character              Some(false)  Some(false) (alnum, `_`)
+    //   any other character           Some(false)  None
+    //   a continuation (removed)      unchanged    unchanged
     let mut word_start: Option<bool> = Some(true);
     let mut i = 0;
     while i < c.len() {
@@ -371,6 +385,10 @@ fn shell_segments(cmd: &str, shell: Shell) -> Option<Vec<String>> {
         let code = matches!(mode, Mode::Code | Mode::Sub | Mode::Block);
         let in_double = matches!(mode, Mode::Double | Mode::HereDouble);
 
+        // ⚠️ Nested code opens here, BEFORE `cur` is borrowed below, and in
+        // both code and double-quote modes: these two branches push their
+        // own buffers and `continue`.
+        //
         // POSIX backticks: bash finds the closing backtick without regard
         // to quotes, then runs the body as a script of its own.
         if posix && ch == '`' && (code || in_double) {

@@ -129,6 +129,12 @@ pub trait ParentProcess {
     /// read. Used only against the `claude` pid `claude_parent_pid` already
     /// found - never against an unverified process.
     fn cmdline_of(&self, pid: u32) -> Option<Vec<String>>;
+
+    /// When the process identified by `pid` started, in seconds since the
+    /// epoch, if it could be read.
+    fn start_time_of(&self, _pid: u32) -> Option<u64> {
+        None
+    }
 }
 
 /// What `claude`'s own launch command line says, that no hook field
@@ -149,6 +155,8 @@ pub trait ParentProcess {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ClaudeCliFlags {
     pub remote_control: bool,
+    /// `--name`, `--name=` or `-n`: how a person recognises the session.
+    pub name: Option<String>,
     pub permission_mode: Option<String>,
     /// The full argv this was parsed from, retained verbatim - PM finding,
     /// 2026-09-18 (CireSnave, via the PM): a relaunch that only reconstructs
@@ -179,8 +187,17 @@ pub fn parse_claude_cli_flags(cmdline: &[String]) -> ClaudeCliFlags {
             flags.permission_mode = Some(v.to_string());
             continue;
         }
+        if let Some(v) = arg.strip_prefix("--name=") {
+            flags.name = Some(v.to_string());
+            continue;
+        }
         match arg.as_str() {
             "--remote-control" => flags.remote_control = true,
+            "--name" | "-n" => {
+                if let Some(v) = iter.next() {
+                    flags.name = Some(v.clone());
+                }
+            }
             "--dangerously-skip-permissions" => {
                 flags.permission_mode = Some("bypassPermissions".to_string())
             }
@@ -235,6 +252,100 @@ pub fn claude_parent_pid(my_pid: u32, lookup: &dyn ParentProcess) -> Result<u32,
     Err(PidError::HopLimitExceeded)
 }
 
+/// `path` and each of its ancestors, nearest first, on either separator -
+/// not `Path::ancestors`, which on a non-Windows host would not split a
+/// Windows path.
+fn self_and_ancestors(path: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut p = path.trim_end_matches(['/', '\\']);
+    while !p.is_empty() {
+        out.push(p);
+        match p.rfind(['/', '\\']) {
+            Some(i) => p = &p[..i],
+            None => break,
+        }
+    }
+    out
+}
+
+/// Every state file in `state_dir` that parses.
+fn all_states(state_dir: &Path) -> Vec<LaneState> {
+    let Ok(entries) = std::fs::read_dir(state_dir) else {
+        return Vec::new();
+    };
+    entries
+        .filter_map(|e| e.ok())
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let role = name.strip_suffix(".json")?.to_string();
+            crate::state::load(state_dir, &role).ok()
+        })
+        .collect()
+}
+
+/// Which state file a hook event belongs to: the lane's, wherever its
+/// session has wandered. PM task, 2026-10-04: naming it from the event's cwd
+/// leaf sent a lane that cd'd into a subdirectory or a sibling worktree to
+/// `<that dir>.json`.
+///
+/// In order: `LANE_ROLE`; else the event cwd or its nearest ancestor that
+/// the transcript path's directory confirms is the launch dir (a cd into a
+/// subdirectory); else a state file of this same session whose recorded
+/// cwd the transcript confirms (a cd into a sibling worktree, which no
+/// ancestor walk reaches); else the event cwd's leaf, as before. The
+/// transcript's directory is a lossy encoding of the launch dir, so it can
+/// only confirm a candidate, never be decoded into one.
+pub fn hook_role(state_dir: &Path, input: &HookInput, lane_role_env: Option<&str>) -> String {
+    if let Some(r) = lane_role_env.filter(|r| !r.is_empty()) {
+        return r.to_string();
+    }
+    if let Some(dir) = input
+        .transcript_path
+        .as_deref()
+        .and_then(transcript_project_dir)
+    {
+        let proven = |cwd: &str| crate::paths::project_dir_name(cwd).eq_ignore_ascii_case(dir);
+        if let Some(launch) = self_and_ancestors(&input.cwd)
+            .into_iter()
+            .find(|a| proven(a))
+        {
+            return resolve_role(launch, None);
+        }
+        if let Some(s) = all_states(state_dir)
+            .into_iter()
+            .find(|s| s.session_id == input.session_id && proven(&s.cwd))
+        {
+            return s.role;
+        }
+    }
+    resolve_role(&input.cwd, None)
+}
+
+/// Which state file `assert-idle` belongs to. It has no hook input, only
+/// its own process: `LANE_ROLE`; else the most recently updated state file
+/// recording the caller's own `claude` pid (files the old naming left
+/// behind carry the same pid, but only the live one keeps being updated);
+/// else the cwd's leaf, as before.
+fn assert_idle_role(
+    state_dir: &Path,
+    claude_pid: Option<u32>,
+    lane_role_env: Option<&str>,
+    cwd: &str,
+) -> String {
+    if let Some(r) = lane_role_env.filter(|r| !r.is_empty()) {
+        return r.to_string();
+    }
+    claude_pid
+        .and_then(|pid| {
+            all_states(state_dir)
+                .into_iter()
+                .filter(|s| s.pid == pid)
+                .max_by_key(|s| s.updated_at)
+        })
+        .map(|s| s.role)
+        .unwrap_or_else(|| resolve_role(cwd, None))
+}
+
 /// The parent directory's own name in a transcript path, either separator.
 fn transcript_project_dir(transcript_path: &str) -> Option<&str> {
     let mut parts = transcript_path.rsplit(['/', '\\']);
@@ -255,7 +366,7 @@ fn transcript_project_dir(transcript_path: &str) -> Option<&str> {
 /// matches the transcript's own directory wins. When none matches, the
 /// order alone decides and nothing is guessed - `decide`'s transcript check
 /// then refuses rather than relaunching in the wrong place.
-fn recorded_cwd(existing: Option<&LaneState>, input: &HookInput, pid: u32) -> String {
+pub fn recorded_cwd(existing: Option<&LaneState>, input: &HookInput, pid: u32) -> String {
     let candidates: Vec<&str> = existing
         .filter(|s| s.pid == pid)
         .map(|s| s.cwd.as_str())
@@ -300,8 +411,9 @@ fn bootstrap_state(
         role: role.to_string(),
         session_id: input.session_id.clone(),
         pid,
+        pid_start_secs: None,
         cwd,
-        name: None,
+        name: cli_flags.name.clone(),
         model: input.model.clone().map(ModelField::into_string),
         permission_mode: input
             .permission_mode
@@ -334,8 +446,15 @@ pub fn apply_event(
             role: role.to_string(),
             session_id: input.session_id.clone(),
             pid,
+            pid_start_secs: None,
             cwd: recorded_cwd(existing.as_ref(), input, pid),
-            name: existing.as_ref().and_then(|s| s.name.clone()),
+            // The same "always fresh" rule as `remote_control` when this
+            // launch's command line was read; kept only when it was not.
+            name: if cli_flags.launch_args.is_some() {
+                cli_flags.name.clone()
+            } else {
+                existing.as_ref().and_then(|s| s.name.clone())
+            },
             // ⚠️ Prefer THIS event's own value (PM finding, 2026-09-18: a
             // real SessionStart DOES carry `model`); fall back to what a
             // prior SessionStart already learned, never invent one when
@@ -408,6 +527,9 @@ pub fn apply_event(
         if let Some(launch_args) = &cli_flags.launch_args {
             state.launch_args = Some(launch_args.clone());
         }
+    }
+    if state.name.is_none() {
+        state.name = cli_flags.name.clone();
     }
     state.updated_at = now;
     state.updated_by_event = event.to_string();
@@ -530,12 +652,22 @@ impl Drop for StateLock {
     }
 }
 
-fn write_atomic(path: &Path, state: &LaneState) -> Result<(), WriteError> {
+pub fn write_atomic(path: &Path, state: &LaneState) -> Result<(), WriteError> {
     let tmp = path.with_extension("json.tmp");
     let json = serde_json::to_string_pretty(state).map_err(|e| WriteError::Io(e.to_string()))?;
     std::fs::write(&tmp, json).map_err(|e| WriteError::Io(e.to_string()))?;
     std::fs::rename(&tmp, path).map_err(|e| WriteError::Io(e.to_string()))?;
     Ok(())
+}
+
+/// Records when the state's `claude` process started, once per process: a
+/// pid alone can be reused by the OS. Only for the pid this hook itself
+/// verified (`claude_parent_pid`), never another one a state carries.
+fn with_start_time(mut state: LaneState, pid: u32, lookup: &dyn ParentProcess) -> LaneState {
+    if state.pid == pid && state.pid_start_secs.is_none() {
+        state.pid_start_secs = lookup.start_time_of(pid);
+    }
+    state
 }
 
 /// The whole hook invocation: read stdin, lock, read-modify-write, unlock.
@@ -554,7 +686,7 @@ pub fn run(
     let input: HookInput =
         serde_json::from_str(&buf).map_err(|e| format!("could not parse hook input: {e}"))?;
 
-    let role = resolve_role(&input.cwd, lane_role_env);
+    let role = hook_role(state_dir, &input, lane_role_env);
     std::fs::create_dir_all(state_dir).map_err(|e| e.to_string())?;
     let path = state_dir.join(format!("{role}.json"));
     let lock = StateLock::acquire(
@@ -573,7 +705,8 @@ pub fn run(
         .cmdline_of(pid)
         .map(|cmd| parse_claude_cli_flags(&cmd))
         .unwrap_or_default();
-    let next = apply_event(existing, event, &input, &role, pid, &cli_flags, Utc::now());
+    let next = apply_event(existing, event, &input, &role, pid, &cli_flags, Utc::now())
+        .map(|state| with_start_time(state, pid, parent_lookup));
 
     let result = match next {
         Some(state) => write_atomic(&path, &state).map_err(|e| e.to_string()),
@@ -606,7 +739,8 @@ pub fn run_assert_idle(
     lane_role_env: Option<&str>,
     cwd: &str,
 ) -> Result<(), String> {
-    let role = resolve_role(cwd, lane_role_env);
+    let caller = claude_parent_pid(my_pid, parent_lookup).ok();
+    let role = assert_idle_role(state_dir, caller, lane_role_env, cwd);
     std::fs::create_dir_all(state_dir).map_err(|e| e.to_string())?;
     let path = state_dir.join(format!("{role}.json"));
     let lock = StateLock::acquire(
@@ -656,7 +790,7 @@ pub fn run_assert_idle(
         &cli_flags,
         Utc::now(),
     );
-    let result = match next {
+    let result = match next.map(|state| with_start_time(state, pid, parent_lookup)) {
         Some(state) => write_atomic(&path, &state).map_err(|e| e.to_string()),
         None => Err(format!("{role}: assert-idle produced no state to write")),
     };
@@ -672,6 +806,14 @@ pub fn run_assert_idle(
 pub struct RealParentProcess;
 
 impl ParentProcess for RealParentProcess {
+    fn start_time_of(&self, pid: u32) -> Option<u64> {
+        use sysinfo::{Pid, ProcessesToUpdate, System};
+        let pid = Pid::from_u32(pid);
+        let mut sys = System::new();
+        sys.refresh_processes(ProcessesToUpdate::Some(&[pid]), true);
+        sys.process(pid).map(|p| p.start_time())
+    }
+
     fn parent_of(&self, my_pid: u32) -> Option<(u32, String)> {
         use sysinfo::{Pid, System};
         let mut sys = System::new();
@@ -870,6 +1012,7 @@ mod tests {
             parse_claude_cli_flags(&cmdline),
             ClaudeCliFlags {
                 remote_control: true,
+                name: None,
                 permission_mode: None,
                 launch_args: Some(cmdline.clone()),
             }
@@ -883,6 +1026,7 @@ mod tests {
             parse_claude_cli_flags(&cmdline),
             ClaudeCliFlags {
                 remote_control: false,
+                name: None,
                 permission_mode: Some("prompting".to_string()),
                 launch_args: Some(cmdline.clone()),
             }
@@ -912,7 +1056,8 @@ mod tests {
 
     #[test]
     fn no_relevant_flags_leaves_both_fields_at_their_defaults() {
-        let cmdline = strs(&["claude.exe", "--name", "overmind"]);
+        // `--name` became relevant (it is recorded now); `--verbose` is not.
+        let cmdline = strs(&["claude.exe", "--verbose"]);
         assert_eq!(
             parse_claude_cli_flags(&cmdline),
             ClaudeCliFlags {
@@ -934,6 +1079,7 @@ mod tests {
             parse_claude_cli_flags(&cmdline),
             ClaudeCliFlags {
                 remote_control: true,
+                name: None,
                 permission_mode: Some("bypassPermissions".to_string()),
                 launch_args: Some(cmdline.clone()),
             }
@@ -1112,6 +1258,7 @@ mod tests {
     fn session_start_falls_back_to_cli_permission_mode_when_the_field_is_absent() {
         let cli_flags = ClaudeCliFlags {
             remote_control: false,
+            name: None,
             permission_mode: Some("bypassPermissions".to_string()),
             launch_args: None,
         };
@@ -1136,6 +1283,7 @@ mod tests {
     fn session_start_prefers_the_input_field_over_the_cli_flag_when_both_are_present() {
         let cli_flags = ClaudeCliFlags {
             remote_control: false,
+            name: None,
             permission_mode: Some("bypassPermissions".to_string()),
             launch_args: None,
         };
@@ -1157,6 +1305,7 @@ mod tests {
     fn session_start_sets_remote_control_fresh_from_this_launchs_own_cli_flags() {
         let cli_flags = ClaudeCliFlags {
             remote_control: true,
+            name: None,
             permission_mode: None,
             launch_args: None,
         };
@@ -1180,6 +1329,7 @@ mod tests {
         // wrong as a stale false, since no hook field confirms either way.
         let with_remote_control = ClaudeCliFlags {
             remote_control: true,
+            name: None,
             permission_mode: None,
             launch_args: None,
         };
@@ -1280,6 +1430,7 @@ mod tests {
         // not left at a stale prior value (there is none).
         let cli_flags = ClaudeCliFlags {
             remote_control: true,
+            name: None,
             permission_mode: Some("bypassPermissions".to_string()),
             launch_args: Some(vec![
                 "claude.exe".to_string(),
@@ -2472,6 +2623,433 @@ mod tests {
         assert!(
             observed.iter().any(|a| a == "-n" || a == "30"),
             "cmdline_of must read the child's REAL argv, not an empty one - got {observed:?}"
+        );
+    }
+
+    // -- which file an event belongs to: the launch dir, not the event cwd -- //
+    //
+    // PM task, 2026-10-04 (agentlife DESIGN-REVISION-1 §2.2.1): the file's
+    // role came from the EVENT's cwd leaf, so a lane without LANE_ROLE that
+    // cd'd into a subdirectory or a sibling worktree wrote `<that dir>.json`
+    // (43 state files for 14 live lanes, measured 2026-10-03). #105/#107
+    // fixed the recorded cwd FIELD, not the file NAME.
+
+    const LANE: &str = r"C:\p\lane";
+    const LANE_TRANSCRIPT: &str = r"C:\u\.claude\projects\C--p-lane\s1.jsonl";
+
+    fn hook_json(event: &str, session: &str, cwd: &str, transcript: Option<&str>) -> String {
+        let mut v = serde_json::json!({
+            "hook_event_name": event, "session_id": session, "cwd": cwd,
+        });
+        if let Some(t) = transcript {
+            v["transcript_path"] = serde_json::json!(t);
+        }
+        v.to_string()
+    }
+
+    fn run_event(state_dir: &Path, event: &str, json: &str, role_env: Option<&str>) {
+        let mut stdin = json.as_bytes();
+        run(
+            state_dir,
+            event,
+            4242,
+            &FakeAncestry::chain(&[(4242, 99, "claude.exe")]),
+            role_env,
+            &mut stdin,
+        )
+        .unwrap();
+    }
+
+    fn state_files(state_dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(state_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.ends_with(".json"))
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn an_event_from_a_subdirectory_writes_the_launch_dirs_file() {
+        let dir = tempdir().unwrap();
+        let start = hook_json("SessionStart", "s1", LANE, Some(LANE_TRANSCRIPT));
+        run_event(dir.path(), "SessionStart", &start, None);
+        let sub = hook_json(
+            "PreToolUse",
+            "s1",
+            r"C:\p\lane\crates\sub",
+            Some(LANE_TRANSCRIPT),
+        );
+        run_event(dir.path(), "PreToolUse", &sub, None);
+
+        assert_eq!(state_files(dir.path()), vec!["lane.json"]);
+        let s = crate::state::load(dir.path(), "lane").unwrap();
+        assert_eq!(s.updated_by_event, "PreToolUse");
+        assert_eq!(s.cwd, LANE);
+    }
+
+    /// With no state file yet (the first event after hooks are installed
+    /// mid-session), only the transcript-proven ancestor names the file.
+    #[test]
+    fn a_first_event_from_a_subdirectory_still_names_the_launch_dirs_file() {
+        let dir = tempdir().unwrap();
+        let sub = hook_json(
+            "PreToolUse",
+            "s1",
+            r"C:\p\lane\crates\sub",
+            Some(LANE_TRANSCRIPT),
+        );
+        run_event(dir.path(), "PreToolUse", &sub, None);
+        assert_eq!(state_files(dir.path()), vec!["lane.json"]);
+    }
+
+    #[test]
+    fn an_event_from_a_sibling_worktree_writes_the_launch_dirs_file() {
+        let dir = tempdir().unwrap();
+        let start = hook_json("SessionStart", "s1", LANE, Some(LANE_TRANSCRIPT));
+        run_event(dir.path(), "SessionStart", &start, None);
+        let sibling = hook_json("PreToolUse", "s1", r"C:\p\lane-wt", Some(LANE_TRANSCRIPT));
+        run_event(dir.path(), "PreToolUse", &sibling, None);
+
+        assert_eq!(state_files(dir.path()), vec!["lane.json"]);
+        assert_eq!(
+            crate::state::load(dir.path(), "lane")
+                .unwrap()
+                .updated_by_event,
+            "PreToolUse"
+        );
+    }
+
+    /// Negative control: with no transcript path nothing is proven, so the
+    /// event's own cwd decides, as before.
+    #[test]
+    fn without_a_transcript_path_the_event_cwd_still_decides() {
+        let dir = tempdir().unwrap();
+        let sub = hook_json("PreToolUse", "s1", r"C:\p\lane\sub", None);
+        run_event(dir.path(), "PreToolUse", &sub, None);
+        assert_eq!(state_files(dir.path()), vec!["sub.json"]);
+    }
+
+    /// Negative control: a sibling directory with no state file of this
+    /// session keeps today's behaviour.
+    #[test]
+    fn a_sibling_with_no_file_of_this_session_keeps_todays_behaviour() {
+        let dir = tempdir().unwrap();
+        let other = hook_json("SessionStart", "other", LANE, Some(LANE_TRANSCRIPT));
+        run_event(dir.path(), "SessionStart", &other, None);
+        let sibling = hook_json("PreToolUse", "s1", r"C:\p\lane-wt", Some(LANE_TRANSCRIPT));
+        run_event(dir.path(), "PreToolUse", &sibling, None);
+        assert_eq!(state_files(dir.path()), vec!["lane-wt.json", "lane.json"]);
+    }
+
+    /// Negative control: a file of this session is followed only when the
+    /// transcript proves its recorded cwd is the launch dir.
+    #[test]
+    fn a_file_of_this_session_with_an_unproven_cwd_is_not_followed() {
+        let dir = tempdir().unwrap();
+        let start = hook_json("SessionStart", "s1", r"C:\elsewhere\lane", None);
+        run_event(dir.path(), "SessionStart", &start, None);
+        let sibling = hook_json("PreToolUse", "s1", r"C:\p\lane-wt", Some(LANE_TRANSCRIPT));
+        run_event(dir.path(), "PreToolUse", &sibling, None);
+        assert_eq!(state_files(dir.path()), vec!["lane-wt.json", "lane.json"]);
+        assert_eq!(
+            crate::state::load(dir.path(), "lane")
+                .unwrap()
+                .updated_by_event,
+            "SessionStart"
+        );
+    }
+
+    #[test]
+    fn lane_role_still_wins_over_the_launch_dir() {
+        let dir = tempdir().unwrap();
+        let sub = hook_json("PreToolUse", "s1", r"C:\p\lane\sub", Some(LANE_TRANSCRIPT));
+        run_event(dir.path(), "PreToolUse", &sub, Some("pm"));
+        assert_eq!(state_files(dir.path()), vec!["pm.json"]);
+    }
+
+    #[test]
+    fn assert_idle_from_a_sibling_worktree_finds_its_own_file() {
+        let dir = tempdir().unwrap();
+        let start = hook_json("SessionStart", "s1", LANE, Some(LANE_TRANSCRIPT));
+        run_event(dir.path(), "SessionStart", &start, None);
+
+        run_assert_idle(
+            dir.path(),
+            4242,
+            &FakeAncestry::chain(&[(4242, 99, "claude.exe")]),
+            None,
+            r"C:\p\lane-wt",
+        )
+        .unwrap();
+
+        assert_eq!(state_files(dir.path()), vec!["lane.json"]);
+        let s = crate::state::load(dir.path(), "lane").unwrap();
+        assert_eq!(s.no_background_shells, Some(true));
+    }
+
+    /// Negative control: no state file for the caller's own claude process
+    /// keeps today's refusal, named after the cwd leaf.
+    #[test]
+    fn assert_idle_with_no_file_for_its_process_still_refuses() {
+        let dir = tempdir().unwrap();
+        let start = hook_json("SessionStart", "s1", LANE, Some(LANE_TRANSCRIPT));
+        run_event(dir.path(), "SessionStart", &start, None);
+
+        let err = run_assert_idle(
+            dir.path(),
+            5555,
+            &FakeAncestry::chain(&[(5555, 77, "claude.exe")]),
+            None,
+            r"C:\p\lane-wt",
+        )
+        .unwrap_err();
+        assert!(err.starts_with("lane-wt: no state file"), "{err}");
+        assert_eq!(state_files(dir.path()), vec!["lane.json"]);
+    }
+
+    /// Files left by the old naming carry the same pid; the one the hooks
+    /// keep updating is the live record.
+    #[test]
+    fn assert_idle_takes_the_most_recently_updated_file_of_its_process() {
+        let dir = tempdir().unwrap();
+        let old = hook_json("SessionStart", "s1", r"C:\p\phantom", None);
+        run_event(dir.path(), "SessionStart", &old, None);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let start = hook_json("SessionStart", "s1", LANE, Some(LANE_TRANSCRIPT));
+        run_event(dir.path(), "SessionStart", &start, None);
+
+        run_assert_idle(
+            dir.path(),
+            4242,
+            &FakeAncestry::chain(&[(4242, 99, "claude.exe")]),
+            None,
+            r"C:\p\lane-wt",
+        )
+        .unwrap();
+
+        assert_eq!(
+            crate::state::load(dir.path(), "lane")
+                .unwrap()
+                .no_background_shells,
+            Some(true)
+        );
+        assert_eq!(
+            crate::state::load(dir.path(), "phantom")
+                .unwrap()
+                .no_background_shells,
+            None
+        );
+    }
+
+    // -- `name`, from the launch command line ------------------------------ //
+
+    #[test]
+    fn the_name_is_read_from_every_form_of_the_flag() {
+        for (argv, want) in [
+            (vec!["claude", "--name", "pm"], Some("pm")),
+            (vec!["claude", "--name=pm"], Some("pm")),
+            (vec!["claude", "-n", "PM"], Some("PM")),
+            (vec!["claude", "--model", "x"], None),
+        ] {
+            assert_eq!(
+                parse_claude_cli_flags(&strs(&argv)).name.as_deref(),
+                want,
+                "{argv:?}"
+            );
+        }
+    }
+
+    fn launched(argv: &[&str]) -> ClaudeCliFlags {
+        parse_claude_cli_flags(&strs(argv))
+    }
+
+    #[test]
+    fn session_start_records_the_launch_name() {
+        let s = apply_event(
+            None,
+            "SessionStart",
+            &input("C:/Projects/OverMind"),
+            "overmind",
+            42,
+            &launched(&["claude", "-n", "auth-framework-deps"]),
+            now(),
+        )
+        .unwrap();
+        assert_eq!(s.name.as_deref(), Some("auth-framework-deps"));
+    }
+
+    /// A launch whose command line was read and has no name is unnamed, the
+    /// same "always fresh" rule as `remote_control`; an unreadable one
+    /// keeps what was known.
+    #[test]
+    fn a_fresh_launch_without_a_name_is_unnamed_but_an_unreadable_one_keeps_it() {
+        let named = apply_event(
+            None,
+            "SessionStart",
+            &input("C:/Projects/OverMind"),
+            "overmind",
+            42,
+            &launched(&["claude", "--name", "old"]),
+            now(),
+        )
+        .unwrap();
+        let fresh = apply_event(
+            Some(named.clone()),
+            "SessionStart",
+            &input("C:/Projects/OverMind"),
+            "overmind",
+            77,
+            &launched(&["claude"]),
+            now(),
+        )
+        .unwrap();
+        assert_eq!(fresh.name, None);
+        let unreadable = apply_event(
+            Some(named),
+            "SessionStart",
+            &input("C:/Projects/OverMind"),
+            "overmind",
+            42,
+            &ClaudeCliFlags::default(),
+            now(),
+        )
+        .unwrap();
+        assert_eq!(unreadable.name.as_deref(), Some("old"));
+    }
+
+    #[test]
+    fn a_later_event_fills_in_a_name_a_state_never_had() {
+        let unnamed = home_state("C:/Projects", 42);
+        assert_eq!(unnamed.name, None);
+        let s = apply_event(
+            Some(unnamed),
+            "PreToolUse",
+            &input("C:/Projects"),
+            "pm",
+            42,
+            &launched(&["claude", "--name", "pm"]),
+            now(),
+        )
+        .unwrap();
+        assert_eq!(s.name.as_deref(), Some("pm"));
+    }
+
+    // -- the claude process's start time, beside its pid -------------------- //
+
+    struct FakeWithStart(FakeAncestry, Option<u64>);
+    impl ParentProcess for FakeWithStart {
+        fn parent_of(&self, pid: u32) -> Option<(u32, String)> {
+            self.0.parent_of(pid)
+        }
+        fn cmdline_of(&self, pid: u32) -> Option<Vec<String>> {
+            self.0.cmdline_of(pid)
+        }
+        fn start_time_of(&self, pid: u32) -> Option<u64> {
+            (pid == 99).then_some(self.1?)
+        }
+    }
+
+    #[test]
+    fn the_claude_process_start_time_is_recorded_beside_its_pid() {
+        let dir = tempdir().unwrap();
+        let json = hook_json("SessionStart", "s1", LANE, Some(LANE_TRANSCRIPT));
+        let mut stdin = json.as_bytes();
+        run(
+            dir.path(),
+            "SessionStart",
+            4242,
+            &FakeWithStart(
+                FakeAncestry::chain(&[(4242, 99, "claude.exe")]),
+                Some(1_700_000_000),
+            ),
+            None,
+            &mut stdin,
+        )
+        .unwrap();
+        let s = crate::state::load(dir.path(), "lane").unwrap();
+        assert_eq!((s.pid, s.pid_start_secs), (99, Some(1_700_000_000)));
+    }
+
+    /// A same-session state can still carry an older pid (`apply_event`
+    /// keeps it); the start time read for THIS hook's verified pid must not
+    /// be written beside that other pid.
+    #[test]
+    fn a_start_time_is_never_written_beside_a_different_pid() {
+        let dir = tempdir().unwrap();
+        let mut stdin = hook_json("SessionStart", "s1", LANE, Some(LANE_TRANSCRIPT)).into_bytes();
+        run(
+            dir.path(),
+            "SessionStart",
+            4242,
+            &FakeAncestry::chain(&[(4242, 50, "claude.exe")]),
+            None,
+            &mut stdin.as_slice(),
+        )
+        .unwrap();
+        stdin = hook_json("PreToolUse", "s1", LANE, Some(LANE_TRANSCRIPT)).into_bytes();
+        run(
+            dir.path(),
+            "PreToolUse",
+            4242,
+            &FakeWithStart(
+                FakeAncestry::chain(&[(4242, 99, "claude.exe")]),
+                Some(1_700_000_000),
+            ),
+            None,
+            &mut stdin.as_slice(),
+        )
+        .unwrap();
+        let s = crate::state::load(dir.path(), "lane").unwrap();
+        assert_eq!((s.pid, s.pid_start_secs), (50, None));
+    }
+
+    /// State files written before this field existed still load.
+    #[test]
+    fn a_state_file_without_a_start_time_still_loads() {
+        let dir = tempdir().unwrap();
+        let json = hook_json("SessionStart", "s1", LANE, Some(LANE_TRANSCRIPT));
+        run_event(dir.path(), "SessionStart", &json, None);
+        let path = dir.path().join("lane.json");
+        let mut v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        v.as_object_mut().unwrap().remove("pid_start_secs");
+        std::fs::write(&path, v.to_string()).unwrap();
+        assert_eq!(
+            crate::state::load(dir.path(), "lane")
+                .unwrap()
+                .pid_start_secs,
+            None
+        );
+    }
+
+    #[test]
+    fn real_parent_process_start_time_of_reads_a_real_spawned_child() {
+        #[cfg(windows)]
+        let mut child = std::process::Command::new("ping")
+            .args(["-n", "30", "127.0.0.1"])
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .expect("could not spawn a throwaway child process for this test");
+        #[cfg(not(windows))]
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("could not spawn a throwaway child process for this test");
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let started = RealParentProcess.start_time_of(child.id());
+        let _ = child.kill();
+        let _ = child.wait();
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let started = started.expect("a real child's start time must be readable");
+        assert!(
+            started <= now_secs && now_secs - started < 120,
+            "{started} vs now {now_secs}"
         );
     }
 }

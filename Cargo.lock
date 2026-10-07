@@ -294,7 +294,7 @@ dependencies = [
 
 [[package]]
 name = "lane-restart"
-version = "0.5.4"
+version = "0.5.5"
 dependencies = [
  "chrono",
  "portable-pty",
@@ -683,7 +683,7 @@ checksum = "b4ac048d71ede7ee76d585517add45da530660ef4390e49b098733c6e897f254"
 
 [[package]]
 name = "user-request"
-version = "0.5.4"
+version = "0.5.5"
 dependencies = [
  "chrono",
  "serde",
@@ -909,7 +909,7 @@ dependencies = [
 
 [[package]]
 name = "with-secret"
-version = "0.5.4"
+version = "0.5.5"
 dependencies = [
  "chrono",
  "getrandom",

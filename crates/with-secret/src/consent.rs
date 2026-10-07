@@ -10,6 +10,7 @@
 use chrono::{DateTime, Local, Utc};
 
 use crate::identity::Requester;
+use user_request::request::next_local_midnight;
 
 pub struct ConsentRequest {
     pub secret: String,
@@ -17,6 +18,9 @@ pub struct ConsentRequest {
     pub command: String,
     pub reason: String,
     pub expires_at: DateTime<Utc>,
+    /// When the person is asked; an end after the next local midnight
+    /// following it is shown loudly.
+    pub asked_at: DateTime<Utc>,
 }
 
 pub use user_request::consent::{Consent, ConsentOutcome};
@@ -38,13 +42,20 @@ pub fn prompt_text(r: &ConsentRequest) -> String {
             r.requester.role, r.requester.claude_pid
         )
     };
+    let until = r.expires_at.with_timezone(&Local).format("%Y-%m-%d %H:%M");
+    // board 134: the requester chooses the length, so an approval that
+    // outlives today is shown in a loud, distinct form, never by habit
+    let longer = r.expires_at > next_local_midnight(r.asked_at.with_timezone(&Local));
+    let covers = if longer {
+        format!("*** LONGER THAN TODAY: until {until} ***\nApproving covers this lane and this secret until then (or the lane restarts).")
+    } else {
+        format!("Approving covers this lane and this secret until {until} (or the lane restarts).")
+    };
     format!(
-        "with-secret: {who} asks to use secret {}.\nCommand: {}\nReason: {}\n\
-         Approving covers this lane and this secret until {} (or the lane restarts).",
+        "with-secret: {who} asks to use secret {}.\nCommand: {}\nReason: {}\n{covers}",
         r.secret,
         clip(&r.command, 200),
         clip(&r.reason, 200),
-        r.expires_at.with_timezone(&Local).format("%Y-%m-%d %H:%M"),
     )
 }
 
@@ -70,7 +81,31 @@ mod tests {
             command: cmd.into(),
             reason: "run the seed migration against prod".into(),
             expires_at: Utc.with_ymd_and_hms(2026, 10, 2, 7, 0, 0).unwrap(),
+            asked_at: Utc.with_ymd_and_hms(2026, 10, 2, 6, 0, 0).unwrap(),
         }
+    }
+
+    /// Board 134: an approval that outlives today is shown in a loud,
+    /// distinct form, like FOREVER, so it is never approved by habit.
+    #[test]
+    fn an_end_after_today_is_loud_and_one_within_today_is_not() {
+        let mut r = req("psql");
+        let at = Local
+            .with_ymd_and_hms(2026, 10, 2, 9, 0, 0)
+            .single()
+            .unwrap();
+        r.asked_at = at.with_timezone(&Utc);
+        r.expires_at = (at + chrono::Duration::hours(2)).with_timezone(&Utc);
+        assert!(!prompt_text(&r).contains("LONGER THAN TODAY"));
+        r.expires_at = (at + chrono::Duration::hours(20)).with_timezone(&Utc);
+        let p = prompt_text(&r);
+        assert!(p.contains("*** LONGER THAN TODAY"), "{p}");
+        let shown = r
+            .expires_at
+            .with_timezone(&Local)
+            .format("%Y-%m-%d %H:%M")
+            .to_string();
+        assert!(p.contains(&shown), "{p}");
     }
 
     #[test]

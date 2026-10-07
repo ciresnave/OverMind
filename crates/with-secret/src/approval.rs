@@ -24,8 +24,19 @@ pub struct Approval {
     pub expires_at: DateTime<Utc>,
 }
 
-/// The earlier of local midnight after `granted` and `granted + window`.
-pub fn expiry(granted: DateTime<Local>, window: Option<Duration>) -> DateTime<Utc> {
+/// When an approval granted at `granted` ends: `granted + window` when the
+/// requester stated a window, however long (board 134, CireSnave
+/// 2026-10-07: "it could request as long of a time as it wants and if I or
+/// some other user disagrees, we simply don't approve it"); otherwise the
+/// next local midnight. The person is shown this end before approving, and
+/// an end after today is shown loudly (`consent::prompt_text`).
+pub fn expiry(granted: DateTime<Local>, window: Option<Duration>) -> Result<DateTime<Utc>, String> {
+    if let Some(w) = window {
+        return granted
+            .checked_add_signed(w)
+            .map(|e| e.with_timezone(&Utc))
+            .ok_or_else(|| "the requested window ends too far in the future".to_string());
+    }
     let next_midnight = (granted.date_naive() + Duration::days(1))
         .and_hms_opt(0, 0, 0)
         .unwrap();
@@ -35,11 +46,7 @@ pub fn expiry(granted: DateTime<Local>, window: Option<Duration>) -> DateTime<Ut
         .from_local_datetime(&next_midnight)
         .earliest()
         .unwrap_or(granted + Duration::hours(1));
-    let end = match window {
-        Some(w) if granted + w < midnight => granted + w,
-        _ => midnight,
-    };
-    end.with_timezone(&Utc)
+    Ok(midnight.with_timezone(&Utc))
 }
 
 impl Approval {
@@ -99,6 +106,17 @@ impl ApprovalCache {
         self.entries.push(a);
     }
 
+    /// Removes every approval for `secret`, or every approval at all, and
+    /// returns how many. Needs no Hello: it only removes privilege. ⚠️ An
+    /// old copy of the file put back brings them back; the user-request
+    /// store's tombstones fix that when with-secret moves onto it (#2b).
+    pub fn revoke(&mut self, secret: Option<&str>) -> usize {
+        let before = self.entries.len();
+        self.entries
+            .retain(|a| secret.is_some_and(|s| a.secret != s));
+        before - self.entries.len()
+    }
+
     pub fn save(&self, path: &Path, now: DateTime<Utc>) -> Result<(), String> {
         let signed: Vec<Signed> = self
             .entries
@@ -141,14 +159,14 @@ mod tests {
             secret: "TJ_DB".into(),
             requester: who(10, "s-1"),
             granted_at: at.with_timezone(&Utc),
-            expires_at: expiry(at, window),
+            expires_at: expiry(at, window).unwrap(),
         }
     }
 
     #[test]
     fn expires_at_local_midnight_by_default() {
         assert_eq!(
-            expiry(local(9, 0), None),
+            expiry(local(9, 0), None).unwrap(),
             Local
                 .with_ymd_and_hms(2026, 10, 2, 0, 0, 0)
                 .single()
@@ -157,25 +175,51 @@ mod tests {
         );
     }
 
+    /// Board 134 (CireSnave, 2026-10-07): the requester states the
+    /// duration and the person sees it; midnight is no longer a cap.
     #[test]
-    fn test_late_grant_expires_at_midnight() {
-        let e = expiry(local(23, 50), Some(Duration::hours(4)));
+    fn a_window_past_midnight_is_kept() {
         assert_eq!(
-            e,
-            Local
-                .with_ymd_and_hms(2026, 10, 2, 0, 0, 0)
-                .single()
-                .unwrap()
-                .with_timezone(&Utc)
+            expiry(local(23, 50), Some(Duration::hours(4))).unwrap(),
+            (local(23, 50) + Duration::hours(4)).with_timezone(&Utc)
+        );
+        assert_eq!(
+            expiry(local(9, 0), Some(Duration::days(30))).unwrap(),
+            (local(9, 0) + Duration::days(30)).with_timezone(&Utc)
         );
     }
 
     #[test]
-    fn a_shorter_window_wins() {
+    fn a_shorter_window_is_kept_too() {
         assert_eq!(
-            expiry(local(9, 0), Some(Duration::minutes(30))),
+            expiry(local(9, 0), Some(Duration::minutes(30))).unwrap(),
             (local(9, 0) + Duration::minutes(30)).with_timezone(&Utc)
         );
+    }
+
+    #[test]
+    fn an_end_that_cannot_be_represented_is_refused() {
+        assert!(expiry(local(9, 0), Some(Duration::MAX)).is_err());
+    }
+
+    #[test]
+    fn revoke_removes_one_secret_or_all_and_persists() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("approvals.json");
+        let now = local(10, 0).with_timezone(&Utc);
+        let mut c = ApprovalCache::load(&path, b"k".repeat(32)).0;
+        c.add(approval(local(9, 0), None));
+        let mut other = approval(local(9, 0), None);
+        other.secret = "OTHER".into();
+        c.add(other);
+        assert_eq!(c.revoke(Some("TJ_DB")), 1);
+        assert_eq!(c.revoke(Some("TJ_DB")), 0);
+        c.save(&path, now).unwrap();
+        let mut back = ApprovalCache::load(&path, b"k".repeat(32)).0;
+        assert!(back.find("TJ_DB", &who(10, "s-1"), now).is_none());
+        assert!(back.find("OTHER", &who(10, "s-1"), now).is_some());
+        assert_eq!(back.revoke(None), 1);
+        assert!(back.entries.is_empty());
     }
 
     #[test]

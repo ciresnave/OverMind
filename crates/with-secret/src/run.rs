@@ -314,7 +314,7 @@ mod tests {
         let prompt = consent.asked.borrow()[0].clone();
         let shown = stored
             .with_timezone(&Local)
-            .format("%Y-%m-%d %H:%M")
+            .format("%Y-%m-%d %H:%M:%S")
             .to_string();
         assert!(prompt.contains(&shown), "{prompt}");
         assert!(prompt.contains("LONGER THAN TODAY"), "{prompt}");

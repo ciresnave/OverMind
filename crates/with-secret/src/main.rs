@@ -91,7 +91,7 @@ fn run(args: &[String]) -> Result<u8, String> {
     } else {
         vec![0; 32]
     };
-    let (mut cache, rejected) = ApprovalCache::load(&approvals_path, key);
+    let (mut cache, rejected) = ApprovalCache::load(&approvals_path, key.clone());
     if rejected > 0 {
         eprintln!("with-secret: ignored {rejected} approval entr(y/ies) with a bad signature");
     }
@@ -113,7 +113,11 @@ fn run(args: &[String]) -> Result<u8, String> {
     }
     let released = decided?;
     if released.newly_granted {
-        cache.save(&approvals_path, Utc::now())?;
+        // against the file as it is now, not the copy loaded before the
+        // prompt: a revocation made while the person was deciding stays
+        // (review of #115, I1)
+        let approval = released.approval.clone();
+        ApprovalCache::update(&approvals_path, key, Utc::now(), |c| c.add(approval))?;
     }
     spawn_masked(&a.argv, &a.secret, &released.secret)
 }
@@ -189,9 +193,9 @@ fn revoke_cmd(args: &[String]) -> Result<u8, String> {
     };
     let store = store()?;
     let path = store.dir.join(APPROVALS_FILE);
-    let (mut cache, _) = ApprovalCache::load(&path, store.approval_key()?);
-    let n = cache.revoke(which);
-    cache.save(&path, Utc::now())?;
+    let n = ApprovalCache::update(&path, store.approval_key()?, Utc::now(), |c| {
+        c.revoke(which)
+    })?;
     println!("revoked {n} approval(s)");
     Ok(0)
 }

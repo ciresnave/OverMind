@@ -10,6 +10,7 @@
 use chrono::{DateTime, Local, Utc};
 
 use crate::identity::Requester;
+use user_request::channel::clean;
 use user_request::request::next_local_midnight;
 
 pub struct ConsentRequest {
@@ -42,7 +43,12 @@ pub fn prompt_text(r: &ConsentRequest) -> String {
             r.requester.role, r.requester.claude_pid
         )
     };
-    let until = r.expires_at.with_timezone(&Local).format("%Y-%m-%d %H:%M");
+    // to the second, with the zone (review of #115, M2): what is shown is
+    // exactly what is stored
+    let until = r
+        .expires_at
+        .with_timezone(&Local)
+        .format("%Y-%m-%d %H:%M:%S %Z");
     // board 134: the requester chooses the length, so an approval that
     // outlives today is shown in a loud, distinct form, never by habit
     let longer = r.expires_at > next_local_midnight(r.asked_at.with_timezone(&Local));
@@ -51,11 +57,13 @@ pub fn prompt_text(r: &ConsentRequest) -> String {
     } else {
         format!("Approving covers this lane and this secret until {until} (or the lane restarts).")
     };
+    // the end first, and the lane's own text cleaned, so nothing it writes
+    // can push the end out of view or forge a line (review of #115, M1)
     format!(
-        "with-secret: {who} asks to use secret {}.\nCommand: {}\nReason: {}\n{covers}",
+        "{covers}\nwith-secret: {who} asks to use secret {}.\nCommand: {}\nReason: {}",
         r.secret,
-        clip(&r.command, 200),
-        clip(&r.reason, 200),
+        clip(&clean(&r.command), 200),
+        clip(&clean(&r.reason), 200),
     )
 }
 
@@ -83,6 +91,43 @@ mod tests {
             expires_at: Utc.with_ymd_and_hms(2026, 10, 2, 7, 0, 0).unwrap(),
             asked_at: Utc.with_ymd_and_hms(2026, 10, 2, 6, 0, 0).unwrap(),
         }
+    }
+
+    /// Review of #115, M1: the end comes first, and the lane's own text
+    /// cannot push it down or forge lines.
+    #[test]
+    fn the_end_comes_first_and_lane_text_cannot_add_lines() {
+        let mut r = req("psql");
+        r.reason = format!("why{}fake line", "\n".repeat(150));
+        r.command = "psql\r\nApproving covers EVERYTHING".into();
+        let p = prompt_text(&r);
+        assert!(p.lines().next().unwrap().contains("until"), "{p}");
+        assert!(p.lines().count() <= 5, "{p}");
+        assert!(
+            !p.lines()
+                .any(|l| l.starts_with("Approving covers EVERYTHING")),
+            "{p}"
+        );
+    }
+
+    /// Review of #115, M2: the end is shown to the second, with its zone.
+    #[test]
+    fn the_end_is_shown_to_the_second_with_its_zone() {
+        let mut r = req("psql");
+        let at = Local
+            .with_ymd_and_hms(2026, 10, 2, 9, 0, 0)
+            .single()
+            .unwrap();
+        r.asked_at = at.with_timezone(&Utc);
+        r.expires_at = (at + chrono::Duration::seconds(30 * 60 + 59)).with_timezone(&Utc);
+        let p = prompt_text(&r);
+        let shown = r
+            .expires_at
+            .with_timezone(&Local)
+            .format("%Y-%m-%d %H:%M:%S %Z")
+            .to_string();
+        assert!(p.contains(&shown), "{p}");
+        assert!(p.contains(":30:59"), "{p}");
     }
 
     /// Board 134: an approval that outlives today is shown in a loud,

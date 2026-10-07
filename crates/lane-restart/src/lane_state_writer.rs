@@ -2733,6 +2733,24 @@ mod tests {
         assert_eq!(state_files(dir.path()), vec!["lane.json"]);
     }
 
+    /// The file NAME is what a write targets; a `role` field that says
+    /// otherwise (a hand edit, an old writer) must not send events to a
+    /// third file (review of #0).
+    #[test]
+    fn the_file_name_wins_over_the_role_field_inside_it() {
+        let dir = tempdir().unwrap();
+        let start = hook_json("SessionStart", "s1", LANE, Some(LANE_TRANSCRIPT));
+        run_event(dir.path(), "SessionStart", &start, None);
+        let path = dir.path().join("lane.json");
+        let mut v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        v["role"] = serde_json::json!("other");
+        std::fs::write(&path, v.to_string()).unwrap();
+        let sibling = hook_json("PreToolUse", "s1", r"C:\p\lane-wt", Some(LANE_TRANSCRIPT));
+        run_event(dir.path(), "PreToolUse", &sibling, None);
+        assert_eq!(state_files(dir.path()), vec!["lane.json"]);
+    }
+
     #[test]
     fn an_event_from_a_sibling_worktree_writes_the_launch_dirs_file() {
         let dir = tempdir().unwrap();

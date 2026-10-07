@@ -25,7 +25,8 @@ not used.
   approval now isn't still valid tomorrow."* Item 81 turns that into three rules:
   - an approval covers ONE lane and ONE secret;
   - it expires by the end of the same local day at the latest, and a shorter window can be
-    configured;
+    configured (superseded: board 134, 2026-10-07, allows any finite end, shown loudly past today,
+    and since user-request #3 CireSnave chooses the end in the chooser window);
   - it is void if the lane restarts, because a new session is a new requester.
 - From the PM's proposal on item 81:
   - **(a)** secrets live in an encrypted vault, never in environment variables;
@@ -99,7 +100,8 @@ plaintext it already holds.
 - An approval covers its secret for the whole window, not one command. Until the window ends,
   the approved requester can run other commands with the same secret. Per-command scoping was
   considered and declined by the PM on 2026-10-01; the Hello prompt (naming the command and
-  reason) and a short `--window-mins` are the controls. This is an accepted limit.
+  reason) and the end CireSnave chooses in the chooser window are the controls (`--window-mins` is
+  only a proposal since user-request #3). This is an accepted limit.
 
 Least privilege (e) limits how much damage a leaked secret can do. It is a procedure for
 CireSnave and the PM when they provision each credential, and no tool can enforce it.

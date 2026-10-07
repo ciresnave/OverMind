@@ -24,3 +24,5 @@ windows-future = "0.3.2"
 tempfile = "3.27.0"
 # real time zones, for the DST-gap tests (review of #1)
 chrono-tz = "0.10.4"
+# finds the chooser window's process, for the real-console tests
+sysinfo = "0.39.6"

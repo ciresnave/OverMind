@@ -303,25 +303,27 @@ fn a_scratch_vault_never_reaches_the_real_approvals() {
 /// user-request #3: with-secret's approvals open the chooser window by
 /// re-running this binary, so this binary must serve it. A proposal over a
 /// secret's maximum is refused there without asking, so no one has to type.
-/// ⚠️ Opens a console window briefly.
+/// ⚠️ Opens a REAL console window: ignored by default, run by CI with
+/// `--ignored`; locally only with the person told first.
 #[cfg(windows)]
 #[test]
+#[ignore = "opens a real console window: run with --ignored, the person told first"]
 fn with_secret_serves_the_chooser_window() {
     use user_request::chooser::{Choice, Chooser};
     use user_request::window::WindowChooser;
     use user_request::{Grant, KindId, Request, Requester};
     let req = Request {
         kind: KindId::Secret,
-        subject: "TJ_DB".into(),
-        summary: "run: psql".into(),
+        subject: "TEST_FIXTURE_DO_NOT_APPROVE".into(),
+        summary: "TEST: a test fixture; nothing will run".into(),
         requester: Requester {
-            role: "overmind".into(),
+            role: "TEST-FIXTURE".into(),
             session_id: "s".into(),
             claude_pid: 1,
             claude_start_secs: 1,
             managed: true,
         },
-        reason: "test".into(),
+        reason: "TEST: do not approve".into(),
     };
     let ch = WindowChooser {
         exe: env!("CARGO_BIN_EXE_with-secret").into(),

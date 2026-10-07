@@ -158,6 +158,25 @@ jobs:
       - name: cargo test
         run: cargo test --workspace
 
+      - name: real-window tests (Windows)
+        # user-request #3: these open REAL console windows, so a plain
+        # `cargo test` ignores them (one was left open on CireSnave's desktop
+        # for hours, 2026-10-07). Nobody is at a runner's desktop. The named
+        # targets hold no other ignored test, so --ignored runs exactly these;
+        # the count guards a run that stops early and looks green.
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo test -p user-request --test chooser_window --test chooser_window_console -- --ignored --test-threads=1 2>&1 | tee rw.log
+          cargo test -p with-secret --test cli -- --ignored with_secret_serves_the_chooser_window 2>&1 | tee -a rw.log
+          n=$(grep -cE '^test .* \.\.\. ok$' rw.log)
+          echo "real-window tests passed: $n"
+          if [ "$n" -ne 8 ]; then
+            echo "::error::expected 8 real-window tests to pass, saw $n"
+            exit 1
+          fi
+
   gate-boundary:
     name: gate boundary is intact
     runs-on: ubuntu-latest

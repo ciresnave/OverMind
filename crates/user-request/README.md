@@ -58,10 +58,14 @@ The chooser window (user-request #3, PM ruling 2026-10-07):
   window asks for the word or the date to be typed back.
 - A choice over the kind's maximum is **refused, never clamped**, and the person may choose again. A
   proposal over the maximum is refused without opening the window.
+- A length (`90m`, Enter on a proposed length) becomes the absolute end it has when the person
+  chooses it, so Hello cannot stretch it and a date typed back is the end granted.
 - A local time that does not exist (a DST gap) is refused; one that repeats means its earlier
   instant.
-- Three entries that are not understood, refused or not confirmed end it as a denial. So does
-  closing the window.
+- Three entries that are not understood, refused or not confirmed end it as a denial. So do
+  closing the window, Ctrl+C and Ctrl+Break, so the gate's 10-minute cooldown starts.
+- Keys typed before the window appeared are discarded, so an Enter meant for another window is
+  not an answer.
 - The chooser and Hello share one wait.
 - How it works:
   - The requesting binary starts a child of itself in a **new console**. Every binary that uses
@@ -70,6 +74,9 @@ The chooser window (user-request #3, PM ruling 2026-10-07):
     pipe.
   - The person's typing is read **only** from that window's own console input (`CONIN$`), never
     from the requester's stdin, arguments or environment (PM condition (1)).
+  - Where Windows Terminal is the default terminal, the window is a Windows Terminal window.
+  - ⚠️ If the requester is killed while the window is open, the window stays open, and its answer
+    goes nowhere (issue #118).
 
 ## Who uses it
 

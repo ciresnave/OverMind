@@ -17,6 +17,7 @@
 
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -131,13 +132,31 @@ pub fn serve_if_child() -> Option<ExitCode> {
     if std::env::args_os().nth(1).as_deref() != Some(std::ffi::OsStr::new(CHILD_ARG)) {
         return None;
     }
+    // review 1: closing the window, Ctrl+C or Ctrl+Break is the person
+    // saying no, so the gate's cooldown starts
+    console::deny_on_close();
     let choice = serve().unwrap_or_else(Choice::Unavailable);
-    match serde_json::to_string(&choice) {
+    Some(if answer(&choice) {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    })
+}
+
+static ANSWERED: AtomicBool = AtomicBool::new(false);
+
+/// The child's one answer, whichever comes first: the person's choice, or
+/// the window closing. `false` if it was not this one.
+fn answer(choice: &Choice) -> bool {
+    if ANSWERED.swap(true, Ordering::SeqCst) {
+        return false;
+    }
+    match serde_json::to_string(choice) {
         Ok(json) => {
             println!("{json}");
-            Some(ExitCode::SUCCESS)
+            true
         }
-        Err(_) => Some(ExitCode::FAILURE),
+        Err(_) => false,
     }
 }
 
@@ -153,7 +172,7 @@ fn serve() -> Result<Choice, String> {
         &mut io,
         &ask.request,
         &ask.proposed,
-        chrono::Local::now(),
+        chrono::Local::now,
     ))
 }
 
@@ -162,7 +181,25 @@ mod console {
     use std::fs::{File, OpenOptions};
     use std::io::{BufRead, BufReader, Write};
 
-    use crate::chooser::ConsoleIo;
+    use crate::chooser::{Choice, ConsoleIo};
+
+    /// Closing the window (`CTRL_CLOSE_EVENT`), Ctrl+C and Ctrl+Break answer
+    /// `Denied` instead of ending the child with no answer at all.
+    pub fn deny_on_close() {
+        use windows::core::BOOL;
+        use windows::Win32::System::Console::SetConsoleCtrlHandler;
+        unsafe extern "system" fn on_ctrl(_: u32) -> BOOL {
+            if super::answer(&Choice::Denied) {
+                std::process::exit(0);
+            }
+            // the person's own answer is being written: let it finish
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            true.into()
+        }
+        unsafe {
+            let _ = SetConsoleCtrlHandler(Some(on_ctrl), true);
+        }
+    }
 
     /// This window's own console: `CONIN$` and `CONOUT$`, never stdin.
     pub struct WindowIo {
@@ -172,11 +209,16 @@ mod console {
 
     impl WindowIo {
         pub fn open() -> Result<Self, String> {
+            use std::os::windows::io::AsRawHandle;
             use windows::core::HSTRING;
-            use windows::Win32::System::Console::{SetConsoleOutputCP, SetConsoleTitleW};
-            // best effort: UTF-8 for the prompt's text, and a title that says
+            use windows::Win32::Foundation::HANDLE;
+            use windows::Win32::System::Console::{
+                FlushConsoleInputBuffer, SetConsoleCP, SetConsoleOutputCP, SetConsoleTitleW,
+            };
+            // best effort: UTF-8 both ways (review 5), and a title that says
             // what the window is for
             unsafe {
+                let _ = SetConsoleCP(65001);
                 let _ = SetConsoleOutputCP(65001);
                 let _ = SetConsoleTitleW(&HSTRING::from("user-request: choose how long to grant"));
             }
@@ -189,6 +231,11 @@ mod console {
                 .write(true)
                 .open("CONOUT$")
                 .map_err(|e| format!("the chooser window has no console output: {e}"))?;
+            // review 3: keys typed before the window appeared (an Enter
+            // meant for another window) are not an answer
+            unsafe {
+                let _ = FlushConsoleInputBuffer(HANDLE(input.as_raw_handle()));
+            }
             Ok(Self {
                 input: BufReader::new(input),
                 output,
@@ -204,10 +251,16 @@ mod console {
         fn line(&mut self, prompt: &str) -> Option<String> {
             let _ = write!(self.output, "{prompt}");
             let _ = self.output.flush();
-            let mut s = String::new();
-            match self.input.read_line(&mut s) {
+            // bytes that are not UTF-8 are an entry not understood, not a
+            // closed window (review 5)
+            let mut raw = Vec::new();
+            match self.input.read_until(b'\n', &mut raw) {
                 Ok(0) | Err(_) => None,
-                Ok(_) => Some(s.trim_end_matches(['\r', '\n']).to_string()),
+                Ok(_) => Some(
+                    String::from_utf8_lossy(&raw)
+                        .trim_end_matches(['\r', '\n'])
+                        .to_string(),
+                ),
             }
         }
     }
@@ -216,6 +269,8 @@ mod console {
 #[cfg(not(windows))]
 mod console {
     use crate::chooser::ConsoleIo;
+
+    pub fn deny_on_close() {}
 
     pub struct WindowIo;
 

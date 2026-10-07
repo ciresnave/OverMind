@@ -144,17 +144,18 @@ fn menu(forever: bool) -> String {
     )
 }
 
-/// Ask the person through `io`. `now` is the chooser's clock; its time zone
-/// decides what a typed date means.
+/// Ask the person through `io`. `clock` is read when the window opens and
+/// again at every entry; its time zone decides what a typed date means.
 pub fn run<Tz: TimeZone>(
     io: &mut dyn ConsoleIo,
     req: &Request,
     proposed: &Grant,
-    now: DateTime<Tz>,
+    clock: impl Fn() -> DateTime<Tz>,
 ) -> Choice
 where
     Tz::Offset: std::fmt::Display,
 {
+    let now = clock();
     let utc = now.with_timezone(&Utc);
     let max = req.kind.max();
     if !proposed.within(max, now.clone()) {
@@ -170,6 +171,9 @@ where
         let Some(typed) = io.line("Your choice: ") else {
             return Choice::Denied;
         };
+        // review 2: everything about this entry is measured when it is made
+        let now = clock();
+        let utc = now.with_timezone(&Utc);
         let (grant, was_typed) = match parse(&typed, proposed, &now) {
             Ok(Entry::Refuse) => return Choice::Denied,
             Ok(Entry::Pick(g, t)) => (g, t),
@@ -209,7 +213,12 @@ where
                 }
             }
         }
-        return Choice::Chosen(grant);
+        // review 2: a length becomes the absolute end it has as chosen, so
+        // Hello cannot stretch it and a date typed back is the end granted
+        return Choice::Chosen(match (&grant, grant.end_at(utc)) {
+            (Grant::For { .. }, Ok(Some(end))) => Grant::Until(end),
+            _ => grant,
+        });
     }
     io.say("No choice was made: refused.");
     Choice::Denied
@@ -311,8 +320,8 @@ mod tests {
     fn enter_accepts_a_short_proposal() {
         let mut io = script(&[""]);
         assert_eq!(
-            run(&mut io, &req(KindId::Secret), &hour(), at(9, 0)),
-            Choice::Chosen(hour())
+            run(&mut io, &req(KindId::Secret), &hour(), || at(9, 0)),
+            Choice::Chosen(Grant::Until(utc(at(10, 0))))
         );
         // the person was shown who asks and the proposal
         assert!(io.shown.contains("Who: lane 'overmind'"), "{}", io.shown);
@@ -322,11 +331,12 @@ mod tests {
     #[test]
     fn presets_durations_and_dates_choose_what_they_say() {
         let now = at(9, 0);
+        let u = utc(now);
         let cases: [(&str, Grant); 7] = [
-            ("5m", Grant::for_duration(Span::minutes(5))),
-            ("1h", hour()),
-            ("90m", Grant::for_duration(Span::minutes(90))),
-            ("3d", Grant::for_duration(Span::days(3))),
+            ("5m", Grant::Until(u + Span::minutes(5))),
+            ("1h", Grant::Until(u + Span::hours(1))),
+            ("90m", Grant::Until(u + Span::minutes(90))),
+            ("3d", Grant::Until(u + Span::days(3))),
             ("today", Grant::Until(next_local_midnight(now))),
             // a bare date means its 00:00 (short, never long)
             (
@@ -341,7 +351,7 @@ mod tests {
         for (typed, want) in cases {
             let mut io = script(&[typed]);
             assert_eq!(
-                run(&mut io, &req(KindId::Secret), &hour(), now),
+                run(&mut io, &req(KindId::Secret), &hour(), || now),
                 Choice::Chosen(want),
                 "{typed}"
             );
@@ -366,6 +376,30 @@ mod tests {
         assert!(!must_be_typed(&hour(), now));
     }
 
+    /// Review 2: a length is measured from the moment the person CHOSE it,
+    /// and kept as that absolute end, so Hello cannot stretch it and the
+    /// date typed back is the end granted.
+    #[test]
+    fn a_length_ends_where_it_was_chosen_not_where_the_window_opened() {
+        use std::cell::Cell;
+        let reads = Cell::new(0);
+        // the window opens at 23:50; the person answers at 00:05 the next day
+        let clock = || {
+            reads.set(reads.get() + 1);
+            if reads.get() == 1 {
+                at(23, 50)
+            } else {
+                at(23, 50) + Span::minutes(15)
+            }
+        };
+        let chosen = utc(at(23, 50)) + Span::minutes(15);
+        let mut io = script(&["45d", "2026-11-22"]);
+        assert_eq!(
+            run(&mut io, &req(KindId::Secret), &hour(), clock),
+            Choice::Chosen(Grant::Until(chosen + Span::days(45)))
+        );
+    }
+
     /// PM condition (b): Enter never accepts FOREVER.
     #[test]
     fn a_forever_proposal_is_not_accepted_by_enter() {
@@ -375,7 +409,7 @@ mod tests {
                 &mut io,
                 &req(KindId::LaneDialogBypass),
                 &Grant::Forever,
-                at(9, 0)
+                || at(9, 0)
             ),
             Choice::Denied
         );
@@ -390,7 +424,7 @@ mod tests {
                 &mut io,
                 &req(KindId::LaneDialogBypass),
                 &Grant::Forever,
-                at(9, 0)
+                || at(9, 0)
             ),
             Choice::Chosen(Grant::Forever)
         );
@@ -400,7 +434,9 @@ mod tests {
     fn typing_forever_as_the_choice_is_typing_it() {
         let mut io = script(&["FOREVER"]);
         assert_eq!(
-            run(&mut io, &req(KindId::LaneDialogBypass), &hour(), at(9, 0)),
+            run(&mut io, &req(KindId::LaneDialogBypass), &hour(), || at(
+                9, 0
+            )),
             Choice::Chosen(Grant::Forever)
         );
         assert_eq!(io.asked, 1);
@@ -415,7 +451,7 @@ mod tests {
                 &mut io,
                 &req(KindId::LaneDialogBypass),
                 &Grant::Forever,
-                at(9, 0)
+                || at(9, 0)
             ),
             Choice::Denied
         );
@@ -424,11 +460,11 @@ mod tests {
     #[test]
     fn a_duration_over_thirty_days_needs_its_end_date_typed() {
         let now = at(9, 0);
-        let want = Grant::for_duration(Span::days(45));
+        let want = Grant::Until(utc(now) + Span::days(45));
         // 2026-10-07 09:00 -07 + 45d = 2026-11-21
         let mut io = script(&["45d", "2026-11-22", "45d", "2026-11-21"]);
         assert_eq!(
-            run(&mut io, &req(KindId::Secret), &hour(), now),
+            run(&mut io, &req(KindId::Secret), &hour(), || now),
             Choice::Chosen(want)
         );
         assert!(io.shown.contains("2026-11-21"), "{}", io.shown);
@@ -439,7 +475,7 @@ mod tests {
         let long = Grant::for_duration(Span::days(400));
         let mut io = script(&["", "y", "n"]);
         assert_eq!(
-            run(&mut io, &req(KindId::Secret), &long, at(9, 0)),
+            run(&mut io, &req(KindId::Secret), &long, || at(9, 0)),
             Choice::Denied
         );
     }
@@ -448,7 +484,7 @@ mod tests {
     fn a_typed_date_over_thirty_days_is_typed_already() {
         let mut io = script(&["2027-01-15"]);
         assert_eq!(
-            run(&mut io, &req(KindId::Secret), &hour(), at(9, 0)),
+            run(&mut io, &req(KindId::Secret), &hour(), || at(9, 0)),
             Choice::Chosen(Grant::Until(
                 Utc.with_ymd_and_hms(2027, 1, 15, 7, 0, 0).unwrap()
             ))
@@ -461,7 +497,7 @@ mod tests {
     fn a_choice_over_the_maximum_is_refused_not_clamped() {
         let mut io = script(&["FOREVER", "FOREVER", "n"]);
         assert_eq!(
-            run(&mut io, &req(KindId::Secret), &hour(), at(9, 0)),
+            run(&mut io, &req(KindId::Secret), &hour(), || at(9, 0)),
             Choice::Denied
         );
         assert!(io.shown.contains("over the maximum"), "{}", io.shown);
@@ -472,7 +508,7 @@ mod tests {
     fn forever_is_offered_only_for_kinds_that_allow_it() {
         let offered = |kind| {
             let mut io = script(&["n"]);
-            run(&mut io, &req(kind), &hour(), at(9, 0));
+            run(&mut io, &req(kind), &hour(), || at(9, 0));
             io.shown.contains("  FOREVER ")
         };
         assert!(!offered(KindId::Secret));
@@ -487,7 +523,7 @@ mod tests {
         let now = New_York.with_ymd_and_hms(2026, 10, 31, 12, 0, 0).unwrap();
         let mut io = script(&["2026-11-01 01:30"]);
         assert_eq!(
-            run(&mut io, &req(KindId::Secret), &hour(), now),
+            run(&mut io, &req(KindId::Secret), &hour(), || now),
             Choice::Chosen(Grant::Until(
                 Utc.with_ymd_and_hms(2026, 11, 1, 5, 30, 0).unwrap()
             ))
@@ -497,7 +533,7 @@ mod tests {
     #[test]
     fn a_proposal_over_the_maximum_is_refused_without_asking() {
         let mut io = script(&[""]);
-        let got = run(&mut io, &req(KindId::Secret), &Grant::Forever, at(9, 0));
+        let got = run(&mut io, &req(KindId::Secret), &Grant::Forever, || at(9, 0));
         assert!(matches!(got, Choice::Refused(_)), "{got:?}");
         assert_eq!(io.asked, 0);
     }
@@ -507,7 +543,7 @@ mod tests {
         for typed in ["0m", "2026-10-01", "99999999999999d", "-5m"] {
             let mut io = script(&[typed, "n"]);
             assert_eq!(
-                run(&mut io, &req(KindId::Secret), &hour(), at(9, 0)),
+                run(&mut io, &req(KindId::Secret), &hour(), || at(9, 0)),
                 Choice::Denied,
                 "{typed}"
             );
@@ -518,7 +554,7 @@ mod tests {
     fn three_bad_entries_deny() {
         let mut io = script(&["what", "2026-13-01", "1y", ""]);
         assert_eq!(
-            run(&mut io, &req(KindId::Secret), &hour(), at(9, 0)),
+            run(&mut io, &req(KindId::Secret), &hour(), || at(9, 0)),
             Choice::Denied
         );
         assert_eq!(io.asked, MAX_TRIES);
@@ -528,7 +564,7 @@ mod tests {
     fn a_closed_window_denies() {
         let mut io = script(&[]);
         assert_eq!(
-            run(&mut io, &req(KindId::Secret), &hour(), at(9, 0)),
+            run(&mut io, &req(KindId::Secret), &hour(), || at(9, 0)),
             Choice::Denied
         );
     }
@@ -538,7 +574,7 @@ mod tests {
         for typed in ["n", "no", "N"] {
             let mut io = script(&[typed]);
             assert_eq!(
-                run(&mut io, &req(KindId::Secret), &hour(), at(9, 0)),
+                run(&mut io, &req(KindId::Secret), &hour(), || at(9, 0)),
                 Choice::Denied,
                 "{typed}"
             );
@@ -552,7 +588,7 @@ mod tests {
         let now = Santiago.with_ymd_and_hms(2026, 9, 5, 18, 0, 0).unwrap();
         let mut io = script(&["2026-09-06 00:30", "n"]);
         assert_eq!(
-            run(&mut io, &req(KindId::Secret), &hour(), now),
+            run(&mut io, &req(KindId::Secret), &hour(), || now),
             Choice::Denied
         );
         assert!(io.shown.contains("does not exist"), "{}", io.shown);

@@ -27,7 +27,8 @@ Copied in full from `WITH-SECRET-DESIGN.md` §3:
 - An approval covers its secret for the whole window, not one command. Until the window ends,
   the approved requester can run other commands with the same secret. Per-command scoping was
   considered and declined by the PM on 2026-10-01; the Hello prompt (naming the command and
-  reason) and a short `--window-mins` are the controls. This is an accepted limit.
+  reason) and the end CireSnave chooses in the chooser window are the controls (`--window-mins` is
+  only a proposal since user-request #3). This is an accepted limit.
 
 Least privilege (e) limits how much damage a leaked secret can do. It is a procedure for
 CireSnave and the PM when they provision each credential, and no tool can enforce it.

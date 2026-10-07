@@ -16,4 +16,4 @@ pub mod request;
 
 pub use channel::{prompt_text, Channel, HelloChannel, Outcome, PushChannel, SmsChannel};
 pub use consent::{Consent, ConsentOutcome};
-pub use request::{Grant, KindId, MaxGrant, Request, Requester, Scope};
+pub use request::{Approval, Grant, KindId, MaxGrant, Request, Requester, Scope, Unrepresentable};

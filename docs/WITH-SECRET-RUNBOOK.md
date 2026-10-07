@@ -51,7 +51,8 @@ Approvals live in the user-request store, `%LOCALAPPDATA%\OverMind\user-request\
 (crates/user-request/README.md), since #2b. An `approvals.key` or `approvals.json` left in the
 with-secret folder by an older version is no longer read, so putting an old copy back grants
 nothing; it can be deleted. A binary given `WITH_SECRET_DIR` refuses to touch approvals unless
-`USER_REQUEST_DIR` (debug builds only) points at a scratch store too.
+`USER_REQUEST_DIR` and `USER_REQUEST_HEAD` (debug builds only) point at a scratch store and a
+scratch head copy too.
 
 ## 3. Adding a secret (CireSnave only)
 
@@ -73,6 +74,8 @@ C:/Projects/.claude-hooks/with-secret.exe NAME --reason "why, in at least 10 cha
 ```
 
 - Call it from the Bash tool with `timeout: 600000`: the Hello prompt waits up to 9 minutes.
+  `--wait-secs` may not exceed 840 (14 minutes): a prompt's reservation lasts 15, and an answer after
+  it could not be recorded.
 - ⚠️ From Git Bash, prefix `MSYS_NO_PATHCONV=1` when the command has slash flags such as
   `cmd /c`. Otherwise MSYS rewrites `/c` to `C:/`, cmd starts interactively and does nothing, and
   CireSnave approves a command that is not the one you meant (measured on spike day, 2026-10-01).

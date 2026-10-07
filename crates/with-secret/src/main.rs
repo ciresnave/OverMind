@@ -34,15 +34,19 @@ fn data_dir() -> Result<PathBuf, String> {
 
 /// The user-request store, where approvals live since #2b. ⚠️ A test that
 /// points WITH_SECRET_DIR at a scratch vault must point the approvals at a
-/// scratch store too (`USER_REQUEST_DIR`, honoured in debug builds only), or
-/// its `revoke --all` would end the person's real approvals.
+/// scratch store AND a scratch head copy too (`USER_REQUEST_DIR`,
+/// `USER_REQUEST_HEAD`, honoured in debug builds only): otherwise its
+/// `revoke --all` would end the person's real approvals, or its audit head
+/// would overwrite the real store's and untrust it (second review of #2b,
+/// finding 1).
 fn approvals_dir() -> Result<PathBuf, String> {
     if std::env::var_os("WITH_SECRET_DIR").is_some()
-        && locate::env_override("USER_REQUEST_DIR").is_none()
+        && (locate::env_override("USER_REQUEST_DIR").is_none()
+            || locate::env_override("USER_REQUEST_HEAD").is_none())
     {
         return Err(
             "WITH_SECRET_DIR points at a test vault, but the approvals would be the \
-                    real ones: set USER_REQUEST_DIR too (debug builds only)"
+             real ones: set USER_REQUEST_DIR and USER_REQUEST_HEAD too (debug builds only)"
                 .into(),
         );
     }

@@ -141,7 +141,10 @@ These limits answer "approval fatigue": a lane re-asking until a mis-click appro
   its reservation.
 - An approval must be for what was reserved, and it becomes a grant in the same step.
 - `revoke --all` and `repair` end every pending prompt, so an approval still in flight never becomes
-  a grant.
+  a grant. The ended prompts are recorded with the tombstones, in the file written first, so this
+  holds even when the prompts file could not be written.
+- An approval whose shown end has passed by the time it is recorded makes no grant, and a grant is
+  never honoured before the moment it was approved (a clock that was wrong ahead, then corrected).
 - Reaching a cap, or 3 refusals within an hour, raises an **alert**, once per role and reason per
   hour.
 - The limits are keyed by role, so restarting a lane resets neither.

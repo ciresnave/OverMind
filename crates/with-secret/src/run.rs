@@ -15,7 +15,7 @@ use std::time::Duration;
 use chrono::{DateTime, Local, Utc};
 use user_request::channel::{Channel, Outcome};
 use user_request::request::{next_local_midnight, Grant, KindId, Request};
-use user_request::store::{Alert, Protector, Store};
+use user_request::store::{Alert, Protector, Store, RESERVATION_TTL};
 
 use crate::audit::Event;
 use crate::dumpcheck::command_dump_reason;
@@ -26,6 +26,10 @@ pub const MIN_REASON_CHARS: usize = 10;
 /// Under the 10-minute ceiling of a lane's Bash tool call; a lane calling
 /// `with-secret` should pass `timeout: 600000`.
 pub const DEFAULT_WAIT: Duration = Duration::from_secs(540);
+/// The longest wait: a minute inside the store's reservation, so an answer
+/// given in time can always be recorded.
+pub const MAX_WAIT: Duration = Duration::from_secs(14 * 60);
+const _: () = assert!(MAX_WAIT.as_secs() < RESERVATION_TTL.num_seconds() as u64);
 
 pub struct RunArgs {
     pub secret: String,
@@ -52,7 +56,18 @@ pub fn parse_run(args: &[String]) -> Result<RunArgs, String> {
         match opts[i].as_str() {
             "--reason" => reason = Some(val.clone()),
             "--wait-secs" => {
-                wait = Duration::from_secs(val.parse().map_err(|_| "--wait-secs: not a number")?)
+                let secs: u64 = val.parse().map_err(|_| "--wait-secs: not a number")?;
+                // an answer after the reservation expires is refused, so a
+                // longer wait could only waste the person's approval (second
+                // review of #2b, finding 7)
+                if secs > MAX_WAIT.as_secs() {
+                    return Err(format!(
+                        "--wait-secs: at most {} (a prompt's reservation lasts {} minutes)",
+                        MAX_WAIT.as_secs(),
+                        RESERVATION_TTL.num_minutes()
+                    ));
+                }
+                wait = Duration::from_secs(secs)
             }
             "--window-mins" => {
                 let mins: i64 = val.parse().map_err(|_| "--window-mins: not a number")?;
@@ -411,6 +426,26 @@ mod tests {
         };
         assert!(p("0").is_err());
         assert!(p("-5").is_err());
+        // second review of #2b, finding 7: no wait outlives its reservation
+        let w = |s: &str| {
+            parse_run(
+                &[
+                    "TJ_DB",
+                    "--reason",
+                    "seed the prod db",
+                    "--wait-secs",
+                    s,
+                    "--",
+                    "psql",
+                ]
+                .iter()
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>(),
+            )
+        };
+        assert!(w("841").is_err());
+        assert!(w("3600").is_err());
+        assert_eq!(w("840").unwrap().wait, MAX_WAIT);
         assert!(p("9223372036854775807").is_err());
         assert_eq!(p("2880").unwrap().window, Some(chrono::Duration::days(2)));
     }

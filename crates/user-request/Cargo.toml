@@ -17,7 +17,7 @@ sha2 = "0.11.0"
 # Windows-only: Windows Hello. Every use is cfg(windows); windows-future does
 # not compile on other targets, and CI also builds on Ubuntu.
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.62.2", features = ["Foundation", "Security_Credentials_UI", "Win32_Foundation", "Win32_System_WinRT", "Win32_System_Console", "Win32_UI_WindowsAndMessaging", "Win32_Security_Cryptography", "Win32_System_Memory"] }
+windows = { version = "0.62.2", features = ["Foundation", "Security_Credentials_UI", "Win32_Foundation", "Win32_System_WinRT", "Win32_System_Console", "Win32_UI_WindowsAndMessaging", "Win32_Security_Cryptography", "Win32_System_Memory", "Win32_System_JobObjects", "Win32_Security"] }
 windows-future = "0.3.2"
 
 [dev-dependencies]

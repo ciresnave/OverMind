@@ -77,6 +77,8 @@ impl Chooser for WindowChooser {
             Ok(c) => c,
             Err(e) => return Choice::Unavailable(format!("cannot open the chooser window: {e}")),
         };
+        // issue #118: the window dies with this process, however it ends
+        let _job = kill_with_me(&child);
         // written, then closed: the child reads its stdin to the end and
         // never again
         let sent = child
@@ -123,6 +125,49 @@ impl Chooser for WindowChooser {
     #[cfg(not(windows))]
     fn choose(&self, _: &Request, _: &Grant, _: Duration) -> Choice {
         Choice::Unavailable("the chooser window exists only on Windows".into())
+    }
+}
+
+/// A job that kills its processes when its last handle closes. This process
+/// holds the only handle (not inheritable), so the OS closes it when this
+/// process dies, killed or not, and the window goes with it.
+#[cfg(windows)]
+struct Job(windows::Win32::Foundation::HANDLE);
+
+#[cfg(windows)]
+impl Drop for Job {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = windows::Win32::Foundation::CloseHandle(self.0);
+        }
+    }
+}
+
+/// Put `child` in a kill-on-close job. Best effort: `None` if it cannot (a
+/// job that forbids nesting); the window then works, but can outlive a
+/// killed requester.
+#[cfg(windows)]
+fn kill_with_me(child: &std::process::Child) -> Option<Job> {
+    use std::os::windows::io::AsRawHandle;
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+    unsafe {
+        let job = Job(CreateJobObjectW(None, None).ok()?);
+        let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        SetInformationJobObject(
+            job.0,
+            JobObjectExtendedLimitInformation,
+            &info as *const _ as *const std::ffi::c_void,
+            std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+        )
+        .ok()?;
+        AssignProcessToJobObject(job.0, HANDLE(child.as_raw_handle())).ok()?;
+        Some(job)
     }
 }
 

@@ -64,12 +64,15 @@ Everything lives in `%LOCALAPPDATA%\OverMind\user-request\`:
 Every call that changes the store saves before it returns.
 
 - A grant is made only by resolving a reservation with the channel's approval, and only within its
-  kind's maximum. No caller can add a grant, clear a tombstone or clear the untrusted flag
-  directly.
+  kind's maximum. The approval's time must lie between its reservation and now. No caller can add
+  a grant, clear a tombstone or clear the untrusted flag directly.
+- The store reads the clock itself. No caller can choose the time at which a grant expires or a
+  gate window is judged.
 - Each save records the files' hashes before writing them, and records its completion after. A save
   cut short between the two files (a crash, a held file) is still recognised.
 - A file that is briefly unreadable (an antivirus scan, a backup) is retried for 2 seconds. If it
   stays unreadable, opening fails with "try again", and nothing is concluded or recorded from it.
+  That includes the head copy, which a backup or sync tool may hold.
 
 ### Integrity: the audit chain is the anchor
 
@@ -79,7 +82,8 @@ Every call that changes the store saves before it returns.
   - no integrity problem may be on record since the last repair.
 - These checks catch a file that was deleted, rolled back, edited or copied in, and a whole folder
   put back from a backup. Any of them makes the store **untrustworthy**, and the gate raises an
-  alert, once per role per hour.
+  alert, once per role per hour. Under an untrusted key nothing can be recorded, so that alert
+  goes to the sink on every refused prompt.
 - A chain found broken while the store is open untrusts it at once.
 - An untrustworthy store fails **closed**:
   - no grant is honoured;
@@ -134,6 +138,7 @@ user-request audit verify    check the audit chain since its last reset, and its
 
 - Each command prints which store it used.
 - `list` and `audit verify` only look: they never create a store, move a file or write to the log.
+  The only exception is `store.lock`, which they create if it is missing.
 - `list` says when grants are unknown (an untrusted key, a grants file that failed its check),
   rather than reporting none.
 - Exit codes:
@@ -143,10 +148,9 @@ user-request audit verify    check the audit chain since its last reset, and its
 ## Honest limits
 
 - Like with-secret (WITH-SECRET-DESIGN.md §3), this stops **accidents**, not a deliberate process
-  running as the same Windows user. Such a process can read the DPAPI key, forge entries, and
-  rewrite both the audit chain and its head copy.
-- A crash between writing the files and recording the save leaves the store untrusted until a
-  repair. That fails closed, at the cost of the grants.
+  running as the same Windows user. Such a process can read the DPAPI key and forge entries.
+- The audit chain is plain SHA-256 with no key, so rewriting the chain and its head copy
+  consistently needs no key at all. The chain catches accidents and naive edits, not forgery.
 - The audit log is never rotated, and every append reads it whole.
 - Coming next, per the approved plan:
   - with-secret's approvals move onto this store, so its prompts pass the gate and `revoke --all`

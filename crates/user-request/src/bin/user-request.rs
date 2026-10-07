@@ -57,7 +57,6 @@ fn open(read_only: bool) -> Result<Option<Store>, String> {
 }
 
 fn list() -> Result<u8, String> {
-    let now = Utc::now();
     let Some(s) = open(true)? else {
         println!("no store yet: nothing has been granted");
         return Ok(0);
@@ -70,7 +69,7 @@ fn list() -> Result<u8, String> {
         return Ok(1);
     }
     let untrusted = s.trustworthy().is_err();
-    let active = s.active(now);
+    let active = s.active();
     if untrusted {
         println!("*** THE STORE CANNOT BE TRUSTED: none of these is honoured until it is ***");
     }
@@ -121,7 +120,6 @@ fn list() -> Result<u8, String> {
 }
 
 fn revoke(target: &str) -> Result<u8, String> {
-    let now = Utc::now();
     let Some(mut s) = open(false)? else {
         if target == "--all" {
             // the panic button succeeds when there is nothing to stop
@@ -131,11 +129,11 @@ fn revoke(target: &str) -> Result<u8, String> {
         return Err("no store yet: nothing to revoke".into());
     };
     if target == "--all" {
-        let n = s.revoke_all(now)?;
+        let n = s.revoke_all()?;
         println!("revoked {n} grant(s)");
         return Ok(0);
     }
-    if !s.revoke(target, now)? {
+    if !s.revoke(target)? {
         return Err(format!("no active grant with id {target}"));
     }
     println!("revoked {target}");
@@ -148,7 +146,7 @@ fn repair() -> Result<u8, String> {
         println!("no store yet: nothing to repair");
         return Ok(0);
     };
-    let r = s.repair(now, &PROTECTOR)?;
+    let r = s.repair(&PROTECTOR)?;
     let resume = (now + GATE_CLOSED_AFTER_REPAIR)
         .with_timezone(&Local)
         .format("%H:%M %Z");

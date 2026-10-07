@@ -52,11 +52,11 @@ fn seed(dir: &Path) -> (String, String) {
         expires_at,
     };
     // the only way in: a reservation the channel approved
-    let mut grant = |ap: Approval| {
-        let r = s
-            .may_ask(&who, ap.kind, &ap.subject, now, &AuditOnly)
-            .unwrap();
-        s.resolve(&r, &Outcome::Approved(ap), now, &AuditOnly)
+    let mut grant = |mut ap: Approval| {
+        let r = s.may_ask(&who, ap.kind, &ap.subject, &AuditOnly).unwrap();
+        // given after the reservation, as a channel would
+        ap.approved_at = Utc::now();
+        s.resolve(&r, &Outcome::Approved(ap), &AuditOnly)
             .unwrap()
             .unwrap()
     };

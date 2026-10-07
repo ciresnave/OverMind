@@ -404,7 +404,18 @@ impl Store {
             Err(ChainError::Broken(why)) => problems.push(why),
             Err(ChainError::Io(why)) => return Err(format!("{why}; try again")),
         }
-        let expected = self.recorded_hashes();
+        // read once, so a log that turns unreadable between two reads cannot
+        // look like "no save recorded" (review 4, M-g)
+        let log = match read_retry(&self.dir.join("audit.jsonl")) {
+            Ok(b) => String::from_utf8_lossy(&b).into_owned(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(e) => {
+                return Err(format!(
+                    "the audit log cannot be read right now ({e}); try again"
+                ))
+            }
+        };
+        let expected = recorded_hashes(&log);
         for (name, file) in [("grants.json", &grants), ("attempts.json", &attempts)] {
             let want = expected.as_ref().and_then(|e| e.get(name));
             match (file, want) {
@@ -454,7 +465,7 @@ impl Store {
                 }
             }
         }
-        let on_record = self.unrepaired_finding();
+        let on_record = unrepaired_finding(&log);
         if problems.is_empty() && on_record.is_none() {
             return Ok(());
         }
@@ -488,54 +499,6 @@ impl Store {
         let to = quarantine(&self.dir.join(name));
         self.set_aside.push(to.clone());
         format!("kept as {to}")
-    }
-
-    /// The first integrity finding on record since the last repair.
-    fn unrepaired_finding(&self) -> Option<String> {
-        let text = read_text(&self.dir.join("audit.jsonl"));
-        let lines: Vec<AuditLine> = text
-            .lines()
-            .filter_map(|l| serde_json::from_str::<AuditLine>(l).ok())
-            .collect();
-        let start = lines
-            .iter()
-            .rposition(|a| a.event == "repaired")
-            .map_or(0, |i| i + 1);
-        lines
-            .into_iter()
-            .skip(start)
-            .find(|a| a.event == "untrusted" || a.event == "chain-reset")
-            .map(|a| format!("{} at {}: {}", a.event, a.at, a.detail))
-    }
-
-    /// For each file, the hashes a save recorded for it: the last completed
-    /// save's, plus any written since by a save that did not finish (a crash
-    /// or a failed rename between the two files, review M-g, 3 I2). An older
-    /// copy matches neither.
-    fn recorded_hashes(&self) -> Option<HashMap<String, HashSet<String>>> {
-        let text = read_text(&self.dir.join("audit.jsonl"));
-        let mut out: HashMap<String, HashSet<String>> = HashMap::new();
-        let mut any = false;
-        for l in text.lines().rev() {
-            let Ok(a) = serde_json::from_str::<AuditLine>(l) else {
-                continue;
-            };
-            if a.event != "saved" && a.event != "saving" {
-                continue;
-            }
-            any = true;
-            for (k, v) in a
-                .detail
-                .split_whitespace()
-                .filter_map(|kv| kv.split_once('='))
-            {
-                out.entry(k.to_string()).or_default().insert(v.to_string());
-            }
-            if a.event == "saved" {
-                break;
-            }
-        }
-        any.then_some(out)
     }
 
     /// Why the store cannot be trusted, or `None` when it can.
@@ -679,8 +642,14 @@ impl Store {
 
     /// A live grant covering this request: same kind and subject, not
     /// expired, not revoked, the same requester when the kind's scope is one
-    /// requester - and never from an untrustworthy store.
-    pub fn find(
+    /// requester - and never from an untrustworthy store. The store reads
+    /// the clock itself (review 4, I-B): no caller can pick the time a grant
+    /// or a gate window is judged at.
+    pub fn find(&self, kind: KindId, subject: &str, requester: &Requester) -> Option<&StoredGrant> {
+        self.find_at(kind, subject, requester, Utc::now())
+    }
+
+    pub(crate) fn find_at(
         &self,
         kind: KindId,
         subject: &str,
@@ -692,10 +661,10 @@ impl Store {
         if self.trustworthy().is_err() || matches!(self.check_chain(), Err(ChainError::Broken(_))) {
             return None;
         }
-        self.active(now).into_iter().find(|g| {
+        self.active_at(now).into_iter().find(|g| {
             let a = &g.approval;
             a.kind == kind
-                && a.subject == subject
+                && normal_subject(&a.subject) == normal_subject(subject)
                 && match kind.scope() {
                     Scope::ThisRequester => a.requester == *requester,
                     Scope::AnyRequester => true,
@@ -704,7 +673,11 @@ impl Store {
     }
 
     /// Every grant that has not expired or been revoked.
-    pub fn active(&self, now: DateTime<Utc>) -> Vec<&StoredGrant> {
+    pub fn active(&self) -> Vec<&StoredGrant> {
+        self.active_at(Utc::now())
+    }
+
+    pub(crate) fn active_at(&self, now: DateTime<Utc>) -> Vec<&StoredGrant> {
         self.grants
             .iter()
             .filter(|g| live(g, now) && !self.revoked.contains(&g.id))
@@ -714,7 +687,11 @@ impl Store {
     /// Revokes one grant; `false` when there is no such active grant. Works
     /// on an untrustworthy store unless its key is the problem (then its
     /// grants are unknown, and only `repair` helps).
-    pub fn revoke(&mut self, id: &str, now: DateTime<Utc>) -> Result<bool, String> {
+    pub fn revoke(&mut self, id: &str) -> Result<bool, String> {
+        self.revoke_at(id, Utc::now())
+    }
+
+    pub(crate) fn revoke_at(&mut self, id: &str, now: DateTime<Utc>) -> Result<bool, String> {
         self.writable()?;
         self.key_known()?;
         let known = self.grants.iter().any(|g| g.id == id) && !self.revoked.contains(id);
@@ -730,7 +707,11 @@ impl Store {
     /// The panic button: revokes every grant, and ends every pending
     /// prompt so no approval still in flight becomes a grant (review 3,
     /// I3). Returns how many grants it revoked.
-    pub fn revoke_all(&mut self, now: DateTime<Utc>) -> Result<usize, String> {
+    pub fn revoke_all(&mut self) -> Result<usize, String> {
+        self.revoke_all_at(Utc::now())
+    }
+
+    pub(crate) fn revoke_all_at(&mut self, now: DateTime<Utc>) -> Result<usize, String> {
         self.writable()?;
         self.key_known()?;
         let n = self.revoke_everything(now)?;
@@ -790,7 +771,11 @@ impl Store {
     ///
     /// Trust returns only once the revocations are SAVED (review 3, C1): a
     /// repair whose save fails leaves the store untrusted.
-    pub fn repair(
+    pub fn repair(&mut self, protector: &dyn Protector) -> Result<RepairReport, String> {
+        self.repair_at(Utc::now(), protector)
+    }
+
+    pub(crate) fn repair_at(
         &mut self,
         now: DateTime<Utc>,
         protector: &dyn Protector,
@@ -851,6 +836,16 @@ impl Store {
     /// ROLE, so a restart resets nothing. Every decision is audited and
     /// saved, except under an untrusted key, when nothing can be.
     pub fn may_ask(
+        &mut self,
+        requester: &Requester,
+        kind: KindId,
+        subject: &str,
+        alert: &dyn Alert,
+    ) -> Result<Reservation, String> {
+        self.may_ask_at(requester, kind, subject, Utc::now(), alert)
+    }
+
+    pub(crate) fn may_ask_at(
         &mut self,
         requester: &Requester,
         kind: KindId,
@@ -974,6 +969,37 @@ impl Store {
         &mut self,
         reservation: &Reservation,
         outcome: &Outcome,
+        alert: &dyn Alert,
+    ) -> Result<Option<String>, String> {
+        self.resolve_at(reservation, outcome, Utc::now(), alert)
+    }
+
+    /// `resolve`, undone in memory on any error (review 4, M-a): a grant
+    /// that did not land must not be honoured, nor saved by a later,
+    /// unrelated save.
+    pub(crate) fn resolve_at(
+        &mut self,
+        reservation: &Reservation,
+        outcome: &Outcome,
+        now: DateTime<Utc>,
+        alert: &dyn Alert,
+    ) -> Result<Option<String>, String> {
+        let before = (
+            self.grants.clone(),
+            self.revoked.clone(),
+            self.attempts.clone(),
+        );
+        let result = self.resolve_once(reservation, outcome, now, alert);
+        if result.is_err() {
+            (self.grants, self.revoked, self.attempts) = before;
+        }
+        result
+    }
+
+    fn resolve_once(
+        &mut self,
+        reservation: &Reservation,
+        outcome: &Outcome,
         now: DateTime<Utc>,
         alert: &dyn Alert,
     ) -> Result<Option<String>, String> {
@@ -1006,6 +1032,15 @@ impl Store {
                     || ap.requester != a.requester
                 {
                     return Err("the approval is not for what was reserved".into());
+                }
+                // the kind's maximum is judged from `approved_at`, so it must
+                // be a time between the reservation and now (review 4, I-B)
+                if ap.approved_at < a.at || ap.approved_at > now {
+                    return Err(format!(
+                        "the approval says it was given at {}, outside its reservation \
+                         ({} to {now})",
+                        ap.approved_at, a.at
+                    ));
                 }
                 Ended::Approved
             }
@@ -1196,9 +1231,10 @@ impl Store {
                         )));
                     }
                 }
+                // held by a backup or sync tool: decide nothing (review 4, I-A)
                 Err(e) => {
-                    return Err(ChainError::Broken(format!(
-                        "audit head copy {} cannot be read: {e}",
+                    return Err(ChainError::Io(format!(
+                        "audit head copy {} cannot be read right now: {e}",
                         copy.display()
                     )))
                 }
@@ -1251,6 +1287,52 @@ impl Store {
     }
 }
 
+/// The first integrity finding on record since the last repair.
+fn unrepaired_finding(text: &str) -> Option<String> {
+    let lines: Vec<AuditLine> = text
+        .lines()
+        .filter_map(|l| serde_json::from_str::<AuditLine>(l).ok())
+        .collect();
+    let start = lines
+        .iter()
+        .rposition(|a| a.event == "repaired")
+        .map_or(0, |i| i + 1);
+    lines
+        .into_iter()
+        .skip(start)
+        .find(|a| a.event == "untrusted" || a.event == "chain-reset")
+        .map(|a| format!("{} at {}: {}", a.event, a.at, a.detail))
+}
+
+/// For each file, the hashes a save recorded for it: the last completed
+/// save's, plus any written since by a save that did not finish (a crash
+/// or a failed rename between the two files, review M-g, 3 I2). An older
+/// copy matches neither.
+fn recorded_hashes(text: &str) -> Option<HashMap<String, HashSet<String>>> {
+    let mut out: HashMap<String, HashSet<String>> = HashMap::new();
+    let mut any = false;
+    for l in text.lines().rev() {
+        let Ok(a) = serde_json::from_str::<AuditLine>(l) else {
+            continue;
+        };
+        if a.event != "saved" && a.event != "saving" {
+            continue;
+        }
+        any = true;
+        for (k, v) in a
+            .detail
+            .split_whitespace()
+            .filter_map(|kv| kv.split_once('='))
+        {
+            out.entry(k.to_string()).or_default().insert(v.to_string());
+        }
+        if a.event == "saved" {
+            break;
+        }
+    }
+    any.then_some(out)
+}
+
 /// Where the current chain starts: the last `chain-reset` line, or 0.
 fn chain_start(lines: &[&str]) -> usize {
     lines
@@ -1283,10 +1365,18 @@ impl StoreLock {
             // FILE_SHARE_READ | FILE_SHARE_WRITE: no FILE_SHARE_DELETE
             options.share_mode(0x1 | 0x2);
         }
-        let file = options
-            .open(path)
-            .map_err(|e| format!("lock {}: {e}", path.display()))?;
         let deadline = Instant::now() + LOCK_WAIT;
+        // another program holding the file open (review 4, M-d) is waited
+        // for, like another holder of the lock
+        let file = loop {
+            match options.open(path) {
+                Ok(f) => break f,
+                Err(_) if Instant::now() < deadline => {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                Err(e) => return Err(format!("lock {}: {e}", path.display())),
+            }
+        };
         loop {
             match file.try_lock() {
                 Ok(()) => return Ok(Self { _file: file }),
@@ -1454,13 +1544,22 @@ fn quarantine(path: &Path) -> String {
     to.display().to_string()
 }
 
+/// Appends, retrying a log someone holds for a moment (review 4, M-a).
 fn append(path: &Path, text: &str) -> Result<(), String> {
-    let mut f = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .map_err(|e| format!("open {}: {e}", path.display()))?;
-    f.write_all(text.as_bytes()).map_err(|e| e.to_string())
+    let deadline = Instant::now() + RETRY_FOR;
+    loop {
+        let opened = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path);
+        match opened {
+            Ok(mut f) => return f.write_all(text.as_bytes()).map_err(|e| e.to_string()),
+            Err(_) if Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(e) => return Err(format!("open {}: {e}", path.display())),
+        }
+    }
 }
 
 /// A uniquely named temp file and a rename, so neither a reader nor another

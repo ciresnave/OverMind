@@ -63,13 +63,20 @@ Everything lives in `%LOCALAPPDATA%\OverMind\user-request\`:
 
 Every call that changes the store saves before it returns.
 
-- A grant is made only by resolving a reservation with the channel's approval, and only within its
-  kind's maximum. The approval's time must lie between its reservation and now. No caller can add
-  a grant, clear a tombstone or clear the untrusted flag directly.
+- A grant is made only by resolving a reservation with an approval for it, and only within its
+  kind's maximum. In production the approval is the channel's.
+  - The approval's time must lie between its reservation and now, allowing 2 minutes for a clock
+    stepped back by an NTP correction.
+  - No caller can add a grant, clear a tombstone or clear the untrusted flag directly.
+  - ⚠️ `Approval` has public fields, so code inside a process can build one itself and skip the
+    person. The gate, the maximum and the reservation still apply. That is the deliberate-process
+    limit below.
 - The store reads the clock itself. No caller can choose the time at which a grant expires or a
   gate window is judged.
 - Each save records the files' hashes before writing them, and records its completion after. A save
   cut short between the two files (a crash, a held file) is still recognised.
+- The prompts file is written before the grants file. A resolve cut short between them ends the
+  prompt with no grant: the person asks again. It never leaves a grant whose prompt is still open.
 - A file that is briefly unreadable (an antivirus scan, a backup) is retried for 2 seconds. If it
   stays unreadable, opening fails with "try again", and nothing is concluded or recorded from it.
   That includes the head copy, which a backup or sync tool may hold.
@@ -102,8 +109,10 @@ Every call that changes the store saves before it returns.
 - Before every append, the chain itself is checked against its head copy. A chain found truncated,
   deleted, torn or edited gets an explicit `chain-reset` line naming why. That keeps the store
   untrusted until a repair. `audit verify` then counts the reset as acknowledged.
-- The head copy is written on a best-effort basis, so a revocation always lands. If the copy cannot
-  be written, the next open finds it wrong, and the store fails closed.
+- The head copy is written on a best-effort basis, so a revocation always lands. A copy that could
+  not be replaced (a backup tool held it) lags the log. If it lags by at most 32 lines, and agrees
+  with the log at its own line, it is accepted and caught up at the next write. A copy further
+  behind, or one that disagrees, fails closed.
 
 ### The prompt gate
 

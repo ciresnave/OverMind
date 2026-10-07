@@ -89,6 +89,9 @@ pub const GATE_CLOSED_AFTER_REPAIR: Duration = Duration::hours(1);
 /// A reservation older than this can no longer be resolved: no channel
 /// waits that long (Hello waits at most 9 minutes).
 pub const RESERVATION_TTL: Duration = Duration::minutes(15);
+/// How far the clock may step back between a reservation and its approval
+/// (an NTP correction after resume) before the approval is refused.
+pub const CLOCK_SKEW: Duration = Duration::minutes(2);
 /// How long `open` waits for another process's lock before giving up.
 pub const LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
 /// How long a read or rename that fails (a file briefly held by an
@@ -286,7 +289,8 @@ impl Store {
 
     /// Opens an existing store to look at it: nothing is written, moved or
     /// recorded, so an older binary never sets aside a newer one's files
-    /// (review 3, M4). Every change is refused.
+    /// (review 3, M4). Every change is refused. The one exception is
+    /// `store.lock`, created if it is missing.
     pub fn inspect(
         dir: &Path,
         protector: &dyn Protector,
@@ -594,8 +598,11 @@ impl Store {
             sha(&abytes)
         );
         self.audit(now, "saving", &hashes)?;
-        let written = write_atomic(&self.dir.join("grants.json"), &gbytes)
-            .and_then(|()| write_atomic(&self.dir.join("attempts.json"), &abytes));
+        // attempts first (review 5, I-1): a save cut short between the two
+        // files may leave an attempt ended with no grant (the person asks
+        // again), never a grant whose reservation is still open
+        let written = write_atomic(&self.dir.join("attempts.json"), &abytes)
+            .and_then(|()| write_atomic(&self.dir.join("grants.json"), &gbytes));
         match written {
             Ok(()) => self.audit(now, "saved", &hashes),
             Err(e) => {
@@ -891,12 +898,18 @@ impl Store {
             subject: subject.clone(),
             outcome: Ended::Pending,
         });
-        self.audit(
-            now,
-            "gate-allowed",
-            &format!("role={role} subject={subject} attempt={id}"),
-        )?;
-        self.save(now)?;
+        let recorded = self
+            .audit(
+                now,
+                "gate-allowed",
+                &format!("role={role} subject={subject} attempt={id}"),
+            )
+            .and_then(|()| self.save(now));
+        if let Err(e) = recorded {
+            // not recorded, so not kept (review 5, M-2)
+            self.attempts.retain(|a| a.id != id);
+            return Err(e);
+        }
         Ok(Reservation { attempt_id: id })
     }
 
@@ -991,7 +1004,16 @@ impl Store {
         );
         let result = self.resolve_once(reservation, outcome, now, alert);
         if result.is_err() {
+            let alerted: Vec<Attempt> = self
+                .attempts
+                .iter()
+                .filter(|a| a.outcome == Ended::Alerted && !before.2.contains(a))
+                .cloned()
+                .collect();
             (self.grants, self.revoked, self.attempts) = before;
+            // the alert was delivered and audited: keep its record (review 5,
+            // M-4)
+            self.attempts.extend(alerted);
         }
         result
     }
@@ -1035,7 +1057,7 @@ impl Store {
                 }
                 // the kind's maximum is judged from `approved_at`, so it must
                 // be a time between the reservation and now (review 4, I-B)
-                if ap.approved_at < a.at || ap.approved_at > now {
+                if ap.approved_at < a.at - CLOCK_SKEW || ap.approved_at > now {
                     return Err(format!(
                         "the approval says it was given at {}, outside its reservation \
                          ({} to {now})",
@@ -1200,6 +1222,7 @@ impl Store {
         let lines: Vec<&str> = text.lines().collect();
         let start = chain_start(&lines);
         let mut prev = GENESIS.to_string();
+        let hashes: Vec<String> = lines.iter().map(|l| sha(l.as_bytes())).collect();
         for (i, l) in lines.iter().enumerate().skip(start) {
             let line: AuditLine = serde_json::from_str(l).map_err(|e| {
                 ChainError::Broken(format!("audit line {}: unreadable: {e}", i + 1))
@@ -1216,6 +1239,11 @@ impl Store {
         if let Some(copy) = &self.head_copy {
             match read_retry(copy) {
                 Ok(head) if String::from_utf8_lossy(&head).trim() == format!("{count} {prev}") => {}
+                // a copy a backup or sync tool held during a write lags the
+                // log, and agrees with it at its own line (review 5, I-2);
+                // truncation or rollback leaves the log shorter than the copy
+                // or different at that line. The next append rewrites it.
+                Ok(head) if lags_by_a_few(&String::from_utf8_lossy(&head), &hashes) => {}
                 Ok(head) => {
                     return Err(ChainError::Broken(format!(
                         "audit head copy says '{}', the chain ends at '{count} {prev}': \
@@ -1333,6 +1361,22 @@ fn recorded_hashes(text: &str) -> Option<HashMap<String, HashSet<String>>> {
     any.then_some(out)
 }
 
+/// A head copy may lag the log by this many lines, when it failed to
+/// update (it is written best effort) and agrees with the log at its line.
+pub const HEAD_COPY_LAG: usize = 32;
+
+/// Does the head copy `n hash` name a line of the log, at most
+/// `HEAD_COPY_LAG` lines from its end, with that line's hash?
+fn lags_by_a_few(head: &str, hashes: &[String]) -> bool {
+    let Some((n, hash)) = head.trim().split_once(' ') else {
+        return false;
+    };
+    let Ok(n) = n.parse::<usize>() else {
+        return false;
+    };
+    n > 0 && n <= hashes.len() && hashes.len() - n <= HEAD_COPY_LAG && hashes[n - 1] == hash
+}
+
 /// Where the current chain starts: the last `chain-reset` line, or 0.
 fn chain_start(lines: &[&str]) -> usize {
     lines
@@ -1426,7 +1470,9 @@ fn live(g: &StoredGrant, now: DateTime<Utc>) -> bool {
 
 /// Subjects are compared trimmed and case-folded (review I9).
 pub fn normal_subject(s: &str) -> String {
-    s.trim().to_lowercase()
+    // ASCII only (review 5, M-3): Unicode folding would make the Kelvin sign
+    // in "\u{212A}_TOKEN" the same subject as "k_token"
+    s.trim().to_ascii_lowercase()
 }
 
 fn random_id() -> String {

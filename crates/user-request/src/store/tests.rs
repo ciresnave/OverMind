@@ -1265,21 +1265,19 @@ fn a_save_cut_short_between_the_files_is_still_ours() {
     let a = who("o", "s");
     let mut s = open(d.path());
     let g = add(&mut s, approval(KindId::Secret, "A", &a, Some(mins(60))));
-    let p = d.path().join("attempts.json");
-    let old_attempts = std::fs::read(&p).unwrap();
+    let p = d.path().join("grants.json");
+    let old_grants = std::fs::read(&p).unwrap();
     std::fs::remove_file(&p).unwrap();
     std::fs::create_dir(&p).unwrap();
-    // grants.json is written, attempts.json cannot be
+    // attempts.json is written, grants.json cannot be
     assert!(s.revoke_at(&g, t0()).is_err());
     drop(s);
     std::fs::remove_dir(&p).unwrap();
-    std::fs::write(&p, old_attempts).unwrap();
+    std::fs::write(&p, old_grants).unwrap();
     let s = open(d.path());
     assert_eq!(s.untrusted, None, "{:?}", s.untrusted);
-    assert!(
-        s.revoked.contains(&g),
-        "the revocation that landed was lost"
-    );
+    // the caller was told it failed, and it did
+    assert!(!s.revoked.contains(&g));
 }
 
 /// Review 3, I3: a repair or `revoke_all` ends every pending reservation,
@@ -1570,7 +1568,10 @@ fn an_approval_dated_outside_its_reservation_is_refused() {
     let a = who("o", "s");
     let mut s = open(d.path());
     let r = reserve(&mut s, &a, "DB", mins(10));
-    for at in [mins(9), mins(11) + Duration::days(30)] {
+    for at in [
+        mins(10) - CLOCK_SKEW - Duration::seconds(1),
+        mins(11) + Duration::days(30),
+    ] {
         let mut ap = approval(KindId::Secret, "DB", &a, Some(at + Duration::minutes(30)));
         ap.approved_at = at;
         let err = s
@@ -1631,12 +1632,40 @@ fn a_failed_resolve_leaves_no_grant() {
     assert!(s.find_at(KindId::Secret, "db", &a, t0()).is_none());
     assert!(s.grants.is_empty());
     assert_eq!(s.attempts.last().unwrap().outcome, Ended::Pending);
+    // the lane exits with nothing saved after the failure (review 5, I-1)
+    drop(s);
     std::fs::remove_dir(&p).unwrap();
     std::fs::write(&p, old).unwrap();
-    s.may_ask_at(&a, KindId::Secret, "OTHER", mins(1), &AuditOnly)
-        .unwrap();
+    let s = open(d.path());
+    assert!(s.grants.is_empty());
+    assert!(s.find_at(KindId::Secret, "db", &a, t0()).is_none());
+}
+
+/// Review 5, I-1: when the grant cannot be written after its attempt was,
+/// the lane is told it failed, no grant is honoured, and the reservation is
+/// ended, so it cannot make a grant later.
+#[test]
+fn a_resolve_cut_short_before_the_grant_never_honours_it() {
+    let d = tempdir().unwrap();
+    let a = who("o", "s");
+    let mut s = open(d.path());
+    let r = reserve(&mut s, &a, "DB", t0());
+    let p = d.path().join("grants.json");
+    let old = std::fs::read(&p).unwrap();
+    std::fs::remove_file(&p).unwrap();
+    std::fs::create_dir(&p).unwrap();
+    assert!(s
+        .resolve_at(&r, &answer("approved", &a, "DB"), t0(), &AuditOnly)
+        .is_err());
     drop(s);
-    assert!(open(d.path()).grants.is_empty());
+    std::fs::remove_dir(&p).unwrap();
+    std::fs::write(&p, old).unwrap();
+    let mut s = open(d.path());
+    assert_eq!(s.untrusted, None, "{:?}", s.untrusted);
+    assert!(s.find_at(KindId::Secret, "db", &a, t0()).is_none());
+    let again = s.resolve_at(&r, &answer("approved", &a, "DB"), t0(), &AuditOnly);
+    assert!(again.unwrap_err().contains("already ended"));
+    assert!(s.grants.is_empty());
 }
 
 /// Review 4, I-A: a head copy held by a backup or sync tool fails the open
@@ -1687,10 +1716,16 @@ fn the_public_find_drops_a_grant_that_expired_in_real_time() {
     let r = s.may_ask(&a, KindId::Secret, "DB", &AuditOnly).unwrap();
     let mut ap = approval(KindId::Secret, "DB", &a, None);
     ap.approved_at = Utc::now();
-    ap.expires_at = Some(ap.approved_at + Duration::milliseconds(300));
+    let end = ap.approved_at + Duration::seconds(1);
+    ap.expires_at = Some(end);
     s.resolve(&r, &Outcome::Approved(ap), &AuditOnly).unwrap();
-    assert!(s.find(KindId::Secret, "DB", &a).is_some());
-    std::thread::sleep(std::time::Duration::from_millis(400));
+    // on a loaded machine the resolve itself can outlast the grant
+    if Utc::now() < end - Duration::milliseconds(100) {
+        assert!(s.find(KindId::Secret, "DB", &a).is_some());
+    }
+    while Utc::now() <= end + Duration::milliseconds(50) {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
     assert!(s.find(KindId::Secret, "DB", &a).is_none());
 }
 
@@ -1718,4 +1753,130 @@ fn an_append_onto_a_briefly_write_locked_log_is_retried() {
     });
     assert!(s.revoke_at(&g, t0()).unwrap());
     t.join().unwrap();
+}
+
+// -- round 5 (the review of 75daefb) -------------------------------------------
+
+/// Review 5, I-2: a head copy that failed to update lags the log and agrees
+/// with it at its own line; that is not damage. Lagging further than
+/// `HEAD_COPY_LAG`, or disagreeing, still is.
+#[test]
+fn a_head_copy_that_lags_a_little_is_not_damage() {
+    let d = tempdir().unwrap();
+    let mut s = three_events(d.path());
+    let head = d.path().join("head.copy");
+    let stale = std::fs::read(&head).unwrap();
+    s.audit(mins(5), "granted", "after the copy failed")
+        .unwrap();
+    s.audit(mins(6), "granted", "and again").unwrap();
+    drop(s);
+    std::fs::write(&head, &stale).unwrap();
+    assert_eq!(open(d.path()).untrusted, None);
+
+    let e = tempdir().unwrap();
+    let mut s = three_events(e.path());
+    let head = e.path().join("head.copy");
+    let stale = std::fs::read(&head).unwrap();
+    for i in 0..=HEAD_COPY_LAG {
+        s.audit(mins(10), "granted", &format!("line {i}")).unwrap();
+    }
+    drop(s);
+    std::fs::write(&head, &stale).unwrap();
+    assert!(
+        open(e.path()).untrusted.is_some(),
+        "a copy far behind passed"
+    );
+
+    let f = tempdir().unwrap();
+    let mut s = three_events(f.path());
+    s.audit(mins(5), "granted", "x").unwrap();
+    drop(s);
+    let head = f.path().join("head.copy");
+    let text = std::fs::read_to_string(&head).unwrap();
+    let (n, _) = text.trim().split_once(' ').unwrap();
+    std::fs::write(
+        &head,
+        format!("{} {}\n", n.parse::<usize>().unwrap() - 1, "0".repeat(64)),
+    )
+    .unwrap();
+    assert!(
+        open(f.path()).untrusted.is_some(),
+        "a copy that disagrees passed"
+    );
+}
+
+/// Review 5, I-2: a head copy a backup tool holds against replacement (it
+/// can still be read) during a write is caught up later, never damage.
+#[cfg(windows)]
+#[test]
+fn a_head_copy_held_during_a_write_is_not_damage() {
+    use std::os::windows::fs::OpenOptionsExt;
+    let d = tempdir().unwrap();
+    let mut s = open(d.path());
+    let g = add(
+        &mut s,
+        approval(KindId::Secret, "A", &who("o", "s"), Some(mins(60))),
+    );
+    // FILE_SHARE_READ | FILE_SHARE_WRITE: readable, not replaceable
+    let f = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(0x1 | 0x2)
+        .open(d.path().join("head.copy"))
+        .unwrap();
+    let t = std::thread::spawn(move || {
+        std::thread::sleep(RETRY_FOR + std::time::Duration::from_millis(1500));
+        drop(f);
+    });
+    assert!(s.revoke_at(&g, t0()).unwrap());
+    assert_eq!(s.untrusted, None, "{:?}", s.untrusted);
+    t.join().unwrap();
+    drop(s);
+    assert_eq!(open(d.path()).untrusted, None);
+}
+
+/// Review 5, M-3: subjects fold ASCII only, so no two distinct names fold
+/// together.
+#[test]
+fn subjects_fold_ascii_only() {
+    assert_eq!(normal_subject(" Db_Token "), "db_token");
+    assert_ne!(normal_subject("\u{212A}_TOKEN"), normal_subject("k_token"));
+}
+
+/// Review 5, M-2: a reservation that could not be recorded is not kept.
+#[test]
+fn a_reservation_that_was_not_recorded_is_not_kept() {
+    let d = tempdir().unwrap();
+    let a = who("o", "s");
+    let mut s = open(d.path());
+    let p = d.path().join("attempts.json");
+    std::fs::create_dir(&p).unwrap();
+    assert!(s
+        .may_ask_at(&a, KindId::Secret, "DB", t0(), &AuditOnly)
+        .is_err());
+    assert!(s.attempts.is_empty());
+}
+
+/// Review 5, M-4: a resolve that is undone keeps the alert it raised, so
+/// the alert is not raised again.
+#[test]
+fn an_undone_resolve_keeps_its_alert() {
+    let d = tempdir().unwrap();
+    let a = who("o", "s");
+    let mut s = open(d.path());
+    for i in 0..DENIALS_BEFORE_ALERT - 1 {
+        let r = reserve(&mut s, &a, &format!("S{i}"), t0());
+        s.resolve_at(&r, &Outcome::Denied, t0(), &AuditOnly)
+            .unwrap();
+    }
+    let r = reserve(&mut s, &a, "LAST", t0());
+    let p = d.path().join("grants.json");
+    std::fs::remove_file(&p).unwrap();
+    std::fs::create_dir(&p).unwrap();
+    let alerts = Alerts::default();
+    assert!(s.resolve_at(&r, &Outcome::Denied, t0(), &alerts).is_err());
+    assert_eq!(alerts.0.borrow().len(), 1);
+    assert!(s
+        .attempts
+        .iter()
+        .any(|x| x.outcome == Ended::Alerted && x.requester.role == "o"));
 }

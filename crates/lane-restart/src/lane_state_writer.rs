@@ -2662,7 +2662,7 @@ mod tests {
     // (43 state files for 14 live lanes, measured 2026-10-03). #105/#107
     // fixed the recorded cwd FIELD, not the file NAME.
 
-    const LANE: &str = r"C:\p\lane";
+    const LANE: &str = "C:/p/lane";
     const LANE_TRANSCRIPT: &str = r"C:\u\.claude\projects\C--p-lane\s1.jsonl";
 
     fn hook_json(event: &str, session: &str, cwd: &str, transcript: Option<&str>) -> String {
@@ -2707,7 +2707,7 @@ mod tests {
         let sub = hook_json(
             "PreToolUse",
             "s1",
-            r"C:\p\lane\crates\sub",
+            "C:/p/lane/crates/sub",
             Some(LANE_TRANSCRIPT),
         );
         run_event(dir.path(), "PreToolUse", &sub, None);
@@ -2726,7 +2726,7 @@ mod tests {
         let sub = hook_json(
             "PreToolUse",
             "s1",
-            r"C:\p\lane\crates\sub",
+            "C:/p/lane/crates/sub",
             Some(LANE_TRANSCRIPT),
         );
         run_event(dir.path(), "PreToolUse", &sub, None);
@@ -2746,7 +2746,7 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         v["role"] = serde_json::json!("other");
         std::fs::write(&path, v.to_string()).unwrap();
-        let sibling = hook_json("PreToolUse", "s1", r"C:\p\lane-wt", Some(LANE_TRANSCRIPT));
+        let sibling = hook_json("PreToolUse", "s1", "C:/p/lane-wt", Some(LANE_TRANSCRIPT));
         run_event(dir.path(), "PreToolUse", &sibling, None);
         assert_eq!(state_files(dir.path()), vec!["lane.json"]);
     }
@@ -2756,7 +2756,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let start = hook_json("SessionStart", "s1", LANE, Some(LANE_TRANSCRIPT));
         run_event(dir.path(), "SessionStart", &start, None);
-        let sibling = hook_json("PreToolUse", "s1", r"C:\p\lane-wt", Some(LANE_TRANSCRIPT));
+        let sibling = hook_json("PreToolUse", "s1", "C:/p/lane-wt", Some(LANE_TRANSCRIPT));
         run_event(dir.path(), "PreToolUse", &sibling, None);
 
         assert_eq!(state_files(dir.path()), vec!["lane.json"]);
@@ -2773,7 +2773,7 @@ mod tests {
     #[test]
     fn without_a_transcript_path_the_event_cwd_still_decides() {
         let dir = tempdir().unwrap();
-        let sub = hook_json("PreToolUse", "s1", r"C:\p\lane\sub", None);
+        let sub = hook_json("PreToolUse", "s1", "C:/p/lane/sub", None);
         run_event(dir.path(), "PreToolUse", &sub, None);
         assert_eq!(state_files(dir.path()), vec!["sub.json"]);
     }
@@ -2785,7 +2785,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let other = hook_json("SessionStart", "other", LANE, Some(LANE_TRANSCRIPT));
         run_event(dir.path(), "SessionStart", &other, None);
-        let sibling = hook_json("PreToolUse", "s1", r"C:\p\lane-wt", Some(LANE_TRANSCRIPT));
+        let sibling = hook_json("PreToolUse", "s1", "C:/p/lane-wt", Some(LANE_TRANSCRIPT));
         run_event(dir.path(), "PreToolUse", &sibling, None);
         assert_eq!(state_files(dir.path()), vec!["lane-wt.json", "lane.json"]);
     }
@@ -2793,7 +2793,7 @@ mod tests {
     #[test]
     fn lane_role_still_wins_over_the_launch_dir() {
         let dir = tempdir().unwrap();
-        let sub = hook_json("PreToolUse", "s1", r"C:\p\lane\sub", Some(LANE_TRANSCRIPT));
+        let sub = hook_json("PreToolUse", "s1", "C:/p/lane/sub", Some(LANE_TRANSCRIPT));
         run_event(dir.path(), "PreToolUse", &sub, Some("pm"));
         assert_eq!(state_files(dir.path()), vec!["pm.json"]);
     }
@@ -2809,7 +2809,7 @@ mod tests {
             4242,
             &FakeAncestry::chain(&[(4242, 99, "claude.exe")]),
             None,
-            r"C:\p\lane-wt",
+            "C:/p/lane-wt",
         )
         .unwrap();
 
@@ -2831,7 +2831,7 @@ mod tests {
             5555,
             &FakeAncestry::chain(&[(5555, 77, "claude.exe")]),
             None,
-            r"C:\p\lane-wt",
+            "C:/p/lane-wt",
         )
         .unwrap_err();
         assert!(err.starts_with("lane-wt: no state file"), "{err}");
@@ -3073,7 +3073,7 @@ mod tests {
         let ev = hook_json(
             "PreToolUse",
             "s1",
-            r"C:\p\lane\.claude\worktrees\wt\src",
+            "C:/p/lane/.claude/worktrees/wt/src",
             Some(moved),
         );
         run_event(dir.path(), "PreToolUse", &ev, None);
@@ -3085,7 +3085,7 @@ mod tests {
     #[test]
     fn of_two_files_of_this_process_the_launch_dirs_wins() {
         let dir = tempdir().unwrap();
-        let wt = r"C:\p\lane\.claude\worktrees\a-wt";
+        let wt = "C:/p/lane/.claude/worktrees/a-wt";
         run_event(
             dir.path(),
             "SessionStart",
@@ -3114,12 +3114,12 @@ mod tests {
         let dir = tempdir().unwrap();
         let start = hook_json("SessionStart", "s1", LANE, Some(LANE_TRANSCRIPT));
         run_as(dir.path(), "SessionStart", &start, 10, Some("om"));
-        let resumed = hook_json("SessionStart", "s1", r"C:\p\overmind", None);
+        let resumed = hook_json("SessionStart", "s1", "C:/p/overmind", None);
         run_as(dir.path(), "SessionStart", &resumed, 20, None);
         let ev = hook_json(
             "PreToolUse",
             "s1",
-            r"C:\p\overmind-wt",
+            "C:/p/overmind-wt",
             Some(LANE_TRANSCRIPT),
         );
         run_as(dir.path(), "PreToolUse", &ev, 20, None);
@@ -3133,14 +3133,14 @@ mod tests {
     #[test]
     fn assert_idle_never_marks_another_processs_file() {
         let dir = tempdir().unwrap();
-        let b = hook_json("SessionStart", "sb", r"C:\p\b", None);
+        let b = hook_json("SessionStart", "sb", "C:/p/b", None);
         run_as(dir.path(), "SessionStart", &b, 50, None);
         let err = run_assert_idle(
             dir.path(),
             4242,
             &FakeAncestry::chain(&[(4242, 99, "claude.exe")]),
             None,
-            r"C:\p\b",
+            "C:/p/b",
         )
         .unwrap_err();
         assert!(err.contains("not this lane's claude pid 99"), "{err}");
@@ -3159,7 +3159,7 @@ mod tests {
         run_event(
             dir.path(),
             "SessionStart",
-            &hook_json("SessionStart", "s1", r"C:\p\a-old", None),
+            &hook_json("SessionStart", "s1", "C:/p/a-old", None),
             None,
         );
         std::thread::sleep(std::time::Duration::from_millis(20));
@@ -3174,7 +3174,7 @@ mod tests {
             4242,
             &FakeAncestry::chain(&[(4242, 99, "claude.exe")]),
             None,
-            r"C:\p\lane-wt",
+            "C:/p/lane-wt",
         )
         .unwrap();
         let shells = |r| {

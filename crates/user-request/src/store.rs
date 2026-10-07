@@ -8,17 +8,27 @@
 //! - `grants.json`: approvals and revocation tombstones;
 //! - `attempts.json`: recent prompts and how they ended (or that they are
 //!   still pending);
-//! - `audit.jsonl`: every save, grant, revocation, gate decision and alert,
-//!   hash-chained, with the chain's head ALSO written to a second file (PM
-//!   condition (d));
-//! - `store.lock`: held from `open` until the `Store` is dropped, so one
-//!   process at a time reads, changes and writes.
+//! - `audit.jsonl`: every save, grant, revocation, gate decision, alert and
+//!   integrity finding, hash-chained, with the chain's head ALSO written to a
+//!   second file (PM condition (d));
+//! - `store.lock`: an OS file lock, held from `open` until the `Store` is
+//!   dropped, so one process at a time reads, changes and writes.
 //!
-//! ⚠️ The audit chain is the store's integrity anchor: every save records the
-//! hashes of the files it wrote, and `open` checks the files against the last
-//! such record. A file that was deleted, rolled back or had an entry removed
-//! makes the store UNTRUSTWORTHY, and an untrustworthy store fails CLOSED:
-//! the gate refuses and no grant is honoured (revoking still works).
+//! Every public method that changes something saves before it returns, so
+//! nothing depends on the caller remembering to (review I-B). ⚠️ Drop the
+//! `Store` before showing a prompt: holding it holds the lock.
+//!
+//! ⚠️ The audit chain is the store's integrity anchor. On `open`:
+//! - the chain must be intact and agree with its head copy;
+//! - the files must be the ones the last save recorded;
+//! - no integrity problem may be on record since the last repair.
+//!
+//! Anything else makes the store UNTRUSTWORTHY, and it fails CLOSED: no
+//! grant is honoured and the gate refuses. The finding is written to the
+//! audit log, so no later save can launder it (review C-B): revoking still
+//! works, but only `repair` restores trust, and repair REVOKES EVERY GRANT
+//! and closes the gate for an hour. It only removes privilege, so it needs
+//! no Hello.
 //!
 //! ⚠️ Honest limit (WITH-SECRET-DESIGN.md §3): a process running as the same
 //! Windows user can read the DPAPI key and rewrite the files, the chain and
@@ -35,6 +45,7 @@ use hmac::{Hmac, KeyInit, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::channel::Outcome;
 use crate::request::{Approval, KindId, Requester, Scope};
 
 /// Encrypts the store's key at rest (`dpapi::Dpapi` in production).
@@ -67,10 +78,10 @@ pub const PROMPTS_PER_HOUR: usize = 6;
 pub const PROMPTS_PER_HOUR_FOR_THE_PERSON: usize = 20;
 /// This many denials or timeouts for one role in an hour raise an alert.
 pub const DENIALS_BEFORE_ALERT: usize = 3;
+/// After a repair, the gate refuses every prompt for this long.
+pub const GATE_CLOSED_AFTER_REPAIR: Duration = Duration::hours(1);
 /// How long `open` waits for another process's lock before giving up.
 pub const LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
-/// A lock older than this belongs to a process that died; it is reclaimed.
-pub const LOCK_STALE: std::time::Duration = std::time::Duration::from_secs(60);
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoredGrant {
@@ -79,8 +90,52 @@ pub struct StoredGrant {
     pub approval: Approval,
 }
 
-/// One prompt: "pending" while the person decides, then "approved",
-/// "denied", "timed-out" or "unavailable".
+/// How a prompt ended. A closed set (review I-C): no caller can invent an
+/// outcome the gate does not count.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Ended {
+    /// The person has not answered yet.
+    Pending,
+    Approved,
+    Denied,
+    TimedOut,
+    /// The channel could not ask.
+    Unavailable,
+    /// The channel refused to ask (over the kind's maximum, malformed).
+    NotAsked,
+    /// Not a prompt: an alert was raised (one per role and reason per hour).
+    Alerted,
+    /// Not a prompt: the store was repaired, which closes the gate.
+    Repaired,
+}
+
+impl Ended {
+    fn name(self) -> &'static str {
+        match self {
+            Ended::Pending => "pending",
+            Ended::Approved => "approved",
+            Ended::Denied => "denied",
+            Ended::TimedOut => "timed-out",
+            Ended::Unavailable => "unavailable",
+            Ended::NotAsked => "not-asked",
+            Ended::Alerted => "alerted",
+            Ended::Repaired => "repaired",
+        }
+    }
+
+    /// The person said no, or did not answer.
+    fn is_refusal(self) -> bool {
+        matches!(self, Ended::Denied | Ended::TimedOut)
+    }
+
+    /// Counts toward the hourly caps.
+    fn is_prompt(self) -> bool {
+        !matches!(self, Ended::Alerted | Ended::Repaired)
+    }
+}
+
+/// One prompt, from the gate's reservation to its answer.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Attempt {
     /// 128 random bits, hex.
@@ -90,7 +145,7 @@ pub struct Attempt {
     pub kind: KindId,
     /// Normalised (`normal_subject`), so `DB`, `db` and `DB ` share a cooldown.
     pub subject: String,
-    pub outcome: String,
+    pub outcome: Ended,
 }
 
 /// What `may_ask` hands back: the pending attempt to resolve once the person
@@ -98,6 +153,15 @@ pub struct Attempt {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Reservation {
     pub attempt_id: String,
+}
+
+/// What `verify_audit` found.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AuditReport {
+    /// Lines in the log.
+    pub lines: usize,
+    /// Chain resets that a later repair acknowledged.
+    pub repaired_resets: usize,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -124,9 +188,10 @@ struct AuditLine {
 /// Why the store cannot be trusted right now.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Untrusted {
-    /// The key did not decrypt, or decrypted to the wrong bytes.
+    /// The key is missing, did not decrypt, or decrypted to the wrong bytes.
     Key(String),
-    /// A file is not what the last save recorded, or its signature failed.
+    /// A file or the audit chain is not what it should be, now or at some
+    /// point since the last repair.
     Files(String),
 }
 
@@ -143,6 +208,9 @@ pub struct Store {
     _lock: StoreLock,
 }
 
+/// The files whose presence means a store exists.
+const DATA_FILES: [&str; 3] = ["grants.json", "attempts.json", "audit.jsonl"];
+
 impl Store {
     /// Opens the store in `dir`, creating it if it does not exist, and holds
     /// its lock until the `Store` is dropped. `head_copy` is the second
@@ -157,13 +225,16 @@ impl Store {
     }
 
     /// Like `open`, but `None` when there is no store yet: read-only
-    /// commands never create one (review M2, M5).
+    /// commands never create one (review M2, M5). A store whose key is gone
+    /// but whose data is not still exists (review I-F).
     pub fn open_existing(
         dir: &Path,
         protector: &dyn Protector,
         head_copy: Option<PathBuf>,
     ) -> Result<Option<Self>, String> {
-        if !dir.join("store.key").exists() {
+        let exists =
+            dir.join("store.key").exists() || DATA_FILES.iter().any(|n| dir.join(n).exists());
+        if !exists {
             return Ok(None);
         }
         Self::open_in(dir, protector, head_copy).map(Some)
@@ -186,13 +257,17 @@ impl Store {
                     Vec::new()
                 }
             },
-            // only a key that does not exist is created (review M2)
+            // a key is created only for a store that has nothing yet (review
+            // M2, I-F): a lost key must never look like a fresh install
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                let mut k = vec![0u8; 32];
-                getrandom::fill(&mut k).map_err(|e| format!("random key: {e}"))?;
-                write_atomic(&key_path, &protector.protect(&k)?)?;
-                write_atomic(&check_path, mac(&k, KEY_CHECK.as_bytes()).as_bytes())?;
-                k
+                if DATA_FILES.iter().any(|n| dir.join(n).exists()) {
+                    untrusted = Some(Untrusted::Key(
+                        "store.key is missing but the store has data".into(),
+                    ));
+                    Vec::new()
+                } else {
+                    new_key(dir, protector)?
+                }
             }
             Err(e) => return Err(format!("read {}: {e}", key_path.display())),
         };
@@ -208,12 +283,12 @@ impl Store {
             _lock: lock,
         };
         if store.untrusted.is_none() {
-            store.load(&check_path)?;
+            store.load(&check_path, Utc::now())?;
         }
         Ok(store)
     }
 
-    fn load(&mut self, check_path: &Path) -> Result<(), String> {
+    fn load(&mut self, check_path: &Path, now: DateTime<Utc>) -> Result<(), String> {
         let grants = read_signed(&self.dir.join("grants.json"), &self.key);
         let attempts = read_signed(&self.dir.join("attempts.json"), &self.key);
         // the key check: a match, or (missing check, review I2) files that
@@ -240,8 +315,13 @@ impl Store {
                 return Ok(());
             }
         }
-        let expected = self.last_saved();
         let mut problems = Vec::new();
+        // the chain and its head copy first (review C-A): a whole-directory
+        // rollback or wipe leaves files that match their own log
+        if let Err(why) = self.check_chain() {
+            problems.push(why);
+        }
+        let expected = self.last_saved();
         for (name, file) in [("grants.json", &grants), ("attempts.json", &attempts)] {
             match (file, expected.as_ref().and_then(|e| e.get(name))) {
                 (Signed::Bad, _) => {
@@ -258,22 +338,70 @@ impl Store {
                 _ => {}
             }
         }
+        // a body that verifies but does not parse (a newer or older schema)
+        // is set aside, never a reason open fails: revoking must always work
+        // (review I-H)
         if let Signed::Good { seq, body, .. } = grants {
-            let g: GrantsFile =
-                serde_json::from_slice(&body).map_err(|e| format!("grants.json: {e}"))?;
-            self.grants = g.grants;
-            self.revoked = g.revoked;
-            self.seq = seq;
+            match serde_json::from_slice::<GrantsFile>(&body) {
+                Ok(g) => {
+                    self.grants = g.grants;
+                    self.revoked = g.revoked;
+                    self.seq = seq;
+                }
+                Err(e) => {
+                    let to = quarantine(&self.dir.join("grants.json"));
+                    problems.push(format!("grants.json did not parse: {e} (kept as {to})"));
+                }
+            }
         }
         if let Signed::Good { seq, body, .. } = attempts {
-            self.attempts =
-                serde_json::from_slice(&body).map_err(|e| format!("attempts.json: {e}"))?;
-            self.seq = self.seq.max(seq);
+            match serde_json::from_slice::<Vec<Attempt>>(&body) {
+                Ok(a) => {
+                    self.attempts = a;
+                    self.seq = self.seq.max(seq);
+                }
+                Err(e) => {
+                    let to = quarantine(&self.dir.join("attempts.json"));
+                    problems.push(format!("attempts.json did not parse: {e} (kept as {to})"));
+                }
+            }
         }
-        if !problems.is_empty() {
-            self.untrusted = Some(Untrusted::Files(problems.join("; ")));
+        let on_record = self.unrepaired_finding();
+        if problems.is_empty() && on_record.is_none() {
+            return Ok(());
         }
+        let mut why = problems.join("; ");
+        if !problems.is_empty() && on_record.is_none() {
+            // recorded, so no later save can launder it (review C-B); best
+            // effort: the store is untrusted in memory either way
+            let _ = self.audit(now, "untrusted", &why);
+        }
+        if let Some(earlier) = on_record {
+            if !why.is_empty() {
+                why.push_str("; ");
+            }
+            why.push_str(&format!("not repaired since {earlier}"));
+        }
+        self.untrusted = Some(Untrusted::Files(why));
         Ok(())
+    }
+
+    /// The first integrity finding on record since the last repair.
+    fn unrepaired_finding(&self) -> Option<String> {
+        let text = std::fs::read_to_string(self.dir.join("audit.jsonl")).unwrap_or_default();
+        let lines: Vec<AuditLine> = text
+            .lines()
+            .filter_map(|l| serde_json::from_str::<AuditLine>(l).ok())
+            .collect();
+        let start = lines
+            .iter()
+            .rposition(|a| a.event == "repaired")
+            .map_or(0, |i| i + 1);
+        lines
+            .into_iter()
+            .skip(start)
+            .find(|a| a.event == "untrusted" || a.event == "chain-reset")
+            .map(|a| format!("{} at {}: {}", a.event, a.at, a.detail))
     }
 
     /// The file hashes the last `saved` audit line recorded.
@@ -297,18 +425,19 @@ impl Store {
     pub fn trustworthy(&self) -> Result<(), String> {
         match &self.untrusted {
             None => Ok(()),
-            Some(Untrusted::Key(why)) | Some(Untrusted::Files(why)) => {
-                Err(format!("the store cannot be trusted: {why}"))
-            }
+            Some(Untrusted::Key(why)) | Some(Untrusted::Files(why)) => Err(format!(
+                "the store cannot be trusted: {why} (`user-request repair` revokes every \
+                 grant and restores it)"
+            )),
         }
     }
 
     /// Writes grants and attempts (expired grants and attempts older than a
     /// day are dropped) and records their hashes in the audit log. Refused
-    /// when the key is wrong, so the real store is never overwritten. A store
-    /// whose FILES were untrustworthy may save: that is how a revocation
-    /// lands, and the audit log keeps the record of what was found.
-    pub fn save(&mut self, now: DateTime<Utc>) -> Result<(), String> {
+    /// when the key is untrusted, so the real store is never overwritten. A
+    /// store whose FILES are untrusted may save (that is how a revocation
+    /// lands) but stays untrusted: only `repair` restores trust.
+    pub(crate) fn save(&mut self, now: DateTime<Utc>) -> Result<(), String> {
         if let Some(Untrusted::Key(why)) = &self.untrusted {
             return Err(format!("refusing to save: {why}"));
         }
@@ -329,32 +458,47 @@ impl Store {
             .collect();
         let gbody = serde_json::to_vec(&grants).map_err(|e| e.to_string())?;
         let abody = serde_json::to_vec(&attempts).map_err(|e| e.to_string())?;
-        let gsha = write_signed(&self.dir.join("grants.json"), &self.key, self.seq, &gbody)?;
-        let asha = write_signed(&self.dir.join("attempts.json"), &self.key, self.seq, &abody)?;
-        self.audit(
-            now,
-            "saved",
-            &format!("seq={} grants.json={gsha} attempts.json={asha}", self.seq),
-        )?;
-        if matches!(self.untrusted, Some(Untrusted::Files(_))) {
-            self.audit(
+        let written = write_signed(&self.dir.join("grants.json"), &self.key, self.seq, &gbody)
+            .and_then(|g| {
+                write_signed(&self.dir.join("attempts.json"), &self.key, self.seq, &abody)
+                    .map(|a| (g, a))
+            });
+        match written {
+            Ok((gsha, asha)) => self.audit(
                 now,
-                "re-anchored",
-                "files rewritten after an integrity problem",
-            )?;
-            self.untrusted = None;
+                "saved",
+                &format!("seq={} grants.json={gsha} attempts.json={asha}", self.seq),
+            ),
+            Err(e) => {
+                // so an audited change that did not land says so (review M-a)
+                let _ = self.audit(now, "save-failed", &e);
+                Err(e)
+            }
         }
-        Ok(())
     }
 
-    /// Stores an approval and returns its id.
-    pub fn add(&mut self, approval: Approval) -> String {
+    /// Stores an approval and returns its id. Refused by an untrustworthy
+    /// store.
+    pub fn add(&mut self, approval: Approval, now: DateTime<Utc>) -> Result<String, String> {
+        self.trustworthy()?;
         let id = random_id();
+        let expires = approval
+            .expires_at
+            .map_or("FOREVER".to_string(), |e| e.to_rfc3339());
+        self.audit(
+            now,
+            "granted",
+            &format!(
+                "id={id} kind={:?} subject={} role={} expires={expires}",
+                approval.kind, approval.subject, approval.requester.role
+            ),
+        )?;
         self.grants.push(StoredGrant {
             id: id.clone(),
             approval,
         });
-        id
+        self.save(now)?;
+        Ok(id)
     }
 
     /// A live grant covering this request: same kind and subject, not
@@ -389,16 +533,30 @@ impl Store {
             .collect()
     }
 
-    pub fn revoke(&mut self, id: &str) -> bool {
+    /// Revokes one grant; `false` when there is no such active grant. Works
+    /// on an untrustworthy store unless its key is the problem (then its
+    /// grants are unknown, and only `repair` helps).
+    pub fn revoke(&mut self, id: &str, now: DateTime<Utc>) -> Result<bool, String> {
+        self.key_known()?;
         let known = self.grants.iter().any(|g| g.id == id) && !self.revoked.contains(id);
-        if known {
-            self.revoked.insert(id.to_string());
+        if !known {
+            return Ok(false);
         }
-        known
+        self.audit(now, "revoked", &format!("id={id}"))?;
+        self.revoked.insert(id.to_string());
+        self.save(now)?;
+        Ok(true)
     }
 
     /// The panic button: revokes every grant, returns how many.
-    pub fn revoke_all(&mut self) -> usize {
+    pub fn revoke_all(&mut self, now: DateTime<Utc>) -> Result<usize, String> {
+        self.key_known()?;
+        let n = self.revoke_everything(now)?;
+        self.save(now)?;
+        Ok(n)
+    }
+
+    fn revoke_everything(&mut self, now: DateTime<Utc>) -> Result<usize, String> {
         let ids: Vec<String> = self
             .grants
             .iter()
@@ -406,17 +564,76 @@ impl Store {
             .filter(|id| !self.revoked.contains(id))
             .collect();
         let n = ids.len();
+        self.audit(now, "revoked-all", &format!("n={n} ids={}", ids.join(",")))?;
         self.revoked.extend(ids);
-        n
+        Ok(n)
+    }
+
+    fn key_known(&self) -> Result<(), String> {
+        match &self.untrusted {
+            Some(Untrusted::Key(why)) => Err(format!(
+                "the store's key cannot be trusted ({why}), so its grants are unknown; \
+                 `user-request repair` revokes every grant"
+            )),
+            _ => Ok(()),
+        }
+    }
+
+    /// Restores trust by REVOKING EVERY GRANT and closing the gate for
+    /// `GATE_CLOSED_AFTER_REPAIR`. A store whose key is the problem gets a
+    /// new key, and its old files are set aside. Removes privilege only, so
+    /// it needs no Hello. Returns how many grants it revoked.
+    pub fn repair(
+        &mut self,
+        now: DateTime<Utc>,
+        protector: &dyn Protector,
+    ) -> Result<usize, String> {
+        let was = match &self.untrusted {
+            None => "nothing (the store was trusted)".to_string(),
+            Some(Untrusted::Key(w)) | Some(Untrusted::Files(w)) => w.clone(),
+        };
+        if matches!(self.untrusted, Some(Untrusted::Key(_))) {
+            for name in ["store.key", "grants.json", "attempts.json"] {
+                if self.dir.join(name).exists() {
+                    quarantine(&self.dir.join(name));
+                }
+            }
+            self.key = new_key(&self.dir, protector)?;
+            self.grants.clear();
+            self.revoked.clear();
+            self.attempts.clear();
+            self.seq = 0;
+            self.untrusted = Some(Untrusted::Files(was.clone()));
+        }
+        let n = self.revoke_everything(now)?;
+        self.attempts.push(Attempt {
+            id: random_id(),
+            at: now,
+            requester: nobody("*"),
+            kind: KindId::Secret,
+            subject: "repair".into(),
+            outcome: Ended::Repaired,
+        });
+        self.audit(
+            now,
+            "repaired",
+            &format!(
+                "revoked={n} gate-closed-until={} was: {was}",
+                (now + GATE_CLOSED_AFTER_REPAIR).to_rfc3339()
+            ),
+        )?;
+        self.untrusted = None;
+        self.save(now)?;
+        Ok(n)
     }
 
     /// May `requester` put a prompt about `subject` in front of the person
-    /// now? On yes, a PENDING attempt is recorded that counts toward every
-    /// limit until resolved (review C3) - save the store, ask, then
-    /// `resolve`. Refused when the store is untrustworthy (fail closed), in
-    /// the cooldown after a denial or timeout of the same role and subject,
-    /// or past the role's or the person's hourly cap. Keyed by ROLE, so a
-    /// restart resets nothing. Every decision is audited.
+    /// now? On yes, a PENDING attempt is recorded and saved, and it counts
+    /// toward every limit until resolved (review C3). Refused when the store
+    /// is untrustworthy (fail closed), for an hour after a repair, in the
+    /// cooldown after a denial or timeout of the same role and subject, or
+    /// past the role's or the person's hourly cap. Keyed by ROLE, so a
+    /// restart resets nothing. Every decision is audited and saved.
     pub fn may_ask(
         &mut self,
         requester: &Requester,
@@ -428,12 +645,21 @@ impl Store {
         let subject = normal_subject(subject);
         let role = requester.role.clone();
         if let Err(why) = self.gate(&role, &subject, now, alert) {
-            self.audit(
-                now,
-                "gate-refused",
-                &format!("role={role} subject={subject}: {why}"),
-            )?;
-            return Err(why);
+            let recorded = self
+                .audit(
+                    now,
+                    "gate-refused",
+                    &format!("role={role} subject={subject}: {why}"),
+                )
+                .and_then(|()| match self.untrusted {
+                    // nothing can be saved under a key that is not trusted
+                    Some(Untrusted::Key(_)) => Ok(()),
+                    _ => self.save(now),
+                });
+            return Err(match recorded {
+                Ok(()) => why,
+                Err(e) => format!("{why} (and recording it failed: {e})"),
+            });
         }
         let id = random_id();
         self.attempts.push(Attempt {
@@ -442,13 +668,14 @@ impl Store {
             requester: requester.clone(),
             kind,
             subject: subject.clone(),
-            outcome: "pending".into(),
+            outcome: Ended::Pending,
         });
         self.audit(
             now,
             "gate-allowed",
             &format!("role={role} subject={subject} attempt={id}"),
         )?;
+        self.save(now)?;
         Ok(Reservation { attempt_id: id })
     }
 
@@ -461,10 +688,22 @@ impl Store {
     ) -> Result<(), String> {
         self.trustworthy()?;
         let within = |a: &Attempt, d: Duration| now < a.at + d;
+        if let Some(r) = self
+            .attempts
+            .iter()
+            .filter(|a| a.outcome == Ended::Repaired && within(a, GATE_CLOSED_AFTER_REPAIR))
+            .map(|a| a.at)
+            .max()
+        {
+            return Err(format!(
+                "the store was repaired at {r}; prompts resume at {}",
+                r + GATE_CLOSED_AFTER_REPAIR
+            ));
+        }
         if self.attempts.iter().any(|a| {
             a.requester.role == role
                 && a.subject == subject
-                && is_refusal(&a.outcome)
+                && a.outcome.is_refusal()
                 && within(a, DENIAL_COOLDOWN)
         }) {
             return Err(format!(
@@ -475,7 +714,7 @@ impl Store {
         let prompts = |only: Option<&str>| {
             self.attempts
                 .iter()
-                .filter(|a| a.outcome != "alerted" && within(a, Duration::hours(1)))
+                .filter(|a| a.outcome.is_prompt() && within(a, Duration::hours(1)))
                 .filter(|a| only.is_none_or(|r| a.requester.role == r))
                 .count()
         };
@@ -494,50 +733,93 @@ impl Store {
         Err(why)
     }
 
-    /// Records how a reserved prompt ended; repeated refusals alert once.
+    /// Records how a reserved prompt ended, once (review I-C), and saves.
+    /// An approval must be for what was reserved, and is stored as a grant
+    /// in the same step; its id is returned. Repeated refusals alert once.
     pub fn resolve(
         &mut self,
         reservation: &Reservation,
-        outcome: &str,
+        outcome: &Outcome,
         now: DateTime<Utc>,
         alert: &dyn Alert,
-    ) -> Result<(), String> {
+    ) -> Result<Option<String>, String> {
         let a = self
             .attempts
-            .iter_mut()
+            .iter()
             .find(|a| a.id == reservation.attempt_id)
-            .ok_or("no such pending attempt")?;
-        a.outcome = outcome.to_string();
+            .ok_or("no such attempt")?;
+        if a.outcome != Ended::Pending {
+            return Err(format!(
+                "attempt {} already ended: {}",
+                a.id,
+                a.outcome.name()
+            ));
+        }
         let (role, subject) = (a.requester.role.clone(), a.subject.clone());
+        let ended = match outcome {
+            Outcome::Approved(ap) => {
+                if ap.kind != a.kind
+                    || normal_subject(&ap.subject) != a.subject
+                    || ap.requester != a.requester
+                {
+                    return Err("the approval is not for what was reserved".into());
+                }
+                Ended::Approved
+            }
+            Outcome::Denied => Ended::Denied,
+            Outcome::TimedOut => Ended::TimedOut,
+            Outcome::Unavailable(_) => Ended::Unavailable,
+            Outcome::Refused(_) => Ended::NotAsked,
+        };
         self.audit(
             now,
-            outcome,
+            "resolved",
             &format!(
-                "role={role} subject={subject} attempt={}",
+                "outcome={} role={role} subject={subject} attempt={}",
+                ended.name(),
                 reservation.attempt_id
             ),
         )?;
-        if !is_refusal(outcome) {
-            return Ok(());
-        }
-        let refusals = self
+        if let Some(a) = self
             .attempts
-            .iter()
-            .filter(|a| {
-                a.requester.role == role
-                    && is_refusal(&a.outcome)
-                    && now < a.at + Duration::hours(1)
-            })
-            .count();
-        if refusals >= DENIALS_BEFORE_ALERT {
-            let what = format!("'{role}' was refused {refusals} times within an hour");
-            self.alert_once(&role, "refusals", &what, now, alert)?;
+            .iter_mut()
+            .find(|a| a.id == reservation.attempt_id)
+        {
+            a.outcome = ended;
         }
-        Ok(())
+        let mut grant = None;
+        if let Outcome::Approved(ap) = outcome {
+            // `add` saves; it refuses an untrustworthy store, and then the
+            // attempt is still recorded
+            match self.add(ap.clone(), now) {
+                Ok(id) => grant = Some(id),
+                Err(e) => {
+                    self.save(now)?;
+                    return Err(e);
+                }
+            }
+        }
+        if ended.is_refusal() {
+            let refusals = self
+                .attempts
+                .iter()
+                .filter(|a| {
+                    a.requester.role == role
+                        && a.outcome.is_refusal()
+                        && now < a.at + Duration::hours(1)
+                })
+                .count();
+            if refusals >= DENIALS_BEFORE_ALERT {
+                let what = format!("'{role}' was refused {refusals} times within an hour");
+                self.alert_once(&role, "refusals", &what, now, alert)?;
+            }
+        }
+        self.save(now)?;
+        Ok(grant)
     }
 
     /// One alert per role and reason per rolling hour (review M1), always
-    /// audited, whatever the sink does.
+    /// audited, whatever the sink does. The caller saves.
     fn alert_once(
         &mut self,
         role: &str,
@@ -548,7 +830,7 @@ impl Store {
     ) -> Result<(), String> {
         let tag = format!("alert:{reason}");
         let recent = self.attempts.iter().any(|a| {
-            a.outcome == "alerted"
+            a.outcome == Ended::Alerted
                 && a.requester.role == role
                 && a.subject == tag
                 && now < a.at + Duration::hours(1)
@@ -559,16 +841,10 @@ impl Store {
         self.attempts.push(Attempt {
             id: random_id(),
             at: now,
-            requester: Requester {
-                role: role.to_string(),
-                session_id: String::new(),
-                claude_pid: 0,
-                claude_start_secs: 0,
-                managed: false,
-            },
+            requester: nobody(role),
             kind: KindId::Secret,
             subject: tag,
-            outcome: "alerted".into(),
+            outcome: Ended::Alerted,
         });
         self.audit(now, "ALERT", what)?;
         alert.alert(what);
@@ -578,9 +854,9 @@ impl Store {
     /// Appends one line to the hash-chained audit log and rewrites the head
     /// copy. The chain is checked first (review C1, I5, I6): a chain that is
     /// broken, or shorter than its head copy says (truncated, deleted, a torn
-    /// last line), gets an explicit `chain-reset` line naming why, so
-    /// `verify_audit` keeps reporting it while later lines still append.
-    pub fn audit(&self, at: DateTime<Utc>, event: &str, detail: &str) -> Result<(), String> {
+    /// last line), gets an explicit `chain-reset` line naming why, which
+    /// keeps the store untrusted until a repair.
+    fn audit(&self, at: DateTime<Utc>, event: &str, detail: &str) -> Result<(), String> {
         let path = self.dir.join("audit.jsonl");
         let (count, prev) = match self.check_chain() {
             Ok(head) => head,
@@ -615,10 +891,16 @@ impl Store {
         .map_err(|e| e.to_string())?;
         append(&path, &format!("{line}\n"))?;
         if let Some(copy) = &self.head_copy {
-            write_atomic(
+            // best effort (review I-D): a revocation must land even where the
+            // copy cannot be written; the next open then finds the copy wrong
+            // and the store untrusted, which fails closed
+            if let Some(parent) = copy.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let _ = write_atomic(
                 copy,
                 format!("{} {}\n", count + 1, sha(line.as_bytes())).as_bytes(),
-            )?;
+            );
         }
         Ok(())
     }
@@ -637,8 +919,7 @@ impl Store {
             return Err("the audit log's last line is torn".into());
         }
         // A `chain-reset` line starts a new chain: only lines from the last
-        // one on are checked (what came before is the damage it reported,
-        // which `verify_audit` keeps reporting).
+        // one on are checked (what came before is the damage it reported).
         let lines: Vec<&str> = text.lines().collect();
         let start = lines
             .iter()
@@ -662,7 +943,7 @@ impl Store {
                 Ok(head) => {
                     return Err(format!(
                         "audit head copy says '{}', the chain ends at '{count} {prev}': \
-                         truncated or rewritten",
+                         truncated, rolled back or rewritten",
                         head.trim()
                     ))
                 }
@@ -673,62 +954,65 @@ impl Store {
         Ok((count, prev))
     }
 
-    /// Checks every link of the chain and the head copy; returns how many
-    /// lines verified. A `chain-reset` anywhere is reported as an error: it
-    /// is permanent evidence that the chain was found broken.
-    pub fn verify_audit(&self) -> Result<usize, String> {
-        let (count, _) = self.check_chain()?;
+    /// Checks every link of the chain and the head copy. A `chain-reset`
+    /// since the last repair is an error: it is evidence the chain was found
+    /// broken. Resets that a repair acknowledged are counted, not failed
+    /// (review M-f).
+    pub fn verify_audit(&self) -> Result<AuditReport, String> {
+        let (lines, _) = self.check_chain()?;
         let text = std::fs::read_to_string(self.dir.join("audit.jsonl")).unwrap_or_default();
-        for (i, l) in text.lines().enumerate() {
-            if let Ok(a) = serde_json::from_str::<AuditLine>(l) {
-                if a.event == "chain-reset" {
-                    return Err(format!(
-                        "the chain was reset at line {}: {}",
-                        i + 1,
-                        a.detail
-                    ));
-                }
+        let parsed: Vec<(usize, AuditLine)> = text
+            .lines()
+            .enumerate()
+            .filter_map(|(i, l)| serde_json::from_str::<AuditLine>(l).ok().map(|a| (i, a)))
+            .collect();
+        let after_repair = parsed
+            .iter()
+            .rposition(|(_, a)| a.event == "repaired")
+            .map_or(0, |i| i + 1);
+        let mut repaired_resets = 0;
+        for (n, (i, a)) in parsed.iter().enumerate() {
+            if a.event != "chain-reset" {
+                continue;
+            }
+            if n < after_repair {
+                repaired_resets += 1;
+            } else {
+                return Err(format!(
+                    "the chain was reset at line {}: {}",
+                    i + 1,
+                    a.detail
+                ));
             }
         }
-        Ok(count)
+        Ok(AuditReport {
+            lines,
+            repaired_resets,
+        })
     }
 }
 
-/// A store-wide lock: a file created with `create_new`, holding the owner's
-/// pid. A lock older than `LOCK_STALE` belongs to a dead process and is
-/// reclaimed.
+/// A store-wide OS file lock (review I-A): the OS releases it when the
+/// handle closes, including when the process dies, so there is no staleness
+/// to guess and no other holder's lock to delete. The file itself stays.
 struct StoreLock {
-    path: PathBuf,
+    _file: std::fs::File,
 }
 
 impl StoreLock {
     fn acquire(path: &Path) -> Result<Self, String> {
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path)
+            .map_err(|e| format!("lock {}: {e}", path.display()))?;
         let deadline = Instant::now() + LOCK_WAIT;
         loop {
-            match std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(path)
-            {
-                Ok(mut f) => {
-                    let _ = write!(f, "{}", std::process::id());
-                    return Ok(Self {
-                        path: path.to_path_buf(),
-                    });
-                }
-                Err(e)
-                    if e.kind() == std::io::ErrorKind::AlreadyExists
-                        || e.kind() == std::io::ErrorKind::PermissionDenied =>
-                {
-                    let stale = std::fs::metadata(path)
-                        .and_then(|m| m.modified())
-                        .ok()
-                        .and_then(|t| t.elapsed().ok())
-                        .is_some_and(|age| age > LOCK_STALE);
-                    if stale {
-                        let _ = std::fs::remove_file(path);
-                        continue;
-                    }
+            match file.try_lock() {
+                Ok(()) => return Ok(Self { _file: file }),
+                Err(std::fs::TryLockError::WouldBlock) => {
                     if Instant::now() >= deadline {
                         return Err(format!(
                             "the store is locked by another process ({})",
@@ -737,24 +1021,38 @@ impl StoreLock {
                     }
                     std::thread::sleep(std::time::Duration::from_millis(20));
                 }
-                Err(e) => return Err(format!("lock {}: {e}", path.display())),
+                Err(std::fs::TryLockError::Error(e)) => {
+                    return Err(format!("lock {}: {e}", path.display()))
+                }
             }
         }
     }
 }
 
-impl Drop for StoreLock {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
+fn new_key(dir: &Path, protector: &dyn Protector) -> Result<Vec<u8>, String> {
+    let mut k = vec![0u8; 32];
+    getrandom::fill(&mut k).map_err(|e| format!("random key: {e}"))?;
+    write_atomic(&dir.join("store.key"), &protector.protect(&k)?)?;
+    write_atomic(
+        &dir.join("store.key.check"),
+        mac(&k, KEY_CHECK.as_bytes()).as_bytes(),
+    )?;
+    Ok(k)
+}
+
+/// The requester recorded on a store-made attempt (an alert, a repair).
+fn nobody(role: &str) -> Requester {
+    Requester {
+        role: role.to_string(),
+        session_id: String::new(),
+        claude_pid: 0,
+        claude_start_secs: 0,
+        managed: false,
     }
 }
 
 fn live(g: &StoredGrant, now: DateTime<Utc>) -> bool {
     g.approval.expires_at.is_none_or(|e| e > now)
-}
-
-fn is_refusal(outcome: &str) -> bool {
-    matches!(outcome, "denied" | "timed-out")
 }
 
 /// Subjects are compared trimmed and case-folded (review I9).
@@ -827,12 +1125,14 @@ fn signed_bytes(seq: u64, body: &[u8]) -> Vec<u8> {
     v
 }
 
-/// Moves a file that failed its signature aside instead of dropping it
-/// (review I8); returns its new name.
+/// Moves a file aside instead of dropping it (review I8); returns its new
+/// name, which is unique, so two files set aside in the same millisecond
+/// never overwrite each other.
 fn quarantine(path: &Path) -> String {
     let to = path.with_extension(format!(
-        "rejected-{}",
-        Utc::now().format("%Y%m%dT%H%M%S%.3f")
+        "rejected-{}-{}",
+        Utc::now().format("%Y%m%dT%H%M%S%.3f"),
+        &random_id()[..8]
     ));
     let _ = std::fs::rename(path, &to);
     to.display().to_string()

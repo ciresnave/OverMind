@@ -1,17 +1,19 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! `user-request list | revoke <id> | revoke --all | audit verify`.
+//! `user-request list | revoke <id> | revoke --all | repair | audit verify`.
 //!
-//! Revoking needs no Windows Hello: it only removes privilege (PM condition
-//! (c)). Every revocation is written to the audit log before it is saved.
+//! Revoking and repairing need no Windows Hello: they only remove privilege
+//! (PM condition (c)). Every change is audited by the store before it is
+//! saved.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use chrono::{Local, Utc};
 use user_request::dpapi::Dpapi;
-use user_request::store::Store;
+use user_request::store::{Store, Untrusted, GATE_CLOSED_AFTER_REPAIR};
 
 const ENTROPY: &[u8] = b"overmind.user-request.v1";
+const PROTECTOR: Dpapi = Dpapi { entropy: ENTROPY };
 
 /// ⚠️ The overrides exist for this crate's tests and only in debug builds
 /// (review M4): a leaked variable must never point the panic button at
@@ -42,7 +44,7 @@ fn head_copy() -> PathBuf {
 fn open() -> Result<Option<Store>, String> {
     let dir = dir()?;
     eprintln!("user-request: store {}", dir.display());
-    let s = Store::open_existing(&dir, &Dpapi { entropy: ENTROPY }, Some(head_copy()))?;
+    let s = Store::open_existing(&dir, &PROTECTOR, Some(head_copy()))?;
     if let Some(Err(why)) = s.as_ref().map(Store::trustworthy) {
         eprintln!("user-request: ⚠️ {why}");
     }
@@ -55,14 +57,21 @@ fn list() -> Result<u8, String> {
         println!("no store yet: nothing has been granted");
         return Ok(0);
     };
+    // review M-b: under an untrusted key nothing was read, which is not
+    // the same as nothing granted
+    if let Some(Untrusted::Key(_)) = s.untrusted {
+        println!("*** GRANTS UNKNOWN: the store's key cannot be trusted ***");
+        println!("`user-request repair` revokes every grant and restores the store");
+        return Ok(1);
+    }
     let untrusted = s.trustworthy().is_err();
     let active = s.active(now);
+    if untrusted {
+        println!("*** THE STORE CANNOT BE TRUSTED: none of these is honoured until it is ***");
+    }
     if active.is_empty() {
         println!("no active grants");
         return Ok(u8::from(untrusted));
-    }
-    if untrusted {
-        println!("*** THE STORE CANNOT BE TRUSTED: none of these is honoured until it is ***");
     }
     // FOREVER grants first, loud (PM condition (a))
     let (forever, timed): (Vec<_>, Vec<_>) = active
@@ -102,18 +111,28 @@ fn revoke(target: &str) -> Result<u8, String> {
         return Err("no store yet: nothing to revoke".into());
     };
     if target == "--all" {
-        let n = s.revoke_all();
-        s.audit(now, "revoked-all", &format!("{n} grant(s)"))?;
-        s.save(now)?;
+        let n = s.revoke_all(now)?;
         println!("revoked {n} grant(s)");
         return Ok(0);
     }
-    if !s.revoke(target) {
+    if !s.revoke(target, now)? {
         return Err(format!("no active grant with id {target}"));
     }
-    s.audit(now, "revoked", target)?;
-    s.save(now)?;
     println!("revoked {target}");
+    Ok(0)
+}
+
+fn repair() -> Result<u8, String> {
+    let now = Utc::now();
+    let Some(mut s) = open()? else {
+        println!("no store yet: nothing to repair");
+        return Ok(0);
+    };
+    let n = s.repair(now, &PROTECTOR)?;
+    let resume = (now + GATE_CLOSED_AFTER_REPAIR)
+        .with_timezone(&Local)
+        .format("%H:%M %Z");
+    println!("repaired: revoked {n} grant(s); prompts are refused until {resume}");
     Ok(0)
 }
 
@@ -122,9 +141,18 @@ fn verify() -> Result<u8, String> {
         println!("no store yet: no audit log to verify");
         return Ok(0);
     };
-    let n = s.verify_audit()?;
+    let report = s.verify_audit()?;
     s.trustworthy()?;
-    println!("audit chain intact: {n} line(s), head copy agrees");
+    println!(
+        "audit chain intact: {} line(s), head copy agrees",
+        report.lines
+    );
+    if report.repaired_resets > 0 {
+        println!(
+            "({} earlier chain reset(s), acknowledged by a repair)",
+            report.repaired_resets
+        );
+    }
     Ok(0)
 }
 
@@ -134,8 +162,11 @@ fn main() -> ExitCode {
     let result = match args.as_slice() {
         ["list"] => list(),
         ["revoke", target] => revoke(target),
+        ["repair"] => repair(),
         ["audit", "verify"] => verify(),
-        _ => Err("usage: user-request list | revoke <id> | revoke --all | audit verify".into()),
+        _ => Err(
+            "usage: user-request list | revoke <id> | revoke --all | repair | audit verify".into(),
+        ),
     };
     match result {
         Ok(code) => ExitCode::from(code),

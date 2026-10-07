@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! The `user-request` binary against a throwaway store. Windows-only: the
-//! binary's store is DPAPI-protected.
-#![cfg(windows)]
+//! binary's store is DPAPI-protected. Debug builds only (review I-E): a
+//! release binary ignores the overrides and would act on the REAL store.
+#![cfg(all(windows, debug_assertions))]
 
 use std::path::Path;
 use std::process::Command;
@@ -49,9 +50,15 @@ fn seed(dir: &Path) -> (String, String) {
         approved_at: now,
         expires_at,
     };
-    let forever = s.add(mk(KindId::LaneDialogBypass, "trust-dialog", None));
-    let timed = s.add(mk(KindId::Secret, "DB", Some(now + Duration::hours(1))));
-    s.save(now).unwrap();
+    let forever = s
+        .add(mk(KindId::LaneDialogBypass, "trust-dialog", None), now)
+        .unwrap();
+    let timed = s
+        .add(
+            mk(KindId::Secret, "DB", Some(now + Duration::hours(1))),
+            now,
+        )
+        .unwrap();
     (forever, timed)
 }
 
@@ -78,7 +85,7 @@ fn revoke_removes_one_and_the_audit_chain_records_it() {
     assert!(out.contains("audit chain intact"), "{out}");
     let log = std::fs::read_to_string(d.path().join("audit.jsonl")).unwrap();
     assert!(
-        log.contains(&format!("\"detail\":\"{forever}\"")) && log.contains("\"revoked\""),
+        log.contains(&format!("\"detail\":\"id={forever}\"")) && log.contains("\"revoked\""),
         "{log}"
     );
 }
@@ -133,4 +140,36 @@ fn read_only_commands_never_create_a_store() {
     );
     assert_eq!(run(&dir, &["audit", "verify"]).0, 0);
     assert!(!dir.exists());
+}
+
+#[test]
+fn repair_restores_a_damaged_store_by_revoking_everything() {
+    let d = tempfile::tempdir().unwrap();
+    seed(d.path());
+    std::fs::remove_file(d.path().join("attempts.json")).unwrap();
+    let (code, out, err) = run(d.path(), &["list"]);
+    assert_eq!(code, 1, "{out} {err}");
+    assert!(out.contains("CANNOT BE TRUSTED"), "{out}");
+    let (code, out, err) = run(d.path(), &["repair"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("revoked 2 grant(s)"), "{out}");
+    let (code, out, _) = run(d.path(), &["list"]);
+    assert_eq!((code, out.trim()), (0, "no active grants"));
+    let (code, out, err) = run(d.path(), &["audit", "verify"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("audit chain intact"), "{out}");
+}
+
+#[test]
+fn a_lost_key_lists_as_unknown_not_as_nothing_granted() {
+    let d = tempfile::tempdir().unwrap();
+    seed(d.path());
+    std::fs::remove_file(d.path().join("store.key")).unwrap();
+    let (code, out, _) = run(d.path(), &["list"]);
+    assert_eq!(code, 1);
+    assert!(out.contains("GRANTS UNKNOWN"), "{out}");
+    assert_eq!(run(d.path(), &["audit", "verify"]).0, 1);
+    assert_eq!(run(d.path(), &["revoke", "--all"]).0, 1);
+    assert_eq!(run(d.path(), &["repair"]).0, 0);
+    assert_eq!(run(d.path(), &["list"]).1.trim(), "no active grants");
 }

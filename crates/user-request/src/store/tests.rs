@@ -3,6 +3,7 @@
 //! finding of the review of ea50f85 the test pins.
 
 use super::*;
+use crate::channel::Outcome;
 use chrono::TimeZone;
 use std::cell::RefCell;
 use tempfile::tempdir;
@@ -70,11 +71,26 @@ fn approval(
     }
 }
 
+fn add(s: &mut Store, a: Approval) -> String {
+    s.add(a, t0()).unwrap()
+}
+
+/// What the channel answered, for the `prompt` helper.
+fn answer(outcome: &str, r: &Requester, subject: &str) -> Outcome {
+    match outcome {
+        "approved" => Outcome::Approved(approval(KindId::Secret, subject, r, Some(mins(60)))),
+        "denied" => Outcome::Denied,
+        "timed-out" => Outcome::TimedOut,
+        other => panic!("{other}"),
+    }
+}
+
 fn open(dir: &Path) -> Store {
     Store::open(dir, &Xor(7), Some(dir.join("head.copy"))).unwrap()
 }
 
-/// One full prompt through the gate: reserve, save, resolve, save.
+/// One full prompt through the gate: reserve, drop the store (the lock),
+/// answer, resolve.
 fn prompt(
     dir: &Path,
     r: &Requester,
@@ -84,11 +100,10 @@ fn prompt(
 ) -> Result<(), String> {
     let mut s = open(dir);
     let res = s.may_ask(r, KindId::Secret, subject, at, &AuditOnly)?;
-    s.save(at).unwrap();
     drop(s);
     let mut s = open(dir);
-    s.resolve(&res, outcome, at, &AuditOnly).unwrap();
-    s.save(at).unwrap();
+    s.resolve(&res, &answer(outcome, r, subject), at, &AuditOnly)
+        .unwrap();
     Ok(())
 }
 
@@ -103,7 +118,7 @@ fn a_grant_is_found_by_kind_subject_and_scope_until_it_expires() {
     let d = tempdir().unwrap();
     let mut s = open(d.path());
     let a = who("overmind", "s1");
-    s.add(approval(KindId::Secret, "DB", &a, Some(mins(60))));
+    add(&mut s, approval(KindId::Secret, "DB", &a, Some(mins(60))));
     assert!(s.find(KindId::Secret, "DB", &a, t0()).is_some());
     assert!(s.find(KindId::Secret, "OTHER", &a, t0()).is_none());
     assert!(
@@ -124,12 +139,10 @@ fn a_grant_is_found_by_kind_subject_and_scope_until_it_expires() {
 fn an_any_requester_grant_covers_every_lane_and_forever_never_expires() {
     let d = tempdir().unwrap();
     let mut s = open(d.path());
-    s.add(approval(
-        KindId::LaneDialogBypass,
-        "trust",
-        &who("pm", "s"),
-        None,
-    ));
+    add(
+        &mut s,
+        approval(KindId::LaneDialogBypass, "trust", &who("pm", "s"), None),
+    );
     let later = t0() + Duration::days(3650);
     assert!(s
         .find(KindId::LaneDialogBypass, "trust", &who("fuel", "x"), later)
@@ -141,13 +154,11 @@ fn grants_survive_a_save_and_expired_ones_are_dropped() {
     let d = tempdir().unwrap();
     let mut s = open(d.path());
     let a = who("o", "s");
-    s.add(approval(KindId::Secret, "LIVE", &a, Some(mins(60))));
-    s.add(approval(
-        KindId::Secret,
-        "OLD",
-        &a,
-        Some(t0() - Duration::seconds(1)),
-    ));
+    add(&mut s, approval(KindId::Secret, "LIVE", &a, Some(mins(60))));
+    add(
+        &mut s,
+        approval(KindId::Secret, "OLD", &a, Some(t0() - Duration::seconds(1))),
+    );
     s.save(t0()).unwrap();
     drop(s);
     let s = open(d.path());
@@ -165,8 +176,8 @@ fn ids_are_128_random_bits() {
     let d = tempdir().unwrap();
     let mut s = open(d.path());
     let a = who("o", "s");
-    let x = s.add(approval(KindId::Secret, "A", &a, None));
-    let y = s.add(approval(KindId::Secret, "A", &a, None));
+    let x = add(&mut s, approval(KindId::Secret, "A", &a, None));
+    let y = add(&mut s, approval(KindId::Secret, "A", &a, None));
     assert_eq!(x.len(), 32);
     assert!(x.chars().all(|c| c.is_ascii_hexdigit()));
     assert_ne!(x, y);
@@ -177,17 +188,17 @@ fn revoke_and_revoke_all_persist_as_tombstones() {
     let d = tempdir().unwrap();
     let mut s = open(d.path());
     let a = who("o", "s");
-    let x = s.add(approval(KindId::Secret, "A", &a, None));
-    s.add(approval(KindId::Secret, "B", &a, None));
-    s.add(approval(KindId::Secret, "C", &a, None));
-    assert!(s.revoke(&x));
-    assert!(!s.revoke(&x), "already revoked");
+    let x = add(&mut s, approval(KindId::Secret, "A", &a, None));
+    add(&mut s, approval(KindId::Secret, "B", &a, None));
+    add(&mut s, approval(KindId::Secret, "C", &a, None));
+    assert!(s.revoke(&x, t0()).unwrap());
+    assert!(!s.revoke(&x, t0()).unwrap(), "already revoked");
     s.save(t0()).unwrap();
     drop(s);
     let mut s = open(d.path());
     assert_eq!(s.active(t0()).len(), 2);
     assert!(s.revoked.contains(&x));
-    assert_eq!(s.revoke_all(), 2);
+    assert_eq!(s.revoke_all(t0()).unwrap(), 2);
     s.save(t0()).unwrap();
     drop(s);
     assert!(open(d.path()).active(t0()).is_empty());
@@ -202,17 +213,15 @@ fn revoke_and_revoke_all_persist_as_tombstones() {
 fn a_revoked_grant_never_comes_back() {
     let d = tempdir().unwrap();
     let mut s = open(d.path());
-    let g = s.add(approval(
-        KindId::LaneDialogBypass,
-        "trust",
-        &who("pm", "s"),
-        None,
-    ));
+    let g = add(
+        &mut s,
+        approval(KindId::LaneDialogBypass, "trust", &who("pm", "s"), None),
+    );
     s.save(t0()).unwrap();
     drop(s);
     let before = std::fs::read(d.path().join("grants.json")).unwrap();
     let mut s = open(d.path());
-    s.revoke_all();
+    s.revoke_all(t0()).unwrap();
     s.save(t0()).unwrap();
     drop(s);
     // a lane that records an attempt afterwards does not resurrect it
@@ -239,12 +248,10 @@ fn a_revoked_grant_never_comes_back() {
 fn a_tampered_file_is_quarantined_and_the_store_fails_closed() {
     let d = tempdir().unwrap();
     let mut s = open(d.path());
-    s.add(approval(
-        KindId::Secret,
-        "DB",
-        &who("o", "s"),
-        Some(mins(60)),
-    ));
+    add(
+        &mut s,
+        approval(KindId::Secret, "DB", &who("o", "s"), Some(mins(60))),
+    );
     s.save(t0()).unwrap();
     drop(s);
     let p = d.path().join("grants.json");
@@ -283,23 +290,36 @@ fn a_deleted_attempts_file_makes_the_gate_fail_closed() {
         .is_err());
 }
 
+/// Review C-B: an untrustworthy store can still revoke, but no save
+/// restores trust - only a repair, which revokes everything.
 #[test]
-fn a_store_whose_files_were_untrustworthy_can_still_revoke_and_re_anchors() {
+fn an_untrustworthy_store_revokes_but_only_a_repair_restores_trust() {
     let d = tempdir().unwrap();
     let mut s = open(d.path());
-    s.add(approval(KindId::Secret, "DB", &who("o", "s"), None));
-    s.save(t0()).unwrap();
+    add(&mut s, approval(KindId::Secret, "DB", &who("o", "s"), None));
+    let keep = add(
+        &mut s,
+        approval(KindId::Secret, "KEEP", &who("o", "s"), None),
+    );
     drop(s);
     std::fs::remove_file(d.path().join("attempts.json")).unwrap();
     let mut s = open(d.path());
     assert!(s.untrusted.is_some());
-    assert_eq!(s.revoke_all(), 1);
-    s.save(t0()).unwrap();
-    assert_eq!(s.untrusted, None, "the saving handle stays untrusted");
+    assert!(s.revoke(&keep, t0()).unwrap());
+    drop(s);
+    let mut s = open(d.path());
+    assert!(
+        matches!(s.untrusted, Some(Untrusted::Files(_))),
+        "a save laundered it: {:?}",
+        s.untrusted
+    );
+    assert!(s.revoked.contains(&keep), "the revocation did not land");
+    assert_eq!(s.repair(t0(), &Xor(7)).unwrap(), 1);
+    assert_eq!(s.untrusted, None);
     drop(s);
     let s = open(d.path());
-    assert_eq!(s.untrusted, None, "a save re-anchors the files");
-    assert!(audit_text(d.path()).contains("re-anchored"));
+    assert_eq!(s.untrusted, None, "{:?}", s.untrusted);
+    assert!(s.active(t0()).is_empty());
 }
 
 // -- the key -----------------------------------------------------------------
@@ -308,7 +328,7 @@ fn a_store_whose_files_were_untrustworthy_can_still_revoke_and_re_anchors() {
 fn a_key_that_decrypts_to_the_wrong_bytes_trusts_nothing_and_saves_nothing() {
     let d = tempdir().unwrap();
     let mut s = open(d.path());
-    s.add(approval(KindId::Secret, "DB", &who("o", "s"), None));
+    add(&mut s, approval(KindId::Secret, "DB", &who("o", "s"), None));
     s.save(t0()).unwrap();
     drop(s);
     let mut wrong = Store::open(d.path(), &Xor(9), None).unwrap();
@@ -345,13 +365,13 @@ fn a_key_that_does_not_decrypt_says_why_and_fails_closed() {
 fn a_missing_key_check_is_rebuilt_when_the_files_verify() {
     let d = tempdir().unwrap();
     let mut s = open(d.path());
-    let g = s.add(approval(KindId::Secret, "DB", &who("o", "s"), None));
+    let g = add(&mut s, approval(KindId::Secret, "DB", &who("o", "s"), None));
     s.save(t0()).unwrap();
     drop(s);
     std::fs::remove_file(d.path().join("store.key.check")).unwrap();
     let mut s = open(d.path());
     assert_eq!(s.untrusted, None);
-    assert!(s.revoke(&g));
+    assert!(s.revoke(&g, t0()).unwrap());
     s.save(t0()).unwrap();
     assert!(d.path().join("store.key.check").exists());
 }
@@ -363,7 +383,7 @@ fn a_missing_key_check_is_rebuilt_when_the_files_verify() {
 fn a_missing_key_check_is_not_rebuilt_under_the_wrong_key() {
     let d = tempdir().unwrap();
     let mut s = open(d.path());
-    s.add(approval(KindId::Secret, "DB", &who("o", "s"), None));
+    add(&mut s, approval(KindId::Secret, "DB", &who("o", "s"), None));
     s.save(t0()).unwrap();
     drop(s);
     std::fs::remove_file(d.path().join("store.key.check")).unwrap();
@@ -386,7 +406,7 @@ fn a_missing_key_check_is_not_rebuilt_under_the_wrong_key() {
 fn files_no_save_recorded_are_not_trusted() {
     let d = tempdir().unwrap();
     let mut s = open(d.path());
-    s.add(approval(KindId::Secret, "DB", &who("o", "s"), None));
+    add(&mut s, approval(KindId::Secret, "DB", &who("o", "s"), None));
     s.save(t0()).unwrap();
     drop(s);
     std::fs::remove_file(d.path().join("audit.jsonl")).unwrap();
@@ -562,7 +582,8 @@ fn repeated_refusals_alert_once_within_the_hour() {
                 &AuditOnly,
             )
             .unwrap();
-        s.resolve(&r, "denied", mins(i as i64), &alerts).unwrap();
+        s.resolve(&r, &Outcome::Denied, mins(i as i64), &alerts)
+            .unwrap();
         let want = usize::from(i + 1 >= DENIALS_BEFORE_ALERT);
         assert_eq!(alerts.0.borrow().len(), want, "after {} refusals", i + 1);
     }
@@ -580,7 +601,7 @@ fn a_role_still_being_refused_is_alerted_again_an_hour_later() {
         let r = s
             .may_ask(&a, KindId::Secret, &format!("S{i}"), mins(m), &AuditOnly)
             .unwrap();
-        s.resolve(&r, "denied", mins(m), &alerts).unwrap();
+        s.resolve(&r, &Outcome::Denied, mins(m), &alerts).unwrap();
     }
     // at minute 63 the window holds 30, 40, 50 and 63: four refusals
     assert_eq!(alerts.0.borrow().len(), 2, "{:?}", alerts.0.borrow());
@@ -596,7 +617,7 @@ fn refusals_older_than_an_hour_do_not_count_toward_the_alert() {
         let r = s
             .may_ask(&a, KindId::Secret, &format!("S{i}"), mins(m), &AuditOnly)
             .unwrap();
-        s.resolve(&r, "denied", mins(m), &alerts).unwrap();
+        s.resolve(&r, &Outcome::Denied, mins(m), &alerts).unwrap();
     }
     assert!(alerts.0.borrow().is_empty());
 }
@@ -613,13 +634,14 @@ fn gate_decisions_and_alerts_are_audited() {
         let r = s
             .may_ask(&a, KindId::Secret, &format!("Z{i}"), mins(2), &AuditOnly)
             .unwrap();
-        s.resolve(&r, "denied", mins(2), &AuditOnly).unwrap();
+        s.resolve(&r, &Outcome::Denied, mins(2), &AuditOnly)
+            .unwrap();
     }
     let log = audit_text(d.path());
     for want in [
         "\"gate-allowed\"",
         "\"gate-refused\"",
-        "\"denied\"",
+        "outcome=denied",
         "\"ALERT\"",
     ] {
         assert!(log.contains(want), "{want} missing from:\n{log}");
@@ -649,7 +671,7 @@ fn parallel_writers_lose_nothing_and_the_chain_holds() {
     assert_eq!(
         s.attempts
             .iter()
-            .filter(|a| a.outcome == "approved")
+            .filter(|a| a.outcome == Ended::Approved)
             .count(),
         8
     );
@@ -666,7 +688,7 @@ fn parallel_first_opens_agree_on_one_key() {
             std::thread::spawn(move || {
                 let mut s = Store::open(&dir, &Xor(7), Some(dir.join("head.copy"))).unwrap();
                 assert_eq!(s.untrusted, None);
-                s.add(approval(KindId::Secret, "S", &who("o", "s"), None));
+                add(&mut s, approval(KindId::Secret, "S", &who("o", "s"), None));
                 s.save(t0()).unwrap();
             })
         })
@@ -692,9 +714,12 @@ fn three_events(d: &Path) -> Store {
 #[test]
 fn an_intact_chain_verifies_and_a_fresh_store_has_nothing_to_report() {
     let d = tempdir().unwrap();
-    assert_eq!(open(d.path()).verify_audit(), Ok(0));
+    assert_eq!(open(d.path()).verify_audit().map(|r| r.lines), Ok(0));
     let e = tempdir().unwrap();
-    assert_eq!(three_events(e.path()).verify_audit(), Ok(3));
+    assert_eq!(
+        three_events(e.path()).verify_audit().map(|r| r.lines),
+        Ok(3)
+    );
 }
 
 #[test]
@@ -753,4 +778,395 @@ fn every_save_is_anchored_in_the_chain() {
     s.save(t0()).unwrap();
     assert_eq!(audit_text(d.path()).matches("\"saved\"").count(), 2);
     assert!(s.verify_audit().is_ok());
+}
+
+// -- round 2 (the review of 5e67bcc) -------------------------------------------
+
+fn snapshot(d: &Path) -> Vec<(&'static str, Vec<u8>)> {
+    DATA_FILES
+        .iter()
+        .map(|n| (*n, std::fs::read(d.join(n)).unwrap()))
+        .collect()
+}
+
+fn put_back(d: &Path, snap: &[(&'static str, Vec<u8>)]) {
+    for (n, b) in snap {
+        std::fs::write(d.join(n), b).unwrap();
+    }
+}
+
+/// Review C-A: putting back a copy of the whole directory (files and log
+/// together) is caught by the head copy, and stays caught after a save.
+#[test]
+fn a_whole_directory_rollback_is_untrusted() {
+    let d = tempdir().unwrap();
+    let mut s = open(d.path());
+    let g = add(
+        &mut s,
+        approval(KindId::LaneDialogBypass, "trust", &who("pm", "s"), None),
+    );
+    drop(s);
+    let old = snapshot(d.path());
+    let mut s = open(d.path());
+    s.revoke(&g, t0()).unwrap();
+    drop(s);
+    prompt(d.path(), &who("o", "s"), "DB", "denied", t0()).unwrap();
+    put_back(d.path(), &old);
+    let mut s = open(d.path());
+    assert!(
+        matches!(s.untrusted, Some(Untrusted::Files(_))),
+        "{:?}",
+        s.untrusted
+    );
+    assert!(s
+        .find(KindId::LaneDialogBypass, "trust", &who("x", "y"), t0())
+        .is_none());
+    assert!(s
+        .may_ask(&who("o", "s"), KindId::Secret, "DB", mins(1), &AuditOnly)
+        .is_err());
+    drop(s);
+    assert!(open(d.path()).untrusted.is_some(), "a save laundered it");
+}
+
+/// Review C-A: deleting the data files (the gate's memory) is caught.
+#[test]
+fn wiping_the_data_files_is_untrusted() {
+    let d = tempdir().unwrap();
+    let a = who("o", "s1");
+    prompt(d.path(), &a, "DB", "denied", t0()).unwrap();
+    for n in DATA_FILES {
+        std::fs::remove_file(d.path().join(n)).unwrap();
+    }
+    let mut s = open(d.path());
+    assert!(s.untrusted.is_some());
+    assert!(s
+        .may_ask(&a, KindId::Secret, "DB", mins(1), &AuditOnly)
+        .is_err());
+}
+
+/// Review C-B: a rolled-back grants file is not laundered by an unrelated
+/// revocation, and a repair revokes what it brought back.
+#[test]
+fn a_rolled_back_grant_is_not_laundered_by_a_later_revoke() {
+    let d = tempdir().unwrap();
+    let mut s = open(d.path());
+    let a = add(
+        &mut s,
+        approval(KindId::LaneDialogBypass, "trust", &who("pm", "s"), None),
+    );
+    let b = add(
+        &mut s,
+        approval(KindId::LaneDialogBypass, "other", &who("pm", "s"), None),
+    );
+    drop(s);
+    let old = std::fs::read(d.path().join("grants.json")).unwrap();
+    let mut s = open(d.path());
+    assert!(s.revoke(&a, t0()).unwrap());
+    drop(s);
+    std::fs::write(d.path().join("grants.json"), old).unwrap();
+    let mut s = open(d.path());
+    assert!(s.revoke(&b, t0()).unwrap());
+    drop(s);
+    let mut s = open(d.path());
+    assert!(s.untrusted.is_some(), "the revoke re-anchored the rollback");
+    assert!(s
+        .find(KindId::LaneDialogBypass, "trust", &who("x", "y"), t0())
+        .is_none());
+    s.repair(t0(), &Xor(7)).unwrap();
+    assert!(s
+        .find(KindId::LaneDialogBypass, "trust", &who("x", "y"), t0())
+        .is_none());
+}
+
+/// Review C-B, I3: deleting the attempts file and then saving does not
+/// reset the gate.
+#[test]
+fn a_deleted_attempts_file_stays_untrusted_after_a_save() {
+    let d = tempdir().unwrap();
+    let a = who("o", "s1");
+    prompt(d.path(), &a, "DB", "denied", t0()).unwrap();
+    std::fs::remove_file(d.path().join("attempts.json")).unwrap();
+    let mut s = open(d.path());
+    assert!(s
+        .may_ask(&a, KindId::Secret, "OTHER", mins(1), &AuditOnly)
+        .is_err());
+    s.save(mins(1)).unwrap();
+    drop(s);
+    let mut s = open(d.path());
+    assert!(s
+        .may_ask(&a, KindId::Secret, "DB", mins(2), &AuditOnly)
+        .is_err());
+}
+
+/// Review I-C: an attempt ends once; a second answer cannot erase a denial.
+#[test]
+fn an_attempt_is_resolved_once() {
+    let d = tempdir().unwrap();
+    let a = who("o", "s1");
+    let mut s = open(d.path());
+    let r = s
+        .may_ask(&a, KindId::Secret, "DB", t0(), &AuditOnly)
+        .unwrap();
+    s.resolve(&r, &Outcome::Denied, t0(), &AuditOnly).unwrap();
+    let again = s.resolve(&r, &answer("approved", &a, "DB"), t0(), &AuditOnly);
+    assert!(again.unwrap_err().contains("already ended"));
+    assert!(s
+        .may_ask(&a, KindId::Secret, "DB", mins(1), &AuditOnly)
+        .is_err());
+    assert!(s
+        .resolve(
+            &Reservation {
+                attempt_id: "nope".into()
+            },
+            &Outcome::Denied,
+            t0(),
+            &AuditOnly
+        )
+        .is_err());
+}
+
+/// An approval is stored as a grant in the same step, and must be for what
+/// was reserved.
+#[test]
+fn an_approval_must_match_its_reservation_and_becomes_a_grant() {
+    let d = tempdir().unwrap();
+    let a = who("o", "s1");
+    let mut s = open(d.path());
+    let r = s
+        .may_ask(&a, KindId::Secret, " DB ", t0(), &AuditOnly)
+        .unwrap();
+    for wrong in [
+        answer("approved", &a, "PROD"),
+        answer("approved", &who("other", "s1"), "DB"),
+    ] {
+        assert!(s.resolve(&r, &wrong, t0(), &AuditOnly).is_err());
+    }
+    let id = s
+        .resolve(&r, &answer("approved", &a, "db"), t0(), &AuditOnly)
+        .unwrap()
+        .unwrap();
+    drop(s);
+    let s = open(d.path());
+    assert_eq!(
+        s.find(KindId::Secret, "db", &a, t0()).map(|g| g.id.clone()),
+        Some(id)
+    );
+    assert_eq!(s.attempts[0].outcome, Ended::Approved);
+}
+
+/// Review I-B: the gate's memory does not depend on the caller saving.
+#[test]
+fn the_gate_remembers_without_the_caller_saving() {
+    let d = tempdir().unwrap();
+    let a = who("o", "s1");
+    {
+        let mut s = open(d.path());
+        s.may_ask(&a, KindId::Secret, "X", t0(), &AuditOnly)
+            .unwrap();
+    }
+    assert_eq!(open(d.path()).attempts.len(), 1, "the reservation was lost");
+    for i in 1..PROMPTS_PER_HOUR {
+        prompt(d.path(), &a, &format!("S{i}"), "approved", t0()).unwrap();
+    }
+    let alerts = Alerts::default();
+    for _ in 0..3 {
+        let mut s = open(d.path());
+        assert!(s
+            .may_ask(&a, KindId::Secret, "Z", mins(1), &alerts)
+            .is_err());
+    }
+    assert_eq!(alerts.0.borrow().len(), 1, "one alert across three opens");
+}
+
+/// Review I-F: a lost key is not a fresh install.
+#[test]
+fn a_lost_key_is_not_a_fresh_install() {
+    let d = tempdir().unwrap();
+    let a = who("o", "s1");
+    let mut s = open(d.path());
+    let g = add(&mut s, approval(KindId::Secret, "DB", &a, None));
+    drop(s);
+    prompt(d.path(), &a, "DB2", "denied", t0()).unwrap();
+    std::fs::remove_file(d.path().join("store.key")).unwrap();
+    let head = Some(d.path().join("head.copy"));
+    let s = Store::open_existing(d.path(), &Xor(7), head).unwrap();
+    assert!(matches!(
+        s.as_ref().map(|s| &s.untrusted),
+        Some(Some(Untrusted::Key(_)))
+    ));
+    drop(s);
+    let mut s = open(d.path());
+    assert!(matches!(s.untrusted, Some(Untrusted::Key(_))));
+    assert!(!d.path().join("store.key").exists(), "a key was made");
+    assert!(s.revoke(&g, t0()).is_err());
+    assert!(s
+        .may_ask(&a, KindId::Secret, "DB2", mins(1), &AuditOnly)
+        .is_err());
+}
+
+/// A repair after a lost key starts a new key, sets the old files aside
+/// and closes the gate.
+#[test]
+fn a_repair_after_a_lost_key_starts_over_with_the_gate_closed() {
+    let d = tempdir().unwrap();
+    let mut s = open(d.path());
+    add(&mut s, approval(KindId::Secret, "DB", &who("o", "s"), None));
+    drop(s);
+    std::fs::remove_file(d.path().join("store.key")).unwrap();
+    let mut s = open(d.path());
+    s.repair(t0(), &Xor(7)).unwrap();
+    drop(s);
+    let mut s = open(d.path());
+    assert_eq!(s.untrusted, None, "{:?}", s.untrusted);
+    assert!(s.grants.is_empty());
+    assert!(std::fs::read_dir(d.path()).unwrap().any(|e| e
+        .unwrap()
+        .file_name()
+        .to_string_lossy()
+        .contains("rejected")));
+    assert!(s
+        .may_ask(&who("o", "s"), KindId::Secret, "X", mins(59), &AuditOnly)
+        .unwrap_err()
+        .contains("repaired"));
+    assert!(s
+        .may_ask(&who("o", "s"), KindId::Secret, "X", mins(60), &AuditOnly)
+        .is_ok());
+}
+
+/// A repair is recorded, and `audit verify` counts the resets it
+/// acknowledged instead of failing forever (review M-f).
+#[test]
+fn a_repair_acknowledges_earlier_chain_resets() {
+    let d = tempdir().unwrap();
+    let s = three_events(d.path());
+    drop(s);
+    std::fs::remove_file(d.path().join("audit.jsonl")).unwrap();
+    let mut s = open(d.path());
+    assert!(s.untrusted.is_some());
+    assert!(s.verify_audit().unwrap_err().contains("reset"));
+    s.repair(t0(), &Xor(7)).unwrap();
+    let report = s.verify_audit().unwrap();
+    assert_eq!(report.repaired_resets, 1);
+    assert!(audit_text(d.path()).contains("\"repaired\""));
+    drop(s);
+    assert_eq!(open(d.path()).untrusted, None);
+}
+
+/// Review I-A: the lock is the OS's, held for the store's lifetime however
+/// old its file looks, and never removed from under another holder.
+#[test]
+fn the_lock_is_held_for_the_stores_lifetime() {
+    let d = tempdir().unwrap();
+    let first = open(d.path());
+    let f = std::fs::OpenOptions::new()
+        .write(true)
+        .open(d.path().join("store.lock"))
+        .unwrap();
+    f.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(3600))
+        .unwrap();
+    drop(f);
+    let dir = d.path().to_path_buf();
+    let second = std::thread::spawn(move || {
+        let s = open(&dir);
+        drop(s);
+        Instant::now()
+    });
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    assert!(
+        !second.is_finished(),
+        "a second store opened beside the first"
+    );
+    let released = Instant::now();
+    drop(first);
+    assert!(second.join().unwrap() >= released);
+}
+
+/// Review I-H: a signed body that does not parse is set aside; open still
+/// works and so does revoking.
+#[test]
+fn a_body_that_does_not_parse_is_set_aside() {
+    let d = tempdir().unwrap();
+    let mut s = open(d.path());
+    add(&mut s, approval(KindId::Secret, "DB", &who("o", "s"), None));
+    let key = s.key.clone();
+    drop(s);
+    let body = br#"{"grants":[{"id":"x","approval":{"kind":"FutureKind"}}],"revoked":[]}"#;
+    write_signed(&d.path().join("grants.json"), &key, 99, body).unwrap();
+    let mut s = open(d.path());
+    match &s.untrusted {
+        Some(Untrusted::Files(why)) => assert!(why.contains("did not parse"), "{why}"),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(s.revoke_all(t0()).unwrap(), 0);
+}
+
+/// Review I-D: a head copy whose folder does not exist is created; one that
+/// cannot be written never blocks a revocation.
+#[test]
+fn the_head_copy_never_blocks_a_revocation() {
+    let d = tempdir().unwrap();
+    let nested = d.path().join("lane-state").join("head");
+    let mut s = Store::open(d.path(), &Xor(7), Some(nested.clone())).unwrap();
+    add(&mut s, approval(KindId::Secret, "A", &who("o", "s"), None));
+    assert!(nested.exists());
+    drop(s);
+    let e = tempdir().unwrap();
+    let blocked = e.path().join("a-folder");
+    std::fs::create_dir(&blocked).unwrap();
+    let mut s = Store::open(e.path(), &Xor(7), Some(blocked.clone())).unwrap();
+    let g = add(&mut s, approval(KindId::Secret, "A", &who("o", "s"), None));
+    assert!(s.revoke(&g, t0()).unwrap());
+    drop(s);
+    let s = Store::open(e.path(), &Xor(7), Some(blocked)).unwrap();
+    assert!(s.revoked.contains(&g));
+    assert!(
+        s.untrusted.is_some(),
+        "an unwritable head copy went unnoticed"
+    );
+}
+
+/// Review I-G: grants and revocations are audited by the store itself.
+#[test]
+fn grants_and_revocations_are_audited() {
+    let d = tempdir().unwrap();
+    let mut s = open(d.path());
+    let g = add(&mut s, approval(KindId::Secret, "A", &who("o", "s"), None));
+    s.revoke(&g, t0()).unwrap();
+    s.revoke_all(t0()).unwrap();
+    let log = audit_text(d.path());
+    for want in [
+        format!("\"granted\",\"detail\":\"id={g} "),
+        format!("\"revoked\",\"detail\":\"id={g}\""),
+        "\"revoked-all\",\"detail\":\"n=0".to_string(),
+    ] {
+        assert!(log.contains(&want), "{want} missing from:\n{log}");
+    }
+}
+
+#[test]
+fn an_untrustworthy_store_takes_no_new_grants() {
+    let d = tempdir().unwrap();
+    drop(open(d.path()));
+    std::fs::write(d.path().join("attempts.json"), "junk").unwrap();
+    let mut s = open(d.path());
+    assert!(s
+        .add(approval(KindId::Secret, "A", &who("o", "s"), None), t0())
+        .is_err());
+    assert!(s.grants.is_empty());
+}
+
+/// Review M-a: a change that was audited but did not save says so.
+#[test]
+fn a_failed_save_is_audited() {
+    let d = tempdir().unwrap();
+    let mut s = open(d.path());
+    add(&mut s, approval(KindId::Secret, "A", &who("o", "s"), None));
+    drop(s);
+    std::fs::remove_file(d.path().join("grants.json")).unwrap();
+    std::fs::create_dir(d.path().join("grants.json")).unwrap();
+    let mut s = open(d.path());
+    assert!(s.revoke_all(t0()).is_err());
+    let log = audit_text(d.path());
+    let (revoked, failed) = (log.find("\"revoked-all\""), log.find("\"save-failed\""));
+    assert!(revoked.is_some() && failed > revoked, "{log}");
 }

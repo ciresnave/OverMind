@@ -35,6 +35,21 @@ class TestFabrication(unittest.TestCase):
             sorted(["E0599", "y.rs", "RUSTSEC-2026-9999", "123456"]),
         )
 
+    def test_a_backticked_span_is_checked_word_by_word(self):
+        # the 2026-10-07 run's false positives: each word is in the input,
+        # only the spacing or punctuation between them differs
+        src = ("Crate:    h2\nVersion:  0.3.27\nPermissionError: [WinError 32] ...\n"
+               "no method named `compile` found\n['go.EXE', 'test', './...']\n"
+               "`git worktree remove\n<path>`")
+        answer = ("`h2 0.3.27`, `PermissionError [WinError 32]`, `.compile()`, `go test`, "
+                  "`git worktree remove <path>`")
+        self.assertEqual(g.fabricated(answer, src), [])
+
+    def test_a_backticked_span_with_an_invented_word_is_still_flagged(self):
+        src = "Crate: h2\nVersion: 0.3.27"
+        self.assertEqual(g.fabricated("`h2 0.4.99`", src), ["`h2 0.4.99`"])
+        self.assertEqual(g.fabricated("`h2 0.3.27`", src), [])
+
 
 class TestExcerpt(unittest.TestCase):
     def test_it_stops_at_the_first_error_and_strips_prefixes_and_colour(self):

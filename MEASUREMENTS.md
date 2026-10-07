@@ -2234,3 +2234,52 @@ summary, and the standing risk after eight failures is letting "we could never v
   same sequence, so the gap is specific to `checker.py`'s own dispatch attempts, not free-tier dispatch in
   general. **Parked as of 2026-09-24; this entry is the up-to-date record of why, so "parked pending
   checker.py" does not outlive its own blocker unnoticed.**
+
+
+## 36. 🟢🟡 THE DESKTOP QWEN ON 11 REAL PORTFOLIO CHORES — CI diagnosis and file sweeps can be delegated; doc rewrites need review; thinking mode doesn't help
+
+**Observed 2026-10-07 05:3x–06:13Z.**
+- Model: `qwen3.8-27b` on the desktop llama-server (context 8192, one request stream, about 16 tok/s), reached over the LAN.
+- Harness: `probe/desktop_grade.py`, run under `with-secret` with one Windows Hello approval.
+- Inputs: 11 tasks, each run with thinking off and on (22 runs):
+  - 6 failing CI logs: OverMind, fuel, baracuda, mlmf, lightbulb, auth-framework;
+  - 3 docs at OverMind `3bf513f`, with CLAUDE.md at portfolio `fe70df1`;
+  - 2 sweeps over this repo: SPDX headers and duplicate pids.
+- Scores are computed, never a model's opinion:
+  - facts: the share of an oracle's facts present;
+  - fabrication: identifiers in the answer that the input never contains;
+  - sweeps: recall plus wrongly listed items.
+- Every task first passed four controls:
+  - the oracle scores full;
+  - an empty answer scores zero;
+  - an invented identifier is flagged;
+  - the facts are actually in the input.
+
+| task type | mode | runs | facts | real fabrications | median s | max s |
+|---|---|---|---|---|---|---|
+| CI failure diagnosis | plain | 6 | 6/6 full | 0 | 59 | 73 |
+| CI failure diagnosis | thinking | 6 | 5 full, 1 at 0.8 (dropped the fix version) | 0 | 103 | 188 |
+| doc rewrite / summary | plain | 3 | 1 full, 2 dropped one fact each | 0 | 16 | 24 |
+| doc rewrite / summary | thinking | 3 | 2 full, **1 no answer** (reasoning used the whole budget: 515 s, `finish=length`) | 0 | 280 | 515 |
+| file sweeps | plain | 2 | recall 1.0, nothing wrongly listed | 0 | 25 | 25 |
+| file sweeps | thinking | 2 | recall 1.0, nothing wrongly listed | 0 | 125 | 125 |
+
+**Verdicts:**
+- **Safe to delegate, plain mode:** CI failure diagnosis and file sweeps.
+- **Needs review:** doc rewrites and summaries.
+- **Don't use thinking mode:** it was 2–17× slower, gained no accuracy, and ran away once.
+
+Claude still reviews every output before it is used (PM rule, 2026-10-07).
+
+### 🔴 The fabrication check flagged 7 answers, and all 7 were faithful
+
+- **What was flagged:** the checker flagged any backticked span not found verbatim in the input. A hand check against the logs found each flagged span faithful to the input:
+  - `h2 0.3.27` came from separate `Crate: h2` / `Version: 0.3.27` lines;
+  - `PermissionError [WinError 32]` is the log's text without the colon;
+  - `.compile()` matches "no method named `compile`";
+  - `go test` matches a subprocess argv;
+  - `git worktree remove <path>` is wrapped across two lines in CLAUDE.md.
+- **The fix:** a backticked span now counts as invented only if one of its words is missing from the input. `test_a_backticked_span_is_checked_word_by_word` uses these real cases.
+- **The guard against over-correcting:** `test_a_backticked_span_with_an_invented_word_is_still_flagged` keeps `h2 0.4.99` flagged.
+- **Mutation check:** mutating `all` to `any`, or removing the new check, each fails a test.
+- **Remaining limit:** a span made only of real words in a wrong combination now passes. That is why facts are scored separately.

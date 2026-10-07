@@ -89,6 +89,14 @@ def fabricated(answer: str, source: str) -> list[str]:
         last = t.rsplit("/", 1)[-1].split(":")[0]
         if "." in last and last in src:
             continue
+        # a backticked span is quoted text: it is invented only if one of its
+        # WORDS is (the 2026-10-07 run flagged `h2 0.3.27` from separate
+        # `Crate: h2` / `Version: 0.3.27` lines, and a command the input
+        # wraps across two lines)
+        if m.startswith("`"):
+            words = [w.strip(".-") for w in re.findall(r"\w[\w.\-]*", t)]
+            if words and all(w in src for w in words if w):
+                continue
         out.append(m)
     return sorted(set(out))
 

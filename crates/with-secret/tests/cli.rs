@@ -299,3 +299,36 @@ fn a_scratch_vault_never_reaches_the_real_approvals() {
         .unwrap();
     assert_eq!(out.status.code(), Some(0), "{out:?}");
 }
+
+/// user-request #3: with-secret's approvals open the chooser window by
+/// re-running this binary, so this binary must serve it. A proposal over a
+/// secret's maximum is refused there without asking, so no one has to type.
+/// ⚠️ Opens a console window briefly.
+#[cfg(windows)]
+#[test]
+fn with_secret_serves_the_chooser_window() {
+    use user_request::chooser::{Choice, Chooser};
+    use user_request::window::WindowChooser;
+    use user_request::{Grant, KindId, Request, Requester};
+    let req = Request {
+        kind: KindId::Secret,
+        subject: "TJ_DB".into(),
+        summary: "run: psql".into(),
+        requester: Requester {
+            role: "overmind".into(),
+            session_id: "s".into(),
+            claude_pid: 1,
+            claude_start_secs: 1,
+            managed: true,
+        },
+        reason: "test".into(),
+    };
+    let ch = WindowChooser {
+        exe: env!("CARGO_BIN_EXE_with-secret").into(),
+    };
+    let got = ch.choose(&req, &Grant::Forever, std::time::Duration::from_secs(20));
+    assert!(
+        matches!(&got, Choice::Refused(why) if why.contains("over the maximum")),
+        "{got:?}"
+    );
+}

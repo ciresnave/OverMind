@@ -10,9 +10,11 @@ use std::process::{Command, ExitCode, Stdio};
 use chrono::{Local, NaiveDate, Utc};
 use lane_restart::facts::{SysinfoFacts, SystemFacts};
 use user_request::channel::HelloChannel;
+use user_request::chooser::ChooserChannel;
 use user_request::locate;
 use user_request::request::KindId;
 use user_request::store::{AuditOnly, Store};
+use user_request::window::WindowChooser;
 use with_secret::consent::{store_prompt_text, Consent, ConsentOutcome};
 use with_secret::dpapi::DpapiProtector;
 use with_secret::hello::HelloConsent;
@@ -61,6 +63,11 @@ fn store() -> Result<VaultStore<DpapiProtector>, String> {
 }
 
 fn main() -> ExitCode {
+    // started by WindowChooser (this binary's own approvals): serve the
+    // chooser window, nothing else
+    if let Some(code) = user_request::window::serve_if_child() {
+        return code;
+    }
     let args: Vec<String> = std::env::args().skip(1).collect();
     let result = match args.first().map(String::as_str) {
         Some("hook") => return hook(args.get(1).map(String::as_str)),
@@ -84,9 +91,11 @@ fn main() -> ExitCode {
 const HELP: &str = "\
 with-secret NAME --reason \"why\" [--wait-secs N] [--window-mins M] -- <command> [args...]
     Runs <command> with secret NAME in its environment (and nowhere else), after
-    CireSnave approves via Windows Hello. One approval: one lane, one secret,
-    void on lane restart, until the end the prompt shows: --window-mins M from
-    now if given (however long; past today it is shown LOUDLY), else midnight.
+    CireSnave chooses how long in a window of its own and approves that with
+    Windows Hello. One approval: one lane, one secret, void on lane restart,
+    until the end he chooses. Proposed: --window-mins M from now if given
+    (however long; past today it is shown LOUDLY), else midnight. An end more
+    than 30 days away must be typed; a secret is never granted forever.
     Call it from a lane's Bash tool with timeout 600000: the prompt waits up to 9 min.
     Approvals live in the user-request store; prompts pass its gate (no re-asking
     within 10 min of a refusal, at most 6 prompts per lane per hour).
@@ -111,7 +120,12 @@ fn run(args: &[String]) -> Result<u8, String> {
         std::process::id(),
         &identity::load_states(Path::new(LANE_STATE_DIR)),
     )?;
-    let channel = HelloChannel::new(HelloConsent::default());
+    // the person chooses how long in a window of its own, then approves
+    // that grant with Windows Hello (user-request #3)
+    let channel = ChooserChannel {
+        chooser: WindowChooser::this_exe()?,
+        hello: HelloChannel::new(HelloConsent::default()),
+    };
     let approver = Approver {
         dir: approvals_dir()?,
         protector: &locate::PROTECTOR,

@@ -10,13 +10,16 @@
 //! running as the same Windows user can drive the same APIs.
 
 pub mod channel;
+pub mod chooser;
 pub mod consent;
 pub mod dpapi;
 pub mod hello;
 pub mod locate;
 pub mod request;
 pub mod store;
+pub mod window;
 
 pub use channel::{prompt_text, Channel, HelloChannel, Outcome, PushChannel, SmsChannel};
+pub use chooser::{Choice, Chooser, ChooserChannel};
 pub use consent::{Consent, ConsentOutcome};
 pub use request::{Approval, Grant, KindId, MaxGrant, Request, Requester, Scope, Unrepresentable};

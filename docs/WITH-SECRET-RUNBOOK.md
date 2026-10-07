@@ -79,13 +79,16 @@ C:/Projects/.claude-hooks/with-secret.exe NAME --reason "why, in at least 10 cha
 - ⚠️ From Git Bash, prefix `MSYS_NO_PATHCONV=1` when the command has slash flags such as
   `cmd /c`. Otherwise MSYS rewrites `/c` to `C:/`, cmd starts interactively and does nothing, and
   CireSnave approves a command that is not the one you meant (measured on spike day, 2026-10-01).
-- The prompt on CireSnave's screen names the secret, the lane, the command, the reason and when
-  the approval would expire. Nothing is released until he approves.
+- A console window opens first (user-request #3). It shows the request and the proposed end, and
+  CireSnave accepts it with Enter, chooses another, or refuses. An end more than 30 days away must
+  be typed (its date). Then the Hello prompt names the secret, the lane, the command, the reason and
+  the end **he chose**. Nothing is released until he approves.
 - The secret is set as `VAR` in that one child's environment and nowhere else. The child's stdout
   and stderr are masked: the value prints as `[with-secret:NAME]`.
 - One approval covers **one lane, one secret**.
-  - With `--window-mins M` it lasts M minutes from now, however long.
-  - Without it, it lasts until local midnight.
+  - `--window-mins M` proposes M minutes from now, however long.
+  - Without it, the proposal is local midnight.
+  - CireSnave may choose a different end in the window.
   - The prompt shows the end. One that runs past today is shown as `*** LONGER THAN TODAY ***`, so
     it is never approved by habit (board 134, CireSnave 2026-10-07: "if I or some other user
     disagrees, we simply don't aprove it").

@@ -17,6 +17,9 @@ code requesting something from a user could use them interchangeably"*.
   are designed for and answer `Unavailable` until built.
 - `prompt_text`: the text the person approves. Summary and reason are clipped; the requester line
   and the grant line never are.
+- `chooser`: the person chooses how long (below). `ChooserChannel` runs a `Chooser`, then Windows
+  Hello on the grant chosen.
+- `window::WindowChooser`: the chooser in a console window of its own.
 
 ## Kinds
 
@@ -37,13 +40,42 @@ after the next local midnight is described as `*** LONGER THAN TODAY: ... ***`.
 ## How a duration is chosen
 
 Windows Hello is a yes/no dialog with a message: it cannot ask "for how long". So the grant is
-chosen **first**, and the message the person approves names it. Hello proves the person was present
-and approved that text; it does not prove they read it.
+chosen **first**, by the person, in the chooser window. Then the message the person approves in Hello names
+it. Hello proves the person was present and approved that text; it does not prove they read it.
+
+The chooser window (user-request #3, PM ruling 2026-10-07):
+
+- The requester proposes a grant. A new console window shows who asks, the proposal and the
+  request, and the person:
+  - accepts the proposal with Enter;
+  - picks `5m`, `1h` or `today`;
+  - types a duration (`90m`, `8h`, `3d`) or a local date (`YYYY-MM-DD`, meaning its 00:00, or
+    `YYYY-MM-DD HH:MM`);
+  - types `FOREVER`, for a kind that allows it;
+  - or refuses with `n`.
+- **FOREVER, or an end more than 30 days away, must be typed** (PM condition (b)): the word
+  `FOREVER` in capitals, or the end's date. Enter, a preset or a duration never accepts one: the
+  window asks for the word or the date to be typed back.
+- A choice over the kind's maximum is **refused, never clamped**, and the person may choose again. A
+  proposal over the maximum is refused without opening the window.
+- A local time that does not exist (a DST gap) is refused; one that repeats means its earlier
+  instant.
+- Three entries that are not understood, refused or not confirmed end it as a denial. So does
+  closing the window.
+- The chooser and Hello share one wait.
+- How it works:
+  - The requesting binary starts a child of itself in a **new console**. Every binary that uses
+    `WindowChooser::this_exe` must call `window::serve_if_child` first in `main`.
+  - The request reaches the child on a pipe, which is then closed. The answer comes back on another
+    pipe.
+  - The person's typing is read **only** from that window's own console input (`CONIN$`), never
+    from the requester's stdin, arguments or environment (PM condition (1)).
 
 ## Who uses it
 
 - **with-secret** (since #2b): every secret approval is a `Secret` grant here, and every secret
-  prompt passes the prompt gate below. `user-request revoke --all` ends secrets too.
+  prompt passes the prompt gate below. Since #3, its `--window-mins` (or midnight) is only the
+  proposal: the person chooses in the chooser window. `user-request revoke --all` ends secrets too.
   `with-secret revoke NAME | --all` revokes only secrets (`Store::revoke_matching`), as tombstones,
   and ends their pending prompts.
 - `user_request::locate` names the production store, so every binary opens the same one.
@@ -178,7 +210,9 @@ user-request audit verify    check the audit chain since its last reset, and its
 - The audit chain is plain SHA-256 with no key, so rewriting the chain and its head copy
   consistently needs no key at all. The chain catches accidents and naive edits, not forgery.
 - The audit log is never rotated, and every append reads it whole.
+- The chooser window stops **accidents**, and a lane that merely echoes text: what a lane writes
+  never reaches the window's console input. It does **not** stop a hostile process running as the
+  same user from driving the window (`SendInput`, `AttachConsole`) (PM condition (4)).
 - Coming next, per the approved plan:
-  - an approver-side chooser where FOREVER, or a date over 30 days away, must be typed;
   - durable pending requests with no timeout;
   - grants for lane-launch dialog bypasses.

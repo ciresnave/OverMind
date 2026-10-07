@@ -165,6 +165,10 @@ fn verify() -> Result<u8, String> {
 }
 
 fn main() -> ExitCode {
+    // started by WindowChooser: serve the chooser window, nothing else
+    if let Some(code) = user_request::window::serve_if_child() {
+        return code;
+    }
     let args: Vec<String> = std::env::args().skip(1).collect();
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     let result = match args.as_slice() {

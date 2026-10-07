@@ -4,7 +4,7 @@
 //!
 //! ⚠️ Windows Hello is a yes/no dialog with a message: it cannot ask "for how
 //! long". So the grant is chosen BEFORE the channel is asked (by the
-//! approver's chooser; until that lands, by the caller), and the message the
+//! person, in `chooser::ChooserChannel`), and the message the
 //! person approves NAMES its absolute end. Hello proves the person was
 //! present and approved that text; it does not prove they read it.
 

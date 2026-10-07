@@ -44,8 +44,9 @@ and approved that text; it does not prove they read it.
 Everything lives in `%LOCALAPPDATA%\OverMind\user-request\`:
 
 - `store.lock`: an OS file lock, held by one process at a time from opening the store to closing
-  it, and released by the OS if that process dies. Drop the store before showing a prompt: holding
-  it holds the lock.
+  it, and released by the OS if that process dies.
+  - On Windows the file cannot be deleted while it is held, so a second holder can never appear.
+  - Drop the store before showing a prompt: holding it holds the lock.
 - `store.key` and `store.key.check`: the HMAC key, DPAPI-protected, and a value that tells the right
   key from a wrong one.
   - A store whose key does not check out trusts nothing and refuses to save, so it can never
@@ -62,6 +63,14 @@ Everything lives in `%LOCALAPPDATA%\OverMind\user-request\`:
 
 Every call that changes the store saves before it returns.
 
+- A grant is made only by resolving a reservation with the channel's approval, and only within its
+  kind's maximum. No caller can add a grant, clear a tombstone or clear the untrusted flag
+  directly.
+- Each save records the files' hashes before writing them, and records its completion after. A save
+  cut short between the two files (a crash, a held file) is still recognised.
+- A file that is briefly unreadable (an antivirus scan, a backup) is retried for 2 seconds. If it
+  stays unreadable, opening fails with "try again", and nothing is concluded or recorded from it.
+
 ### Integrity: the audit chain is the anchor
 
 - When the store is opened, three checks run:
@@ -69,16 +78,23 @@ Every call that changes the store saves before it returns.
   - the files must be the ones the last save recorded;
   - no integrity problem may be on record since the last repair.
 - These checks catch a file that was deleted, rolled back, edited or copied in, and a whole folder
-  put back from a backup. Any of them makes the store **untrustworthy**.
+  put back from a backup. Any of them makes the store **untrustworthy**, and the gate raises an
+  alert, once per role per hour.
+- A chain found broken while the store is open untrusts it at once.
 - An untrustworthy store fails **closed**:
   - no grant is honoured;
   - the prompt gate refuses;
   - no new grant is taken;
   - revoking still works, unless the key is the problem.
 - The finding is written to the audit log, so no later save can clear it.
-- Only `user-request repair` restores trust, and it does so by **revoking every grant** and refusing
-  every prompt for an hour. A store whose key was the problem gets a new key, and its old files are
-  set aside. Repair only removes privilege, so it needs no Hello.
+- Only `user-request repair` restores trust, and only once its revocations are saved. It does so by:
+  - **revoking every grant**;
+  - ending every pending prompt;
+  - refusing every prompt for an hour.
+
+  A store whose key was the problem gets a new key, and its old files are set aside. Repair only
+  removes privilege, so it needs no Hello. Run on a trusted store, it does the same: a way to stop
+  everything for an hour.
 - Before every append, the chain itself is checked against its head copy. A chain found truncated,
   deleted, torn or edited gets an explicit `chain-reset` line naming why. That keeps the store
   untrusted until a repair. `audit verify` then counts the reset as acknowledged.
@@ -94,8 +110,11 @@ These limits answer "approval fatigue": a lane re-asking until a mis-click appro
 - A role may put at most 6 prompts per rolling hour in front of the person.
 - All roles together may put at most 20 per rolling hour in front of the person.
 - A prompt that is still pending counts toward both caps, so parallel requests cannot get past them.
-- A prompt is resolved exactly once, with an outcome from a closed set. An approval must be for what
-  was reserved, and it becomes a grant in the same step.
+- A prompt is resolved exactly once, with an outcome from a closed set, and within 15 minutes of
+  its reservation.
+- An approval must be for what was reserved, and it becomes a grant in the same step.
+- `revoke --all` and `repair` end every pending prompt, so an approval still in flight never becomes
+  a grant.
 - Reaching a cap, or 3 refusals within an hour, raises an **alert**, once per role and reason per
   hour.
 - The limits are keyed by role, so restarting a lane resets neither.
@@ -110,13 +129,16 @@ user-request list            active grants, FOREVER ones first and loudly
 user-request revoke <id>     revoke one grant (no Hello needed: it only removes privilege)
 user-request revoke --all    the panic button
 user-request repair          restore trust: revoke everything, refuse prompts for an hour
-user-request audit verify    check every link of the audit chain and its head copy
+user-request audit verify    check the audit chain since its last reset, and its head copy
 ```
 
 - Each command prints which store it used.
-- Read-only commands never create a store. They may still set aside a file that fails its check,
-  and record that finding.
-- `list` under an untrusted key says the grants are unknown, not that there are none.
+- `list` and `audit verify` only look: they never create a store, move a file or write to the log.
+- `list` says when grants are unknown (an untrusted key, a grants file that failed its check),
+  rather than reporting none.
+- Exit codes:
+  - `0`: done, or there is nothing to do (`revoke --all` with no store);
+  - `1`: an error, an untrustworthy store (`list`, `audit verify`), or an unknown id.
 
 ## Honest limits
 

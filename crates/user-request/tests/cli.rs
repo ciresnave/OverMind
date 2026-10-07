@@ -9,8 +9,9 @@ use std::process::Command;
 
 use chrono::{Duration, Utc};
 use user_request::dpapi::Dpapi;
-use user_request::request::{Approval, KindId, Requester};
-use user_request::store::Store;
+use user_request::request::{next_local_midnight, Approval, KindId, Requester};
+use user_request::store::{AuditOnly, Store};
+use user_request::Outcome;
 
 const ENTROPY: &[u8] = b"overmind.user-request.v1";
 
@@ -50,15 +51,19 @@ fn seed(dir: &Path) -> (String, String) {
         approved_at: now,
         expires_at,
     };
-    let forever = s
-        .add(mk(KindId::LaneDialogBypass, "trust-dialog", None), now)
-        .unwrap();
-    let timed = s
-        .add(
-            mk(KindId::Secret, "DB", Some(now + Duration::hours(1))),
-            now,
-        )
-        .unwrap();
+    // the only way in: a reservation the channel approved
+    let mut grant = |ap: Approval| {
+        let r = s
+            .may_ask(&who, ap.kind, &ap.subject, now, &AuditOnly)
+            .unwrap();
+        s.resolve(&r, &Outcome::Approved(ap), now, &AuditOnly)
+            .unwrap()
+            .unwrap()
+    };
+    let forever = grant(mk(KindId::LaneDialogBypass, "trust-dialog", None));
+    // a Secret may not outlive local midnight
+    let soon = (now + Duration::minutes(5)).min(next_local_midnight(now));
+    let timed = grant(mk(KindId::Secret, "db", Some(soon)));
     (forever, timed)
 }
 
@@ -139,6 +144,9 @@ fn read_only_commands_never_create_a_store() {
         "{out} {err}"
     );
     assert_eq!(run(&dir, &["audit", "verify"]).0, 0);
+    // the panic button succeeds when there is nothing to stop
+    assert_eq!(run(&dir, &["revoke", "--all"]).0, 0);
+    assert_eq!(run(&dir, &["revoke", "some-id"]).0, 1);
     assert!(!dir.exists());
 }
 

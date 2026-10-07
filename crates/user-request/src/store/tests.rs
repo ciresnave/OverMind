@@ -71,8 +71,11 @@ fn approval(
     }
 }
 
+/// A grant as `resolve` makes one: added, then saved.
 fn add(s: &mut Store, a: Approval) -> String {
-    s.add(a, t0()).unwrap()
+    let id = s.add(a, t0()).unwrap();
+    s.save(t0()).unwrap();
+    id
 }
 
 /// What the channel answered, for the `prompt` helper.
@@ -155,11 +158,8 @@ fn grants_survive_a_save_and_expired_ones_are_dropped() {
     let mut s = open(d.path());
     let a = who("o", "s");
     add(&mut s, approval(KindId::Secret, "LIVE", &a, Some(mins(60))));
-    add(
-        &mut s,
-        approval(KindId::Secret, "OLD", &a, Some(t0() - Duration::seconds(1))),
-    );
-    s.save(t0()).unwrap();
+    add(&mut s, approval(KindId::Secret, "OLD", &a, Some(mins(1))));
+    s.save(mins(2)).unwrap();
     drop(s);
     let s = open(d.path());
     assert_eq!(s.untrusted, None);
@@ -176,8 +176,8 @@ fn ids_are_128_random_bits() {
     let d = tempdir().unwrap();
     let mut s = open(d.path());
     let a = who("o", "s");
-    let x = add(&mut s, approval(KindId::Secret, "A", &a, None));
-    let y = add(&mut s, approval(KindId::Secret, "A", &a, None));
+    let x = add(&mut s, approval(KindId::Secret, "A", &a, Some(mins(60))));
+    let y = add(&mut s, approval(KindId::Secret, "A", &a, Some(mins(60))));
     assert_eq!(x.len(), 32);
     assert!(x.chars().all(|c| c.is_ascii_hexdigit()));
     assert_ne!(x, y);
@@ -188,9 +188,9 @@ fn revoke_and_revoke_all_persist_as_tombstones() {
     let d = tempdir().unwrap();
     let mut s = open(d.path());
     let a = who("o", "s");
-    let x = add(&mut s, approval(KindId::Secret, "A", &a, None));
-    add(&mut s, approval(KindId::Secret, "B", &a, None));
-    add(&mut s, approval(KindId::Secret, "C", &a, None));
+    let x = add(&mut s, approval(KindId::Secret, "A", &a, Some(mins(60))));
+    add(&mut s, approval(KindId::Secret, "B", &a, Some(mins(60))));
+    add(&mut s, approval(KindId::Secret, "C", &a, Some(mins(60))));
     assert!(s.revoke(&x, t0()).unwrap());
     assert!(!s.revoke(&x, t0()).unwrap(), "already revoked");
     s.save(t0()).unwrap();
@@ -296,10 +296,13 @@ fn a_deleted_attempts_file_makes_the_gate_fail_closed() {
 fn an_untrustworthy_store_revokes_but_only_a_repair_restores_trust() {
     let d = tempdir().unwrap();
     let mut s = open(d.path());
-    add(&mut s, approval(KindId::Secret, "DB", &who("o", "s"), None));
+    add(
+        &mut s,
+        approval(KindId::Secret, "DB", &who("o", "s"), Some(mins(60))),
+    );
     let keep = add(
         &mut s,
-        approval(KindId::Secret, "KEEP", &who("o", "s"), None),
+        approval(KindId::Secret, "KEEP", &who("o", "s"), Some(mins(60))),
     );
     drop(s);
     std::fs::remove_file(d.path().join("attempts.json")).unwrap();
@@ -314,7 +317,7 @@ fn an_untrustworthy_store_revokes_but_only_a_repair_restores_trust() {
         s.untrusted
     );
     assert!(s.revoked.contains(&keep), "the revocation did not land");
-    assert_eq!(s.repair(t0(), &Xor(7)).unwrap(), 1);
+    assert_eq!(s.repair(t0(), &Xor(7)).unwrap().revoked, 1);
     assert_eq!(s.untrusted, None);
     drop(s);
     let s = open(d.path());
@@ -328,7 +331,10 @@ fn an_untrustworthy_store_revokes_but_only_a_repair_restores_trust() {
 fn a_key_that_decrypts_to_the_wrong_bytes_trusts_nothing_and_saves_nothing() {
     let d = tempdir().unwrap();
     let mut s = open(d.path());
-    add(&mut s, approval(KindId::Secret, "DB", &who("o", "s"), None));
+    add(
+        &mut s,
+        approval(KindId::Secret, "DB", &who("o", "s"), Some(mins(60))),
+    );
     s.save(t0()).unwrap();
     drop(s);
     let mut wrong = Store::open(d.path(), &Xor(9), None).unwrap();
@@ -365,7 +371,10 @@ fn a_key_that_does_not_decrypt_says_why_and_fails_closed() {
 fn a_missing_key_check_is_rebuilt_when_the_files_verify() {
     let d = tempdir().unwrap();
     let mut s = open(d.path());
-    let g = add(&mut s, approval(KindId::Secret, "DB", &who("o", "s"), None));
+    let g = add(
+        &mut s,
+        approval(KindId::Secret, "DB", &who("o", "s"), Some(mins(60))),
+    );
     s.save(t0()).unwrap();
     drop(s);
     std::fs::remove_file(d.path().join("store.key.check")).unwrap();
@@ -383,7 +392,10 @@ fn a_missing_key_check_is_rebuilt_when_the_files_verify() {
 fn a_missing_key_check_is_not_rebuilt_under_the_wrong_key() {
     let d = tempdir().unwrap();
     let mut s = open(d.path());
-    add(&mut s, approval(KindId::Secret, "DB", &who("o", "s"), None));
+    add(
+        &mut s,
+        approval(KindId::Secret, "DB", &who("o", "s"), Some(mins(60))),
+    );
     s.save(t0()).unwrap();
     drop(s);
     std::fs::remove_file(d.path().join("store.key.check")).unwrap();
@@ -406,7 +418,10 @@ fn a_missing_key_check_is_not_rebuilt_under_the_wrong_key() {
 fn files_no_save_recorded_are_not_trusted() {
     let d = tempdir().unwrap();
     let mut s = open(d.path());
-    add(&mut s, approval(KindId::Secret, "DB", &who("o", "s"), None));
+    add(
+        &mut s,
+        approval(KindId::Secret, "DB", &who("o", "s"), Some(mins(60))),
+    );
     s.save(t0()).unwrap();
     drop(s);
     std::fs::remove_file(d.path().join("audit.jsonl")).unwrap();
@@ -688,7 +703,10 @@ fn parallel_first_opens_agree_on_one_key() {
             std::thread::spawn(move || {
                 let mut s = Store::open(&dir, &Xor(7), Some(dir.join("head.copy"))).unwrap();
                 assert_eq!(s.untrusted, None);
-                add(&mut s, approval(KindId::Secret, "S", &who("o", "s"), None));
+                add(
+                    &mut s,
+                    approval(KindId::Secret, "S", &who("o", "s"), Some(mins(60))),
+                );
                 s.save(t0()).unwrap();
             })
         })
@@ -704,7 +722,7 @@ fn parallel_first_opens_agree_on_one_key() {
 // -- the audit chain (row 13, PM condition (d)) -------------------------------
 
 fn three_events(d: &Path) -> Store {
-    let s = open(d);
+    let mut s = open(d);
     for (i, e) in ["granted", "denied", "revoked"].iter().enumerate() {
         s.audit(mins(i as i64), e, &format!("detail {i}")).unwrap();
     }
@@ -740,7 +758,7 @@ fn an_edited_line_breaks_the_chain() {
 fn a_truncated_deleted_or_torn_log_stays_visible_after_the_next_append() {
     for damage in ["truncate", "delete", "tear", "newline"] {
         let d = tempdir().unwrap();
-        let s = three_events(d.path());
+        let mut s = three_events(d.path());
         let p = d.path().join("audit.jsonl");
         let text = std::fs::read_to_string(&p).unwrap();
         match damage {
@@ -984,7 +1002,7 @@ fn a_lost_key_is_not_a_fresh_install() {
     let d = tempdir().unwrap();
     let a = who("o", "s1");
     let mut s = open(d.path());
-    let g = add(&mut s, approval(KindId::Secret, "DB", &a, None));
+    let g = add(&mut s, approval(KindId::Secret, "DB", &a, Some(mins(60))));
     drop(s);
     prompt(d.path(), &a, "DB2", "denied", t0()).unwrap();
     std::fs::remove_file(d.path().join("store.key")).unwrap();
@@ -1010,7 +1028,10 @@ fn a_lost_key_is_not_a_fresh_install() {
 fn a_repair_after_a_lost_key_starts_over_with_the_gate_closed() {
     let d = tempdir().unwrap();
     let mut s = open(d.path());
-    add(&mut s, approval(KindId::Secret, "DB", &who("o", "s"), None));
+    add(
+        &mut s,
+        approval(KindId::Secret, "DB", &who("o", "s"), Some(mins(60))),
+    );
     drop(s);
     std::fs::remove_file(d.path().join("store.key")).unwrap();
     let mut s = open(d.path());
@@ -1087,7 +1108,10 @@ fn the_lock_is_held_for_the_stores_lifetime() {
 fn a_body_that_does_not_parse_is_set_aside() {
     let d = tempdir().unwrap();
     let mut s = open(d.path());
-    add(&mut s, approval(KindId::Secret, "DB", &who("o", "s"), None));
+    add(
+        &mut s,
+        approval(KindId::Secret, "DB", &who("o", "s"), Some(mins(60))),
+    );
     let key = s.key.clone();
     drop(s);
     let body = br#"{"grants":[{"id":"x","approval":{"kind":"FutureKind"}}],"revoked":[]}"#;
@@ -1107,22 +1131,32 @@ fn the_head_copy_never_blocks_a_revocation() {
     let d = tempdir().unwrap();
     let nested = d.path().join("lane-state").join("head");
     let mut s = Store::open(d.path(), &Xor(7), Some(nested.clone())).unwrap();
-    add(&mut s, approval(KindId::Secret, "A", &who("o", "s"), None));
+    add(
+        &mut s,
+        approval(KindId::Secret, "A", &who("o", "s"), Some(mins(60))),
+    );
     assert!(nested.exists());
     drop(s);
     let e = tempdir().unwrap();
+    let mut s = open(e.path());
+    let g = add(
+        &mut s,
+        approval(KindId::Secret, "A", &who("o", "s"), Some(mins(60))),
+    );
+    drop(s);
+    // a head copy that cannot be read or written (here: a folder)
     let blocked = e.path().join("a-folder");
     std::fs::create_dir(&blocked).unwrap();
     let mut s = Store::open(e.path(), &Xor(7), Some(blocked.clone())).unwrap();
-    let g = add(&mut s, approval(KindId::Secret, "A", &who("o", "s"), None));
+    assert!(
+        s.untrusted.is_some(),
+        "an unreadable head copy went unnoticed"
+    );
     assert!(s.revoke(&g, t0()).unwrap());
     drop(s);
     let s = Store::open(e.path(), &Xor(7), Some(blocked)).unwrap();
     assert!(s.revoked.contains(&g));
-    assert!(
-        s.untrusted.is_some(),
-        "an unwritable head copy went unnoticed"
-    );
+    assert!(s.untrusted.is_some());
 }
 
 /// Review I-G: grants and revocations are audited by the store itself.
@@ -1130,7 +1164,10 @@ fn the_head_copy_never_blocks_a_revocation() {
 fn grants_and_revocations_are_audited() {
     let d = tempdir().unwrap();
     let mut s = open(d.path());
-    let g = add(&mut s, approval(KindId::Secret, "A", &who("o", "s"), None));
+    let g = add(
+        &mut s,
+        approval(KindId::Secret, "A", &who("o", "s"), Some(mins(60))),
+    );
     s.revoke(&g, t0()).unwrap();
     s.revoke_all(t0()).unwrap();
     let log = audit_text(d.path());
@@ -1150,7 +1187,10 @@ fn an_untrustworthy_store_takes_no_new_grants() {
     std::fs::write(d.path().join("attempts.json"), "junk").unwrap();
     let mut s = open(d.path());
     assert!(s
-        .add(approval(KindId::Secret, "A", &who("o", "s"), None), t0())
+        .add(
+            approval(KindId::Secret, "A", &who("o", "s"), Some(mins(60))),
+            t0()
+        )
         .is_err());
     assert!(s.grants.is_empty());
 }
@@ -1160,13 +1200,355 @@ fn an_untrustworthy_store_takes_no_new_grants() {
 fn a_failed_save_is_audited() {
     let d = tempdir().unwrap();
     let mut s = open(d.path());
-    add(&mut s, approval(KindId::Secret, "A", &who("o", "s"), None));
-    drop(s);
+    add(
+        &mut s,
+        approval(KindId::Secret, "A", &who("o", "s"), Some(mins(60))),
+    );
     std::fs::remove_file(d.path().join("grants.json")).unwrap();
     std::fs::create_dir(d.path().join("grants.json")).unwrap();
-    let mut s = open(d.path());
     assert!(s.revoke_all(t0()).is_err());
     let log = audit_text(d.path());
     let (revoked, failed) = (log.find("\"revoked-all\""), log.find("\"save-failed\""));
     assert!(revoked.is_some() && failed > revoked, "{log}");
+}
+
+// -- round 3 (the review of d27837a) -------------------------------------------
+
+/// A reservation for `subject`, as a lane would make it.
+fn reserve(s: &mut Store, r: &Requester, subject: &str, at: DateTime<Utc>) -> Reservation {
+    s.may_ask(r, KindId::Secret, subject, at, &AuditOnly)
+        .unwrap()
+}
+
+/// Review 3, C1: a repair whose save fails restores nothing; the grants
+/// stay unhonoured and the store stays untrusted.
+#[test]
+fn a_repair_whose_save_fails_leaves_the_store_untrusted() {
+    let d = tempdir().unwrap();
+    let mut s = open(d.path());
+    add(
+        &mut s,
+        approval(KindId::LaneDialogBypass, "trust", &who("pm", "s"), None),
+    );
+    drop(s);
+    std::fs::remove_file(d.path().join("head.copy")).unwrap();
+    let mut s = open(d.path());
+    assert!(s.untrusted.is_some());
+    let g = d.path().join("grants.json");
+    let saved = std::fs::read(&g).unwrap();
+    std::fs::remove_file(&g).unwrap();
+    std::fs::create_dir(&g).unwrap();
+    assert!(s.repair(t0(), &Xor(7)).is_err());
+    assert!(s.untrusted.is_some(), "a failed repair cleared the flag");
+    drop(s);
+    std::fs::remove_dir(&g).unwrap();
+    std::fs::write(&g, saved).unwrap();
+    let s = open(d.path());
+    assert!(s.untrusted.is_some(), "{:?}", s.verify_audit());
+    assert!(s
+        .find(KindId::LaneDialogBypass, "trust", &who("x", "y"), t0())
+        .is_none());
+}
+
+/// Review 3, I2: a save cut short between the two files is still
+/// recognised as ours, so a crash or a held file does not cost the grants.
+#[test]
+fn a_save_cut_short_between_the_files_is_still_ours() {
+    let d = tempdir().unwrap();
+    let a = who("o", "s");
+    let mut s = open(d.path());
+    let g = add(&mut s, approval(KindId::Secret, "A", &a, Some(mins(60))));
+    let p = d.path().join("attempts.json");
+    let old_attempts = std::fs::read(&p).unwrap();
+    std::fs::remove_file(&p).unwrap();
+    std::fs::create_dir(&p).unwrap();
+    // grants.json is written, attempts.json cannot be
+    assert!(s.revoke(&g, t0()).is_err());
+    drop(s);
+    std::fs::remove_dir(&p).unwrap();
+    std::fs::write(&p, old_attempts).unwrap();
+    let s = open(d.path());
+    assert_eq!(s.untrusted, None, "{:?}", s.untrusted);
+    assert!(
+        s.revoked.contains(&g),
+        "the revocation that landed was lost"
+    );
+}
+
+/// Review 3, I3: a repair or `revoke_all` ends every pending reservation,
+/// so an approval still in flight never becomes a grant.
+#[test]
+fn repair_and_revoke_all_end_pending_reservations() {
+    let a = who("o", "s");
+    for how in ["repair", "revoke-all"] {
+        let d = tempdir().unwrap();
+        let mut s = open(d.path());
+        let r = reserve(&mut s, &a, "DB", t0());
+        match how {
+            "repair" => {
+                s.repair(t0(), &Xor(7)).unwrap();
+            }
+            _ => {
+                s.revoke_all(t0()).unwrap();
+            }
+        }
+        let late = s.resolve(&r, &answer("approved", &a, "DB"), mins(1), &AuditOnly);
+        assert!(late.unwrap_err().contains("already ended"), "{how}");
+        assert!(s.active(mins(1)).is_empty(), "{how}");
+    }
+}
+
+/// Review 3, I3: no channel waits longer than the reservation lives.
+#[test]
+fn an_old_reservation_cannot_be_resolved() {
+    let d = tempdir().unwrap();
+    let a = who("o", "s");
+    let mut s = open(d.path());
+    let r = reserve(&mut s, &a, "DB", t0());
+    let at = t0() + RESERVATION_TTL;
+    let late = s.resolve(&r, &answer("approved", &a, "DB"), at, &AuditOnly);
+    assert!(late.unwrap_err().contains("minutes ago"));
+    let r = reserve(&mut s, &a, "DB2", t0());
+    let just = t0() + RESERVATION_TTL - Duration::seconds(1);
+    assert!(s
+        .resolve(&r, &answer("approved", &a, "DB2"), just, &AuditOnly)
+        .unwrap()
+        .is_some());
+}
+
+/// Review 3, I4: an approval longer than its kind allows never becomes a
+/// grant, even when the channel returned it.
+#[test]
+fn an_approval_longer_than_its_kind_allows_is_refused() {
+    let d = tempdir().unwrap();
+    let a = who("o", "s");
+    let mut s = open(d.path());
+    let r = reserve(&mut s, &a, "DB", t0());
+    let forever = Outcome::Approved(approval(KindId::Secret, "DB", &a, None));
+    assert!(s.resolve(&r, &forever, t0(), &AuditOnly).is_err());
+    let tomorrow = Outcome::Approved(approval(
+        KindId::Secret,
+        "DB",
+        &a,
+        Some(t0() + Duration::days(2)),
+    ));
+    assert!(s.resolve(&r, &tomorrow, t0(), &AuditOnly).is_err());
+    assert!(s.grants.is_empty());
+    // and the attempt is still pending: a valid answer can still land
+    assert!(s
+        .resolve(&r, &answer("approved", &a, "DB"), t0(), &AuditOnly)
+        .unwrap()
+        .is_some());
+}
+
+/// Review 3, I5: a chain found broken mid-session untrusts the store at
+/// once, not only from the next open.
+#[test]
+fn a_chain_reset_mid_session_untrusts_at_once() {
+    let d = tempdir().unwrap();
+    let a = who("o", "s");
+    let mut s = open(d.path());
+    add(&mut s, approval(KindId::Secret, "DB", &a, Some(mins(60))));
+    std::fs::remove_file(d.path().join("head.copy")).unwrap();
+    assert!(s
+        .may_ask(&a, KindId::Secret, "X", t0(), &AuditOnly)
+        .is_err());
+    assert!(matches!(s.untrusted, Some(Untrusted::Files(_))));
+    assert!(s.find(KindId::Secret, "DB", &a, t0()).is_none());
+}
+
+/// Review 3, I2: an untrusted store disables everything, so the gate
+/// alerts, once per role per hour.
+#[test]
+fn an_untrusted_store_alerts_once() {
+    let d = tempdir().unwrap();
+    drop(open(d.path()));
+    std::fs::write(d.path().join("attempts.json"), "junk").unwrap();
+    let alerts = Alerts::default();
+    for m in 0..3 {
+        let mut s = open(d.path());
+        assert!(s
+            .may_ask(&who("o", "s"), KindId::Secret, "X", mins(m), &alerts)
+            .is_err());
+    }
+    assert_eq!(alerts.0.borrow().len(), 1, "{:?}", alerts.0.borrow());
+    assert!(audit_text(d.path()).contains("became untrustworthy"));
+}
+
+/// Review 3, M1: a repair says when it could not count the grants.
+#[test]
+fn a_repair_says_when_the_grants_were_unknown() {
+    let d = tempdir().unwrap();
+    let mut s = open(d.path());
+    add(
+        &mut s,
+        approval(KindId::Secret, "A", &who("o", "s"), Some(mins(60))),
+    );
+    drop(s);
+    std::fs::remove_file(d.path().join("store.key")).unwrap();
+    let mut s = open(d.path());
+    let r = s.repair(t0(), &Xor(7)).unwrap();
+    assert!(!r.grants_known);
+    assert!(r.set_aside.iter().any(|f| f.contains("grants")), "{r:?}");
+    let e = tempdir().unwrap();
+    let mut s = open(e.path());
+    add(
+        &mut s,
+        approval(KindId::Secret, "A", &who("o", "s"), Some(mins(60))),
+    );
+    let r = s.repair(t0(), &Xor(7)).unwrap();
+    assert!(r.grants_known && r.revoked == 1, "{r:?}");
+}
+
+/// Review 3, M4: looking never writes, moves or records anything.
+#[test]
+fn inspect_writes_nothing() {
+    let d = tempdir().unwrap();
+    let mut s = open(d.path());
+    add(
+        &mut s,
+        approval(KindId::Secret, "A", &who("o", "s"), Some(mins(60))),
+    );
+    drop(s);
+    let p = d.path().join("grants.json");
+    let tampered = std::fs::read_to_string(&p)
+        .unwrap()
+        .replace("\"A\"", "\"B\"");
+    std::fs::write(&p, &tampered).unwrap();
+    std::fs::remove_file(d.path().join("store.key.check")).unwrap();
+    let before = audit_text(d.path());
+    let head = Some(d.path().join("head.copy"));
+    let mut s = Store::inspect(d.path(), &Xor(7), head).unwrap().unwrap();
+    assert!(s.untrusted.is_some());
+    assert!(!s.grants_known());
+    assert!(s.revoke_all(t0()).is_err(), "a read-only store changed");
+    drop(s);
+    assert_eq!(audit_text(d.path()), before);
+    assert_eq!(std::fs::read_to_string(&p).unwrap(), tampered);
+    assert!(!d.path().join("store.key.check").exists());
+}
+
+/// Review 3, I1: on Windows the lock file cannot be deleted while it is
+/// held, so no second holder can appear beside the first.
+#[cfg(windows)]
+#[test]
+fn the_lock_file_cannot_be_deleted_while_held() {
+    let d = tempdir().unwrap();
+    let s = open(d.path());
+    assert!(std::fs::remove_file(d.path().join("store.lock")).is_err());
+    drop(s);
+    assert!(std::fs::remove_file(d.path().join("store.lock")).is_ok());
+}
+
+/// Holds `path` open with no sharing (an antivirus scan) for `ms`.
+#[cfg(windows)]
+fn hold(path: PathBuf, ms: u64) -> std::thread::JoinHandle<()> {
+    use std::os::windows::fs::OpenOptionsExt;
+    let f = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(0)
+        .open(&path)
+        .unwrap();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(ms));
+        drop(f);
+    })
+}
+
+/// Review 3, I2: a file held for a moment is retried; one held longer
+/// fails the open and records nothing, and the store is trusted after.
+#[cfg(windows)]
+#[test]
+fn a_held_file_is_retried_and_never_recorded_as_damage() {
+    let d = tempdir().unwrap();
+    let mut s = open(d.path());
+    add(
+        &mut s,
+        approval(KindId::Secret, "A", &who("o", "s"), Some(mins(60))),
+    );
+    drop(s);
+    let g = d.path().join("grants.json");
+    let t = hold(g.clone(), 300);
+    assert_eq!(open(d.path()).untrusted, None, "a brief hold was damage");
+    t.join().unwrap();
+    let before = audit_text(d.path());
+    let t = hold(g, (RETRY_FOR.as_millis() + 1500) as u64);
+    let err = Store::open(d.path(), &Xor(7), Some(d.path().join("head.copy")))
+        .err()
+        .unwrap();
+    assert!(err.contains("try again"), "{err}");
+    t.join().unwrap();
+    assert_eq!(audit_text(d.path()), before, "a held file was recorded");
+    assert_eq!(open(d.path()).untrusted, None);
+}
+
+/// Review 3, I2: a save onto a file someone holds for a moment is retried.
+#[cfg(windows)]
+#[test]
+fn a_save_onto_a_briefly_held_file_is_retried() {
+    let d = tempdir().unwrap();
+    let mut s = open(d.path());
+    let g = add(
+        &mut s,
+        approval(KindId::Secret, "A", &who("o", "s"), Some(mins(60))),
+    );
+    let t = hold(d.path().join("attempts.json"), 300);
+    assert!(s.revoke(&g, t0()).unwrap());
+    t.join().unwrap();
+    drop(s);
+    let s = open(d.path());
+    assert_eq!(s.untrusted, None);
+    assert!(s.revoked.contains(&g));
+}
+
+/// Review 3, I5: `find` checks the chain itself, so a lookup with no
+/// change before it still sees a chain broken since `open`.
+#[test]
+fn find_alone_sees_a_chain_broken_since_open() {
+    let d = tempdir().unwrap();
+    let a = who("o", "s");
+    let mut s = open(d.path());
+    add(&mut s, approval(KindId::Secret, "DB", &a, Some(mins(60))));
+    assert!(s.find(KindId::Secret, "DB", &a, t0()).is_some());
+    std::fs::remove_file(d.path().join("head.copy")).unwrap();
+    assert!(s.find(KindId::Secret, "DB", &a, t0()).is_none());
+}
+
+/// Review 3, I5: the change that writes a chain reset untrusts the store
+/// at once, though the chain checks clean again after the reset line.
+#[test]
+fn the_change_that_resets_the_chain_untrusts_the_store() {
+    let d = tempdir().unwrap();
+    let a = who("o", "s");
+    let mut s = open(d.path());
+    add(&mut s, approval(KindId::Secret, "KEEP", &a, Some(mins(60))));
+    let other = add(&mut s, approval(KindId::Secret, "GO", &a, Some(mins(60))));
+    std::fs::remove_file(d.path().join("head.copy")).unwrap();
+    assert!(s.revoke(&other, t0()).unwrap());
+    assert!(matches!(s.untrusted, Some(Untrusted::Files(_))));
+    assert!(s.find(KindId::Secret, "KEEP", &a, t0()).is_none());
+}
+
+/// Review 3, I2: a key check that cannot be read is not "missing": open
+/// asks for a retry and decides nothing.
+#[cfg(windows)]
+#[test]
+fn an_unreadable_key_check_fails_the_open_and_decides_nothing() {
+    let d = tempdir().unwrap();
+    let mut s = open(d.path());
+    add(
+        &mut s,
+        approval(KindId::Secret, "A", &who("o", "s"), Some(mins(60))),
+    );
+    drop(s);
+    let check = d.path().join("store.key.check");
+    let before = std::fs::read(&check).unwrap();
+    let t = hold(check.clone(), (RETRY_FOR.as_millis() + 1500) as u64);
+    let err = Store::open(d.path(), &Xor(7), Some(d.path().join("head.copy")))
+        .err()
+        .unwrap();
+    assert!(err.contains("try again"), "{err}");
+    t.join().unwrap();
+    assert_eq!(std::fs::read(&check).unwrap(), before);
+    assert_eq!(open(d.path()).untrusted, None);
 }

@@ -953,7 +953,6 @@ version = "0.5.7"
 dependencies = [
  "chrono",
  "getrandom",
- "hmac",
  "lane-restart",
  "serde",
  "serde_json",

@@ -5,9 +5,14 @@
 use std::io::Write;
 use std::process::{Command, Stdio};
 
+/// A scratch vault AND a scratch approvals store: never the person's real
+/// ones (#2b).
 fn bin() -> Command {
+    let scratch = tempfile::tempdir().unwrap().keep();
     let mut c = Command::new(env!("CARGO_BIN_EXE_with-secret"));
-    c.env("WITH_SECRET_DIR", tempfile::tempdir().unwrap().keep());
+    c.env("WITH_SECRET_DIR", scratch.join("vault"))
+        .env("USER_REQUEST_DIR", scratch.join("user-request"))
+        .env("USER_REQUEST_HEAD", scratch.join("head"));
     c
 }
 
@@ -174,4 +179,22 @@ fn revoke_ends_approvals_and_checks_its_arguments() {
             "{bad:?}"
         );
     }
+}
+
+/// #2b: a scratch vault with the REAL approvals store is refused, so a test
+/// can never revoke the person's approvals. Control: with a scratch store
+/// too, the same command succeeds.
+#[test]
+fn a_scratch_vault_never_reaches_the_real_approvals() {
+    let scratch = tempfile::tempdir().unwrap().keep();
+    let out = Command::new(env!("CARGO_BIN_EXE_with-secret"))
+        .env("WITH_SECRET_DIR", &scratch)
+        .env_remove("USER_REQUEST_DIR")
+        .args(["revoke", "--all"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    assert!(String::from_utf8_lossy(&out.stderr).contains("USER_REQUEST_DIR"));
+    let out = bin().args(["revoke", "--all"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
 }

@@ -40,6 +40,14 @@ Windows Hello is a yes/no dialog with a message: it cannot ask "for how long". S
 chosen **first**, and the message the person approves names it. Hello proves the person was present
 and approved that text; it does not prove they read it.
 
+## Who uses it
+
+- **with-secret** (since #2b): every secret approval is a `Secret` grant here, and every secret
+  prompt passes the prompt gate below. `user-request revoke --all` ends secrets too.
+  `with-secret revoke NAME | --all` revokes only secrets (`Store::revoke_matching`), as tombstones,
+  and ends their pending prompts.
+- `user_request::locate` names the production store, so every binary opens the same one.
+
 ## The store
 
 Everything lives in `%LOCALAPPDATA%\OverMind\user-request\`:
@@ -168,8 +176,6 @@ user-request audit verify    check the audit chain since its last reset, and its
   consistently needs no key at all. The chain catches accidents and naive edits, not forgery.
 - The audit log is never rotated, and every append reads it whole.
 - Coming next, per the approved plan:
-  - with-secret's approvals move onto this store, so its prompts pass the gate and `revoke --all`
-    covers secrets;
   - an approver-side chooser where FOREVER, or a date over 30 days away, must be typed;
   - durable pending requests with no timeout;
   - grants for lane-launch dialog bypasses.

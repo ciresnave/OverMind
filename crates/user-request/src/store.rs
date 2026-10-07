@@ -749,6 +749,68 @@ impl Store {
         Ok(n)
     }
 
+    /// Revokes every grant of `kind` (about `subject` only, when given),
+    /// whoever holds it, and ends the matching pending prompts so an
+    /// approval still in flight never becomes a grant (#2b: `with-secret
+    /// revoke NAME | --all`). Returns how many grants it revoked. The same
+    /// trust rules as `revoke`.
+    pub fn revoke_matching(
+        &mut self,
+        kind: KindId,
+        subject: Option<&str>,
+    ) -> Result<usize, String> {
+        self.revoke_matching_at(kind, subject, Utc::now())
+    }
+
+    pub(crate) fn revoke_matching_at(
+        &mut self,
+        kind: KindId,
+        subject: Option<&str>,
+        now: DateTime<Utc>,
+    ) -> Result<usize, String> {
+        self.writable()?;
+        self.key_known()?;
+        let subject = subject.map(normal_subject);
+        let matches = |k: KindId, s: &str| {
+            k == kind
+                && subject
+                    .as_ref()
+                    .is_none_or(|want| normal_subject(s) == *want)
+        };
+        let ids: Vec<String> = self
+            .grants
+            .iter()
+            .filter(|g| !self.revoked.contains(&g.id))
+            .filter(|g| matches(g.approval.kind, &g.approval.subject))
+            .map(|g| g.id.clone())
+            .collect();
+        let pending: Vec<String> = self
+            .attempts
+            .iter()
+            .filter(|a| a.outcome == Ended::Pending && matches(a.kind, &a.subject))
+            .map(|a| a.id.clone())
+            .collect();
+        self.audit(
+            now,
+            "revoked-matching",
+            &format!(
+                "kind={kind:?} subject={} n={} ids={} pending-ended={}",
+                subject.as_deref().unwrap_or("*"),
+                ids.len(),
+                ids.join(","),
+                pending.join(",")
+            ),
+        )?;
+        let n = ids.len();
+        self.revoked.extend(ids);
+        for a in self.attempts.iter_mut().filter(|a| pending.contains(&a.id)) {
+            a.outcome = Ended::NotAsked;
+        }
+        // tombstones first, like every revocation (the README's write order)
+        self.save(now)?;
+        Ok(n)
+    }
+
     fn revoke_everything(&mut self, now: DateTime<Utc>) -> Result<usize, String> {
         let ids: Vec<String> = self
             .grants

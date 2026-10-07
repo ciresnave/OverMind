@@ -30,6 +30,8 @@ pub enum MaxGrant {
     UntilLocalMidnight,
     /// No longer than this from the moment it is shown.
     For(Duration),
+    /// Any stated end, however far, but never forever.
+    Finite,
     /// Anything, including forever.
     Forever,
 }
@@ -68,8 +70,8 @@ impl KindId {
         match self {
             // board 134 (CireSnave, 2026-10-07): the requester states how
             // long, the person sees the end (loudly when past today) and may
-            // refuse; no compiled cap
-            KindId::Secret => MaxGrant::Forever,
+            // refuse. A stated length, never forever (PM ruling on #115 M4)
+            KindId::Secret => MaxGrant::Finite,
             KindId::LaneDialogBypass => MaxGrant::Forever,
         }
     }
@@ -141,6 +143,7 @@ impl Grant {
         }
         match (max, end) {
             (MaxGrant::Forever, _) => true,
+            (MaxGrant::Finite, end) => end.is_some(),
             (_, None) => false,
             (MaxGrant::For(d), Some(e)) => utc.checked_add_signed(d).is_some_and(|m| e <= m),
             (MaxGrant::UntilLocalMidnight, Some(e)) => e <= next_local_midnight(now),
@@ -277,12 +280,17 @@ mod tests {
     /// Board 134 (CireSnave, 2026-10-07): the requester states how long, the
     /// person sees it and may refuse; a secret has no compiled cap.
     #[test]
-    fn a_secret_has_no_compiled_cap() {
+    fn a_secret_may_be_any_finite_length_but_never_forever() {
+        // PM ruling on #115 M4 (2026-10-07): "as long of a time as it wants"
+        // is a stated length; FOREVER is something CireSnave did not choose
         let now = at(18, 0);
         let max = KindId::Secret.max();
-        assert_eq!(max, MaxGrant::Forever);
-        assert!(Grant::Until(now.with_timezone(&Utc) + Duration::days(30)).within(max, now));
-        assert!(Grant::Forever.within(max, now));
+        assert_eq!(max, MaxGrant::Finite);
+        assert!(Grant::Until(now.with_timezone(&Utc) + Duration::days(3650)).within(max, now));
+        assert!(Grant::for_duration(Duration::days(30)).within(max, now));
+        assert!(!Grant::Forever.within(max, now));
+        // control: the dialog bypass still may be forever
+        assert!(Grant::Forever.within(KindId::LaneDialogBypass.max(), now));
     }
 
     /// The midnight maximum still works for any kind that uses it.

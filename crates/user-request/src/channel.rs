@@ -304,9 +304,8 @@ mod tests {
         }
     }
 
-    /// Board 134 removed the only bounded kind, so the refusal is shown with a
-    /// grant no maximum allows (one that ends before it starts); the path is
-    /// the same `within(kind.max())` check.
+    /// A secret may not be granted forever (PM ruling on #115 M4), and the
+    /// person is not even asked.
     #[test]
     fn a_grant_over_the_kinds_maximum_is_refused_without_asking() {
         let ch = channel(|| ConsentOutcome::Approved, Span::zero());
@@ -318,7 +317,7 @@ mod tests {
             true,
         );
         assert!(matches!(
-            ch.present(&r, &Grant::For { secs: -60 }, WAIT),
+            ch.present(&r, &Grant::Forever, WAIT),
             Outcome::Refused(_)
         ));
         assert!(

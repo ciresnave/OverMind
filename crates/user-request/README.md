@@ -39,12 +39,49 @@ Windows Hello is a yes/no dialog with a message: it cannot ask "for how long". S
 chosen **first**, and the message the person approves names it. Hello proves the person was present
 and approved that text; it does not prove they read it.
 
+## The store
+
+Everything lives in `%LOCALAPPDATA%\OverMind\user-request\`:
+
+- `store.key` and `store.key.check`: the HMAC key, DPAPI-protected, and a value that tells the right
+  key from a wrong one. A store whose key does not check out refuses to save, so it can never
+  overwrite the real grants.
+- `grants.json` and `attempts.json`: approvals, and recent prompts with how they ended, each
+  HMAC-signed. An entry whose signature fails is ignored and counted.
+- `audit.jsonl`: every grant, revocation, denial and refusal, append-only. Each line carries the
+  SHA-256 of the line before it. The chain's head is also written to
+  `C:\Projects\.lane-state\user-request-audit.head`, so a truncated or deleted log is detectable.
+
+### The prompt gate
+
+These limits answer "approval fatigue": a lane re-asking until a mis-click approves it.
+
+- After a denial or a timeout, the same role may not ask about the same subject again for 10 minutes.
+- A role may put at most 6 prompts per rolling hour in front of the person.
+- Reaching the cap, or 3 refusals within an hour, raises an **alert**.
+- The limits are keyed by role, so restarting a lane resets neither.
+- ⚠️ Alert **delivery** is not built yet. Where alerts go waits on board item 131; until then they
+  are recorded in the audit log only.
+
+### Commands
+
+```
+user-request list            active grants, FOREVER ones first and loudly
+user-request revoke <id>     revoke one grant (no Hello needed: it only removes privilege)
+user-request revoke --all    the panic button
+user-request audit verify    check every link of the audit chain and its head copy
+```
+
+Every revocation is audited.
+
 ## Honest limits
 
 - Like with-secret (WITH-SECRET-DESIGN.md §3), this stops **accidents**, not a deliberate process
-  running as the same Windows user, which can drive the same APIs.
+  running as the same Windows user. Such a process can read the DPAPI key, forge entries, and
+  rewrite both the audit chain and its head copy.
 - Coming next, per the approved plan:
-  - a signed grant store with list, revoke and an audit chain;
+  - with-secret's approvals move onto this store, so its prompts pass the gate and `revoke --all`
+    covers secrets;
   - an approver-side chooser where FOREVER, or a date over 30 days away, must be typed;
   - durable pending requests with no timeout;
   - grants for lane-launch dialog bypasses.

@@ -3,19 +3,32 @@
 //! audit, row 1: "approval fatigue").
 //!
 //! In one directory (by default `%LOCALAPPDATA%\OverMind\user-request`):
-//! - `store.key`: the HMAC key, DPAPI-protected;
-//! - `grants.json`: approvals, each HMAC-signed;
-//! - `attempts.json`: recent prompts and how they ended, each HMAC-signed;
-//! - `audit.jsonl`: every grant, revocation, denial and refusal, hash-chained,
-//!   with the chain's head ALSO written to a second file (PM condition (d)),
-//!   so truncating or rewriting the whole chain is detectable.
+//! - `store.key`, `store.key.check`: the HMAC key, DPAPI-protected, and a
+//!   value that tells the right key from a wrong one;
+//! - `grants.json`: approvals and revocation tombstones;
+//! - `attempts.json`: recent prompts and how they ended (or that they are
+//!   still pending);
+//! - `audit.jsonl`: every save, grant, revocation, gate decision and alert,
+//!   hash-chained, with the chain's head ALSO written to a second file (PM
+//!   condition (d));
+//! - `store.lock`: held from `open` until the `Store` is dropped, so one
+//!   process at a time reads, changes and writes.
+//!
+//! ⚠️ The audit chain is the store's integrity anchor: every save records the
+//! hashes of the files it wrote, and `open` checks the files against the last
+//! such record. A file that was deleted, rolled back or had an entry removed
+//! makes the store UNTRUSTWORTHY, and an untrustworthy store fails CLOSED:
+//! the gate refuses and no grant is honoured (revoking still works).
 //!
 //! ⚠️ Honest limit (WITH-SECRET-DESIGN.md §3): a process running as the same
-//! Windows user can read the DPAPI key, forge entries and rewrite both the
-//! chain and its head copy. The signatures and the chain catch accidents and
-//! hand edits, not that.
+//! Windows user can read the DPAPI key and rewrite the files, the chain and
+//! its head copy consistently. All of this catches accidents and naive
+//! edits, not that.
 
+use std::collections::BTreeSet;
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use chrono::{DateTime, Duration, Utc};
 use hmac::{Hmac, KeyInit, Mac};
@@ -32,13 +45,13 @@ pub trait Protector {
 
 /// Tells a person something needs their attention. ⚠️ DELIVERY is not built:
 /// where alerts go waits on board item 131 (SECURITY_ALERT_EMAIL does not
-/// exist yet). Until then callers pass `AuditOnly`, and the audit log is the
-/// only record.
+/// exist yet). Every alert is ALSO written to the audit log by the store,
+/// whatever the sink does.
 pub trait Alert {
     fn alert(&self, what: &str);
 }
 
-/// No delivery; the event is still in the audit log.
+/// No delivery; the audit log is the only record.
 pub struct AuditOnly;
 impl Alert for AuditOnly {
     fn alert(&self, _: &str) {}
@@ -49,8 +62,15 @@ impl Alert for AuditOnly {
 pub const DENIAL_COOLDOWN: Duration = Duration::minutes(10);
 /// At most this many prompts per role per rolling hour.
 pub const PROMPTS_PER_HOUR: usize = 6;
+/// At most this many prompts per rolling hour in front of the person, from
+/// every role together (review I9: the cap protects a person, not a role).
+pub const PROMPTS_PER_HOUR_FOR_THE_PERSON: usize = 20;
 /// This many denials or timeouts for one role in an hour raise an alert.
 pub const DENIALS_BEFORE_ALERT: usize = 3;
+/// How long `open` waits for another process's lock before giving up.
+pub const LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
+/// A lock older than this belongs to a process that died; it is reclaimed.
+pub const LOCK_STALE: std::time::Duration = std::time::Duration::from_secs(60);
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoredGrant {
@@ -59,96 +79,277 @@ pub struct StoredGrant {
     pub approval: Approval,
 }
 
-/// One prompt and how it ended: "approved", "denied", "timed-out" or
-/// "unavailable".
+/// One prompt: "pending" while the person decides, then "approved",
+/// "denied", "timed-out" or "unavailable".
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Attempt {
+    /// 128 random bits, hex.
+    pub id: String,
     pub at: DateTime<Utc>,
     pub requester: Requester,
     pub kind: KindId,
+    /// Normalised (`normal_subject`), so `DB`, `db` and `DB ` share a cooldown.
     pub subject: String,
     pub outcome: String,
 }
 
+/// What `may_ask` hands back: the pending attempt to resolve once the person
+/// has answered.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Reservation {
+    pub attempt_id: String,
+}
+
+#[derive(Default, Serialize, Deserialize)]
+struct GrantsFile {
+    grants: Vec<StoredGrant>,
+    /// Ids revoked; kept so an old copy of a grant cannot come back.
+    revoked: BTreeSet<String>,
+}
+
 #[derive(Serialize, Deserialize)]
-struct Signed<T> {
-    item: T,
+struct Header {
+    seq: u64,
     mac: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct AuditLine {
+    prev: String,
+    at: DateTime<Utc>,
+    event: String,
+    detail: String,
+}
+
+/// Why the store cannot be trusted right now.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Untrusted {
+    /// The key did not decrypt, or decrypted to the wrong bytes.
+    Key(String),
+    /// A file is not what the last save recorded, or its signature failed.
+    Files(String),
 }
 
 pub struct Store {
     dir: PathBuf,
     key: Vec<u8>,
-    key_ok: bool,
     head_copy: Option<PathBuf>,
+    seq: u64,
     pub grants: Vec<StoredGrant>,
+    pub revoked: BTreeSet<String>,
     pub attempts: Vec<Attempt>,
-    /// Entries ignored on load because their signature did not verify.
-    pub rejected: usize,
+    /// `None` when the store can be trusted.
+    pub untrusted: Option<Untrusted>,
+    _lock: StoreLock,
 }
 
 impl Store {
-    /// Opens (creating if needed) the store in `dir`. `head_copy` is the
-    /// second location the audit chain's head is written to.
+    /// Opens the store in `dir`, creating it if it does not exist, and holds
+    /// its lock until the `Store` is dropped. `head_copy` is the second
+    /// place the audit chain's head is written.
     pub fn open(
         dir: &Path,
         protector: &dyn Protector,
         head_copy: Option<PathBuf>,
     ) -> Result<Self, String> {
         std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+        Self::open_in(dir, protector, head_copy)
+    }
+
+    /// Like `open`, but `None` when there is no store yet: read-only
+    /// commands never create one (review M2, M5).
+    pub fn open_existing(
+        dir: &Path,
+        protector: &dyn Protector,
+        head_copy: Option<PathBuf>,
+    ) -> Result<Option<Self>, String> {
+        if !dir.join("store.key").exists() {
+            return Ok(None);
+        }
+        Self::open_in(dir, protector, head_copy).map(Some)
+    }
+
+    fn open_in(
+        dir: &Path,
+        protector: &dyn Protector,
+        head_copy: Option<PathBuf>,
+    ) -> Result<Self, String> {
+        let lock = StoreLock::acquire(&dir.join("store.lock"))?;
         let key_path = dir.join("store.key");
         let check_path = dir.join("store.key.check");
+        let mut untrusted = None;
         let key = match std::fs::read(&key_path) {
-            Ok(blob) => protector.unprotect(&blob).unwrap_or_default(),
-            Err(_) => {
+            Ok(blob) => match protector.unprotect(&blob) {
+                Ok(k) => k,
+                Err(e) => {
+                    untrusted = Some(Untrusted::Key(format!("the key did not decrypt: {e}")));
+                    Vec::new()
+                }
+            },
+            // only a key that does not exist is created (review M2)
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 let mut k = vec![0u8; 32];
                 getrandom::fill(&mut k).map_err(|e| format!("random key: {e}"))?;
                 write_atomic(&key_path, &protector.protect(&k)?)?;
-                write_atomic(&check_path, mac(&k, &KEY_CHECK).as_bytes())?;
+                write_atomic(&check_path, mac(&k, KEY_CHECK.as_bytes()).as_bytes())?;
                 k
             }
+            Err(e) => return Err(format!("read {}: {e}", key_path.display())),
         };
-        // A key that does not decrypt, or decrypts to the wrong bytes, must
-        // never sign anything: everything signed with the right one then
-        // reads as rejected, and the store refuses to save over it.
-        let key_ok = !key.is_empty()
-            && std::fs::read_to_string(&check_path).is_ok_and(|c| c == mac(&key, &KEY_CHECK));
-        let (grants, bad_grants) = load_signed::<StoredGrant>(&dir.join("grants.json"), &key);
-        let (attempts, bad_attempts) = load_signed::<Attempt>(&dir.join("attempts.json"), &key);
-        Ok(Self {
+        let mut store = Self {
             dir: dir.to_path_buf(),
             key,
-            key_ok,
             head_copy,
-            grants,
-            attempts,
-            rejected: bad_grants + bad_attempts,
-        })
+            seq: 0,
+            grants: Vec::new(),
+            revoked: BTreeSet::new(),
+            attempts: Vec::new(),
+            untrusted,
+            _lock: lock,
+        };
+        if store.untrusted.is_none() {
+            store.load(&check_path)?;
+        }
+        Ok(store)
     }
 
-    /// Writes grants and attempts; expired grants and attempts older than a
-    /// day are dropped.
-    pub fn save(&self, now: DateTime<Utc>) -> Result<(), String> {
-        if !self.key_ok {
-            return Err("the store's key did not decrypt to the key it was created with;                         refusing to save over the real store"
-                .into());
+    fn load(&mut self, check_path: &Path) -> Result<(), String> {
+        let grants = read_signed(&self.dir.join("grants.json"), &self.key);
+        let attempts = read_signed(&self.dir.join("attempts.json"), &self.key);
+        // the key check: a match, or (missing check, review I2) files that
+        // verify under this key, which proves it is the right one
+        let check = std::fs::read_to_string(check_path).ok();
+        let verified_any =
+            matches!(grants, Signed::Good { .. }) || matches!(attempts, Signed::Good { .. });
+        let nothing_yet = grants == Signed::Missing && attempts == Signed::Missing;
+        match check {
+            Some(c) if c == mac(&self.key, KEY_CHECK.as_bytes()) => {}
+            Some(_) => {
+                self.untrusted = Some(Untrusted::Key(
+                    "the key decrypted to bytes that are not this store's key".into(),
+                ));
+                return Ok(());
+            }
+            None if verified_any || nothing_yet => {
+                write_atomic(check_path, mac(&self.key, KEY_CHECK.as_bytes()).as_bytes())?;
+            }
+            None => {
+                self.untrusted = Some(Untrusted::Key(
+                    "the key check is missing and nothing verifies".into(),
+                ));
+                return Ok(());
+            }
         }
-        let grants: Vec<_> = self.active(now).into_iter().cloned().collect();
-        let attempts: Vec<_> = self
+        let expected = self.last_saved();
+        let mut problems = Vec::new();
+        for (name, file) in [("grants.json", &grants), ("attempts.json", &attempts)] {
+            match (file, expected.as_ref().and_then(|e| e.get(name))) {
+                (Signed::Bad, _) => {
+                    let to = quarantine(&self.dir.join(name));
+                    problems.push(format!("{name} failed its signature (kept as {to})"));
+                }
+                (Signed::Good { sha, .. }, Some(want)) if sha != want => {
+                    problems.push(format!("{name} is not the file the last save recorded"))
+                }
+                (Signed::Good { .. }, None) => {
+                    problems.push(format!("{name} has no save recorded in the audit log"))
+                }
+                (Signed::Missing, Some(_)) => problems.push(format!("{name} is missing")),
+                _ => {}
+            }
+        }
+        if let Signed::Good { seq, body, .. } = grants {
+            let g: GrantsFile =
+                serde_json::from_slice(&body).map_err(|e| format!("grants.json: {e}"))?;
+            self.grants = g.grants;
+            self.revoked = g.revoked;
+            self.seq = seq;
+        }
+        if let Signed::Good { seq, body, .. } = attempts {
+            self.attempts =
+                serde_json::from_slice(&body).map_err(|e| format!("attempts.json: {e}"))?;
+            self.seq = self.seq.max(seq);
+        }
+        if !problems.is_empty() {
+            self.untrusted = Some(Untrusted::Files(problems.join("; ")));
+        }
+        Ok(())
+    }
+
+    /// The file hashes the last `saved` audit line recorded.
+    fn last_saved(&self) -> Option<std::collections::HashMap<String, String>> {
+        let text = std::fs::read_to_string(self.dir.join("audit.jsonl")).ok()?;
+        let line = text.lines().rev().find_map(|l| {
+            serde_json::from_str::<AuditLine>(l)
+                .ok()
+                .filter(|a| a.event == "saved")
+        })?;
+        Some(
+            line.detail
+                .split_whitespace()
+                .filter_map(|kv| kv.split_once('='))
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+        )
+    }
+
+    /// `Ok` when grants may be honoured and the gate trusted.
+    pub fn trustworthy(&self) -> Result<(), String> {
+        match &self.untrusted {
+            None => Ok(()),
+            Some(Untrusted::Key(why)) | Some(Untrusted::Files(why)) => {
+                Err(format!("the store cannot be trusted: {why}"))
+            }
+        }
+    }
+
+    /// Writes grants and attempts (expired grants and attempts older than a
+    /// day are dropped) and records their hashes in the audit log. Refused
+    /// when the key is wrong, so the real store is never overwritten. A store
+    /// whose FILES were untrustworthy may save: that is how a revocation
+    /// lands, and the audit log keeps the record of what was found.
+    pub fn save(&mut self, now: DateTime<Utc>) -> Result<(), String> {
+        if let Some(Untrusted::Key(why)) = &self.untrusted {
+            return Err(format!("refusing to save: {why}"));
+        }
+        self.seq += 1;
+        let grants = GrantsFile {
+            grants: self
+                .grants
+                .iter()
+                .filter(|g| live(g, now))
+                .cloned()
+                .collect(),
+            revoked: self.revoked.clone(),
+        };
+        let attempts: Vec<&Attempt> = self
             .attempts
             .iter()
             .filter(|a| a.at > now - Duration::days(1))
-            .cloned()
             .collect();
-        save_signed(&self.dir.join("grants.json"), &self.key, &grants)?;
-        save_signed(&self.dir.join("attempts.json"), &self.key, &attempts)
+        let gbody = serde_json::to_vec(&grants).map_err(|e| e.to_string())?;
+        let abody = serde_json::to_vec(&attempts).map_err(|e| e.to_string())?;
+        let gsha = write_signed(&self.dir.join("grants.json"), &self.key, self.seq, &gbody)?;
+        let asha = write_signed(&self.dir.join("attempts.json"), &self.key, self.seq, &abody)?;
+        self.audit(
+            now,
+            "saved",
+            &format!("seq={} grants.json={gsha} attempts.json={asha}", self.seq),
+        )?;
+        if matches!(self.untrusted, Some(Untrusted::Files(_))) {
+            self.audit(
+                now,
+                "re-anchored",
+                "files rewritten after an integrity problem",
+            )?;
+            self.untrusted = None;
+        }
+        Ok(())
     }
 
     /// Stores an approval and returns its id.
     pub fn add(&mut self, approval: Approval) -> String {
-        let mut id = [0u8; 16];
-        getrandom::fill(&mut id).expect("the OS random source works");
-        let id = hex(&id);
+        let id = random_id();
         self.grants.push(StoredGrant {
             id: id.clone(),
             approval,
@@ -157,8 +358,8 @@ impl Store {
     }
 
     /// A live grant covering this request: same kind and subject, not
-    /// expired, and the same requester when the kind's scope is one
-    /// requester.
+    /// expired, not revoked, the same requester when the kind's scope is one
+    /// requester - and never from an untrustworthy store.
     pub fn find(
         &self,
         kind: KindId,
@@ -166,6 +367,9 @@ impl Store {
         requester: &Requester,
         now: DateTime<Utc>,
     ) -> Option<&StoredGrant> {
+        if self.trustworthy().is_err() {
+            return None;
+        }
         self.active(now).into_iter().find(|g| {
             let a = &g.approval;
             a.kind == kind
@@ -177,100 +381,231 @@ impl Store {
         })
     }
 
-    /// Every grant that has not expired.
+    /// Every grant that has not expired or been revoked.
     pub fn active(&self, now: DateTime<Utc>) -> Vec<&StoredGrant> {
         self.grants
             .iter()
-            .filter(|g| g.approval.expires_at.is_none_or(|e| e > now))
+            .filter(|g| live(g, now) && !self.revoked.contains(&g.id))
             .collect()
     }
 
     pub fn revoke(&mut self, id: &str) -> bool {
-        let before = self.grants.len();
-        self.grants.retain(|g| g.id != id);
-        self.grants.len() != before
+        let known = self.grants.iter().any(|g| g.id == id) && !self.revoked.contains(id);
+        if known {
+            self.revoked.insert(id.to_string());
+        }
+        known
     }
 
     /// The panic button: revokes every grant, returns how many.
     pub fn revoke_all(&mut self) -> usize {
-        std::mem::take(&mut self.grants).len()
+        let ids: Vec<String> = self
+            .grants
+            .iter()
+            .map(|g| g.id.clone())
+            .filter(|id| !self.revoked.contains(id))
+            .collect();
+        let n = ids.len();
+        self.revoked.extend(ids);
+        n
     }
 
     /// May `requester` put a prompt about `subject` in front of the person
-    /// now? Refused during the cooldown after a denial or timeout of the
-    /// same role and subject, and past the hourly cap for the role; a cap
-    /// refusal also alerts. Keyed by ROLE, so a restart (a new session)
-    /// does not reset either limit.
+    /// now? On yes, a PENDING attempt is recorded that counts toward every
+    /// limit until resolved (review C3) - save the store, ask, then
+    /// `resolve`. Refused when the store is untrustworthy (fail closed), in
+    /// the cooldown after a denial or timeout of the same role and subject,
+    /// or past the role's or the person's hourly cap. Keyed by ROLE, so a
+    /// restart resets nothing. Every decision is audited.
     pub fn may_ask(
-        &self,
+        &mut self,
         requester: &Requester,
+        kind: KindId,
+        subject: &str,
+        now: DateTime<Utc>,
+        alert: &dyn Alert,
+    ) -> Result<Reservation, String> {
+        let subject = normal_subject(subject);
+        let role = requester.role.clone();
+        if let Err(why) = self.gate(&role, &subject, now, alert) {
+            self.audit(
+                now,
+                "gate-refused",
+                &format!("role={role} subject={subject}: {why}"),
+            )?;
+            return Err(why);
+        }
+        let id = random_id();
+        self.attempts.push(Attempt {
+            id: id.clone(),
+            at: now,
+            requester: requester.clone(),
+            kind,
+            subject: subject.clone(),
+            outcome: "pending".into(),
+        });
+        self.audit(
+            now,
+            "gate-allowed",
+            &format!("role={role} subject={subject} attempt={id}"),
+        )?;
+        Ok(Reservation { attempt_id: id })
+    }
+
+    fn gate(
+        &mut self,
+        role: &str,
         subject: &str,
         now: DateTime<Utc>,
         alert: &dyn Alert,
     ) -> Result<(), String> {
-        let role = &requester.role;
-        let cooling = self.attempts.iter().any(|a| {
-            a.requester.role == *role
+        self.trustworthy()?;
+        let within = |a: &Attempt, d: Duration| now < a.at + d;
+        if self.attempts.iter().any(|a| {
+            a.requester.role == role
                 && a.subject == subject
                 && is_refusal(&a.outcome)
-                && now < a.at + DENIAL_COOLDOWN
-        });
-        if cooling {
+                && within(a, DENIAL_COOLDOWN)
+        }) {
             return Err(format!(
                 "'{role}' was refused about '{subject}' less than {} minutes ago",
                 DENIAL_COOLDOWN.num_minutes()
             ));
         }
-        let this_hour = self
-            .attempts
-            .iter()
-            .filter(|a| a.requester.role == *role && now < a.at + Duration::hours(1))
-            .count();
-        if this_hour >= PROMPTS_PER_HOUR {
-            let why = format!(
-                "'{role}' has asked {this_hour} times in the last hour (cap {PROMPTS_PER_HOUR})"
-            );
-            alert.alert(&why);
-            return Err(why);
-        }
-        Ok(())
+        let prompts = |only: Option<&str>| {
+            self.attempts
+                .iter()
+                .filter(|a| a.outcome != "alerted" && within(a, Duration::hours(1)))
+                .filter(|a| only.is_none_or(|r| a.requester.role == r))
+                .count()
+        };
+        let (mine, everyone) = (prompts(Some(role)), prompts(None));
+        let why = if mine >= PROMPTS_PER_HOUR {
+            format!("'{role}' has asked {mine} times in the last hour (cap {PROMPTS_PER_HOUR})")
+        } else if everyone >= PROMPTS_PER_HOUR_FOR_THE_PERSON {
+            format!(
+                "{everyone} prompts reached the person in the last hour \
+                 (cap {PROMPTS_PER_HOUR_FOR_THE_PERSON})"
+            )
+        } else {
+            return Ok(());
+        };
+        self.alert_once(role, "cap", &why, now, alert)?;
+        Err(why)
     }
 
-    /// Records how a prompt ended; repeated denials or timeouts alert.
-    pub fn record(&mut self, attempt: Attempt, alert: &dyn Alert) {
-        let (role, at, refused) = (
-            attempt.requester.role.clone(),
-            attempt.at,
-            is_refusal(&attempt.outcome),
-        );
-        self.attempts.push(attempt);
-        if !refused {
-            return;
+    /// Records how a reserved prompt ended; repeated refusals alert once.
+    pub fn resolve(
+        &mut self,
+        reservation: &Reservation,
+        outcome: &str,
+        now: DateTime<Utc>,
+        alert: &dyn Alert,
+    ) -> Result<(), String> {
+        let a = self
+            .attempts
+            .iter_mut()
+            .find(|a| a.id == reservation.attempt_id)
+            .ok_or("no such pending attempt")?;
+        a.outcome = outcome.to_string();
+        let (role, subject) = (a.requester.role.clone(), a.subject.clone());
+        self.audit(
+            now,
+            outcome,
+            &format!(
+                "role={role} subject={subject} attempt={}",
+                reservation.attempt_id
+            ),
+        )?;
+        if !is_refusal(outcome) {
+            return Ok(());
         }
         let refusals = self
             .attempts
             .iter()
             .filter(|a| {
-                a.requester.role == role && is_refusal(&a.outcome) && at < a.at + Duration::hours(1)
+                a.requester.role == role
+                    && is_refusal(&a.outcome)
+                    && now < a.at + Duration::hours(1)
             })
             .count();
-        if refusals == DENIALS_BEFORE_ALERT {
-            alert.alert(&format!(
-                "'{role}' was refused {refusals} times within an hour"
-            ));
+        if refusals >= DENIALS_BEFORE_ALERT {
+            let what = format!("'{role}' was refused {refusals} times within an hour");
+            self.alert_once(&role, "refusals", &what, now, alert)?;
         }
+        Ok(())
     }
 
-    /// Appends one line to the hash-chained audit log and rewrites the
-    /// head copy.
+    /// One alert per role and reason per rolling hour (review M1), always
+    /// audited, whatever the sink does.
+    fn alert_once(
+        &mut self,
+        role: &str,
+        reason: &str,
+        what: &str,
+        now: DateTime<Utc>,
+        alert: &dyn Alert,
+    ) -> Result<(), String> {
+        let tag = format!("alert:{reason}");
+        let recent = self.attempts.iter().any(|a| {
+            a.outcome == "alerted"
+                && a.requester.role == role
+                && a.subject == tag
+                && now < a.at + Duration::hours(1)
+        });
+        if recent {
+            return Ok(());
+        }
+        self.attempts.push(Attempt {
+            id: random_id(),
+            at: now,
+            requester: Requester {
+                role: role.to_string(),
+                session_id: String::new(),
+                claude_pid: 0,
+                claude_start_secs: 0,
+                managed: false,
+            },
+            kind: KindId::Secret,
+            subject: tag,
+            outcome: "alerted".into(),
+        });
+        self.audit(now, "ALERT", what)?;
+        alert.alert(what);
+        Ok(())
+    }
+
+    /// Appends one line to the hash-chained audit log and rewrites the head
+    /// copy. The chain is checked first (review C1, I5, I6): a chain that is
+    /// broken, or shorter than its head copy says (truncated, deleted, a torn
+    /// last line), gets an explicit `chain-reset` line naming why, so
+    /// `verify_audit` keeps reporting it while later lines still append.
     pub fn audit(&self, at: DateTime<Utc>, event: &str, detail: &str) -> Result<(), String> {
         let path = self.dir.join("audit.jsonl");
-        let text = std::fs::read_to_string(&path).unwrap_or_default();
-        let (count, prev) = text
-            .lines()
-            .fold((0usize, GENESIS.to_string()), |(n, _), l| {
-                (n + 1, sha(l.as_bytes()))
-            });
+        let (count, prev) = match self.check_chain() {
+            Ok(head) => head,
+            Err(why) => {
+                let reset = AuditLine {
+                    prev: GENESIS.to_string(),
+                    at,
+                    event: "chain-reset".into(),
+                    detail: why,
+                };
+                let text =
+                    String::from_utf8_lossy(&std::fs::read(&path).unwrap_or_default()).into_owned();
+                let line = serde_json::to_string(&reset).map_err(|e| e.to_string())?;
+                let sep = if text.is_empty() || text.ends_with('\n') {
+                    ""
+                } else {
+                    "\n"
+                };
+                append(&path, &format!("{sep}{line}\n"))?;
+                let n = String::from_utf8_lossy(&std::fs::read(&path).unwrap_or_default())
+                    .lines()
+                    .count();
+                (n, sha(line.as_bytes()))
+            }
+        };
         let line = serde_json::to_string(&AuditLine {
             prev,
             at,
@@ -278,13 +613,7 @@ impl Store {
             detail: detail.to_string(),
         })
         .map_err(|e| e.to_string())?;
-        let mut f = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
-            .map_err(|e| format!("open {}: {e}", path.display()))?;
-        use std::io::Write;
-        writeln!(f, "{line}").map_err(|e| e.to_string())?;
+        append(&path, &format!("{line}\n"))?;
         if let Some(copy) = &self.head_copy {
             write_atomic(
                 copy,
@@ -294,40 +623,149 @@ impl Store {
         Ok(())
     }
 
-    /// Checks every link of the chain and the head copy; returns how many
-    /// lines verified, or where it breaks.
-    pub fn verify_audit(&self) -> Result<usize, String> {
+    /// The chain's (length, last hash) if every link and the head copy
+    /// agree. A `chain-reset` line starts a new chain.
+    fn check_chain(&self) -> Result<(usize, String), String> {
         let path = self.dir.join("audit.jsonl");
-        let text = std::fs::read_to_string(&path).unwrap_or_default();
+        let bytes = match std::fs::read(&path) {
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            Err(e) => return Err(format!("audit log unreadable: {e}")),
+        };
+        let text = String::from_utf8(bytes).map_err(|_| "audit log is not UTF-8".to_string())?;
+        if !text.is_empty() && !text.ends_with('\n') {
+            return Err("the audit log's last line is torn".into());
+        }
+        // A `chain-reset` line starts a new chain: only lines from the last
+        // one on are checked (what came before is the damage it reported,
+        // which `verify_audit` keeps reporting).
+        let lines: Vec<&str> = text.lines().collect();
+        let start = lines
+            .iter()
+            .rposition(|l| {
+                serde_json::from_str::<AuditLine>(l).is_ok_and(|a| a.event == "chain-reset")
+            })
+            .unwrap_or(0);
         let mut prev = GENESIS.to_string();
-        let mut count = 0;
-        for (i, l) in text.lines().enumerate() {
+        for (i, l) in lines.iter().enumerate().skip(start) {
             let line: AuditLine = serde_json::from_str(l)
                 .map_err(|e| format!("audit line {}: unreadable: {e}", i + 1))?;
-            if line.prev != prev {
+            if line.prev != prev && !(i == start && line.event == "chain-reset") {
                 return Err(format!("audit chain broken at line {}", i + 1));
             }
             prev = sha(l.as_bytes());
-            count += 1;
         }
+        let count = lines.len();
         if let Some(copy) = &self.head_copy {
-            let head = std::fs::read_to_string(copy)
-                .map_err(|_| format!("audit head copy {} is missing", copy.display()))?;
-            if head.trim() != format!("{count} {prev}") {
-                return Err(format!(
-                    "audit head copy says '{}', the chain ends at '{count} {prev}': truncated or rewritten",
-                    head.trim()
-                ));
+            match std::fs::read_to_string(copy) {
+                Ok(head) if head.trim() == format!("{count} {prev}") => {}
+                Ok(head) => {
+                    return Err(format!(
+                        "audit head copy says '{}', the chain ends at '{count} {prev}': \
+                         truncated or rewritten",
+                        head.trim()
+                    ))
+                }
+                Err(_) if count == 0 => {}
+                Err(_) => return Err(format!("audit head copy {} is missing", copy.display())),
             }
-        } else if count == 0 {
-            return Err("the audit log is empty".into());
+        }
+        Ok((count, prev))
+    }
+
+    /// Checks every link of the chain and the head copy; returns how many
+    /// lines verified. A `chain-reset` anywhere is reported as an error: it
+    /// is permanent evidence that the chain was found broken.
+    pub fn verify_audit(&self) -> Result<usize, String> {
+        let (count, _) = self.check_chain()?;
+        let text = std::fs::read_to_string(self.dir.join("audit.jsonl")).unwrap_or_default();
+        for (i, l) in text.lines().enumerate() {
+            if let Ok(a) = serde_json::from_str::<AuditLine>(l) {
+                if a.event == "chain-reset" {
+                    return Err(format!(
+                        "the chain was reset at line {}: {}",
+                        i + 1,
+                        a.detail
+                    ));
+                }
+            }
         }
         Ok(count)
     }
 }
 
+/// A store-wide lock: a file created with `create_new`, holding the owner's
+/// pid. A lock older than `LOCK_STALE` belongs to a dead process and is
+/// reclaimed.
+struct StoreLock {
+    path: PathBuf,
+}
+
+impl StoreLock {
+    fn acquire(path: &Path) -> Result<Self, String> {
+        let deadline = Instant::now() + LOCK_WAIT;
+        loop {
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(path)
+            {
+                Ok(mut f) => {
+                    let _ = write!(f, "{}", std::process::id());
+                    return Ok(Self {
+                        path: path.to_path_buf(),
+                    });
+                }
+                Err(e)
+                    if e.kind() == std::io::ErrorKind::AlreadyExists
+                        || e.kind() == std::io::ErrorKind::PermissionDenied =>
+                {
+                    let stale = std::fs::metadata(path)
+                        .and_then(|m| m.modified())
+                        .ok()
+                        .and_then(|t| t.elapsed().ok())
+                        .is_some_and(|age| age > LOCK_STALE);
+                    if stale {
+                        let _ = std::fs::remove_file(path);
+                        continue;
+                    }
+                    if Instant::now() >= deadline {
+                        return Err(format!(
+                            "the store is locked by another process ({})",
+                            path.display()
+                        ));
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                Err(e) => return Err(format!("lock {}: {e}", path.display())),
+            }
+        }
+    }
+}
+
+impl Drop for StoreLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+fn live(g: &StoredGrant, now: DateTime<Utc>) -> bool {
+    g.approval.expires_at.is_none_or(|e| e > now)
+}
+
 fn is_refusal(outcome: &str) -> bool {
     matches!(outcome, "denied" | "timed-out")
+}
+
+/// Subjects are compared trimmed and case-folded (review I9).
+pub fn normal_subject(s: &str) -> String {
+    s.trim().to_lowercase()
+}
+
+fn random_id() -> String {
+    let mut id = [0u8; 16];
+    getrandom::fill(&mut id).expect("the OS random source works");
+    hex(&id)
 }
 
 /// What `store.key.check` signs, to tell the right key from a wrong one.
@@ -336,56 +774,93 @@ const KEY_CHECK: &str = "user-request store key check";
 /// The `prev` of the first audit line.
 const GENESIS: &str = "0000000000000000000000000000000000000000000000000000000000000000";
 
-#[derive(Serialize, Deserialize)]
-struct AuditLine {
-    prev: String,
-    at: DateTime<Utc>,
-    event: String,
-    detail: String,
+#[derive(Debug, PartialEq)]
+enum Signed {
+    Missing,
+    Bad,
+    Good {
+        seq: u64,
+        body: Vec<u8>,
+        sha: String,
+    },
 }
 
-fn load_signed<T: Serialize + for<'de> Deserialize<'de>>(
-    path: &Path,
-    key: &[u8],
-) -> (Vec<T>, usize) {
-    let signed: Vec<Signed<T>> = std::fs::read(path)
-        .ok()
-        .and_then(|b| serde_json::from_slice(&b).ok())
-        .unwrap_or_default();
-    let total = signed.len();
-    let good: Vec<T> = signed
-        .into_iter()
-        .filter(|s| !key.is_empty() && mac(key, &s.item) == s.mac)
-        .map(|s| s.item)
-        .collect();
-    let bad = total - good.len();
-    (good, bad)
+/// A signed file: a header line `{"seq":N,"mac":"..."}`, a newline, and the
+/// body. The MAC covers the sequence number and the body's EXACT bytes, so
+/// no re-serialisation can change what was signed (review I8).
+fn read_signed(path: &Path, key: &[u8]) -> Signed {
+    let Ok(bytes) = std::fs::read(path) else {
+        return Signed::Missing;
+    };
+    let Some(nl) = bytes.iter().position(|&b| b == b'\n') else {
+        return Signed::Bad;
+    };
+    let (head, body) = (&bytes[..nl], &bytes[nl + 1..]);
+    let Ok(h) = serde_json::from_slice::<Header>(head) else {
+        return Signed::Bad;
+    };
+    if key.is_empty() || mac(key, &signed_bytes(h.seq, body)) != h.mac {
+        return Signed::Bad;
+    }
+    Signed::Good {
+        seq: h.seq,
+        body: body.to_vec(),
+        sha: sha(&bytes),
+    }
 }
 
-fn save_signed<T: Serialize>(path: &Path, key: &[u8], items: &[T]) -> Result<(), String> {
-    let signed: Vec<Signed<&T>> = items
-        .iter()
-        .map(|i| Signed {
-            item: i,
-            mac: mac(key, i),
-        })
-        .collect();
-    write_atomic(
-        path,
-        &serde_json::to_vec_pretty(&signed).map_err(|e| e.to_string())?,
-    )
+fn write_signed(path: &Path, key: &[u8], seq: u64, body: &[u8]) -> Result<String, String> {
+    let mut bytes = serde_json::to_vec(&Header {
+        seq,
+        mac: mac(key, &signed_bytes(seq, body)),
+    })
+    .map_err(|e| e.to_string())?;
+    bytes.push(b'\n');
+    bytes.extend_from_slice(body);
+    write_atomic(path, &bytes)?;
+    Ok(sha(&bytes))
 }
 
-/// Temp file and rename, so a reader never sees half a file.
+fn signed_bytes(seq: u64, body: &[u8]) -> Vec<u8> {
+    let mut v = format!("seq:{seq}\n").into_bytes();
+    v.extend_from_slice(body);
+    v
+}
+
+/// Moves a file that failed its signature aside instead of dropping it
+/// (review I8); returns its new name.
+fn quarantine(path: &Path) -> String {
+    let to = path.with_extension(format!(
+        "rejected-{}",
+        Utc::now().format("%Y%m%dT%H%M%S%.3f")
+    ));
+    let _ = std::fs::rename(path, &to);
+    to.display().to_string()
+}
+
+fn append(path: &Path, text: &str) -> Result<(), String> {
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .map_err(|e| format!("open {}: {e}", path.display()))?;
+    f.write_all(text.as_bytes()).map_err(|e| e.to_string())
+}
+
+/// A uniquely named temp file and a rename, so neither a reader nor another
+/// writer ever sees half a file (review I1: shared temp names collided).
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    let tmp = path.with_extension("tmp");
+    let tmp = path.with_extension(format!("tmp-{}", random_id()));
     std::fs::write(&tmp, bytes).map_err(|e| format!("write {}: {e}", tmp.display()))?;
-    std::fs::rename(&tmp, path).map_err(|e| format!("rename to {}: {e}", path.display()))
+    std::fs::rename(&tmp, path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        format!("rename to {}: {e}", path.display())
+    })
 }
 
-fn mac<T: Serialize>(key: &[u8], item: &T) -> String {
+fn mac(key: &[u8], bytes: &[u8]) -> String {
     let mut m = <Hmac<Sha256> as KeyInit>::new_from_slice(key).expect("HMAC takes any key length");
-    m.update(&serde_json::to_vec(item).expect("serialisable"));
+    m.update(bytes);
     hex(&m.finalize().into_bytes())
 }
 
@@ -398,424 +873,4 @@ fn sha(bytes: &[u8]) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use chrono::TimeZone;
-    use std::cell::RefCell;
-    use tempfile::tempdir;
-
-    /// Reversible and keyed, so "another key" is testable.
-    struct Xor(u8);
-    impl Protector for Xor {
-        fn protect(&self, p: &[u8]) -> Result<Vec<u8>, String> {
-            Ok(p.iter().map(|b| b ^ self.0).collect())
-        }
-        fn unprotect(&self, b: &[u8]) -> Result<Vec<u8>, String> {
-            Ok(b.iter().map(|x| x ^ self.0).collect())
-        }
-    }
-
-    #[derive(Default)]
-    struct Alerts(RefCell<Vec<String>>);
-    impl Alert for Alerts {
-        fn alert(&self, what: &str) {
-            self.0.borrow_mut().push(what.to_string());
-        }
-    }
-
-    fn t0() -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(2026, 10, 7, 16, 0, 0).unwrap()
-    }
-
-    fn who(role: &str, session: &str) -> Requester {
-        Requester {
-            role: role.into(),
-            session_id: session.into(),
-            claude_pid: 42,
-            claude_start_secs: 1,
-            managed: true,
-        }
-    }
-
-    fn approval(
-        kind: KindId,
-        subject: &str,
-        r: &Requester,
-        expires: Option<DateTime<Utc>>,
-    ) -> Approval {
-        Approval {
-            kind,
-            subject: subject.into(),
-            requester: r.clone(),
-            approved_at: t0(),
-            expires_at: expires,
-        }
-    }
-
-    fn open(dir: &Path) -> Store {
-        Store::open(dir, &Xor(7), Some(dir.join("head.copy"))).unwrap()
-    }
-
-    fn attempt(r: &Requester, subject: &str, outcome: &str, at: DateTime<Utc>) -> Attempt {
-        Attempt {
-            at,
-            requester: r.clone(),
-            kind: KindId::Secret,
-            subject: subject.into(),
-            outcome: outcome.into(),
-        }
-    }
-
-    // -- grants -------------------------------------------------------------
-
-    #[test]
-    fn a_grant_is_found_by_kind_subject_and_scope_until_it_expires() {
-        let d = tempdir().unwrap();
-        let mut s = open(d.path());
-        let a = who("overmind", "s1");
-        s.add(approval(
-            KindId::Secret,
-            "DB",
-            &a,
-            Some(t0() + Duration::hours(1)),
-        ));
-        assert!(s.find(KindId::Secret, "DB", &a, t0()).is_some());
-        assert!(s.find(KindId::Secret, "OTHER", &a, t0()).is_none());
-        assert!(
-            s.find(KindId::Secret, "DB", &who("overmind", "s2"), t0())
-                .is_none(),
-            "a restart voids it"
-        );
-        assert!(
-            s.find(KindId::Secret, "DB", &who("fuel", "s1"), t0())
-                .is_none(),
-            "another lane"
-        );
-        assert!(
-            s.find(KindId::Secret, "DB", &a, t0() + Duration::hours(1))
-                .is_none(),
-            "expired"
-        );
-    }
-
-    #[test]
-    fn an_any_requester_grant_covers_every_lane_and_forever_never_expires() {
-        let d = tempdir().unwrap();
-        let mut s = open(d.path());
-        s.add(approval(
-            KindId::LaneDialogBypass,
-            "trust",
-            &who("pm", "s"),
-            None,
-        ));
-        let later = t0() + Duration::days(3650);
-        assert!(s
-            .find(KindId::LaneDialogBypass, "trust", &who("fuel", "x"), later)
-            .is_some());
-    }
-
-    #[test]
-    fn grants_survive_a_save_and_expired_ones_are_dropped() {
-        let d = tempdir().unwrap();
-        let mut s = open(d.path());
-        let a = who("overmind", "s1");
-        s.add(approval(
-            KindId::Secret,
-            "LIVE",
-            &a,
-            Some(t0() + Duration::hours(1)),
-        ));
-        s.add(approval(
-            KindId::Secret,
-            "OLD",
-            &a,
-            Some(t0() - Duration::seconds(1)),
-        ));
-        s.save(t0()).unwrap();
-        let s = open(d.path());
-        assert_eq!(s.rejected, 0);
-        let subjects: Vec<_> = s
-            .grants
-            .iter()
-            .map(|g| g.approval.subject.as_str())
-            .collect();
-        assert_eq!(subjects, vec!["LIVE"]);
-    }
-
-    #[test]
-    fn ids_are_128_random_bits() {
-        let d = tempdir().unwrap();
-        let mut s = open(d.path());
-        let a = who("o", "s");
-        let x = s.add(approval(KindId::Secret, "A", &a, None));
-        let y = s.add(approval(KindId::Secret, "A", &a, None));
-        assert_eq!(x.len(), 32);
-        assert!(x.chars().all(|c| c.is_ascii_hexdigit()));
-        assert_ne!(x, y);
-    }
-
-    #[test]
-    fn a_tampered_grant_is_ignored_and_counted() {
-        let d = tempdir().unwrap();
-        let mut s = open(d.path());
-        s.add(approval(
-            KindId::Secret,
-            "DB",
-            &who("o", "s"),
-            Some(t0() + Duration::hours(1)),
-        ));
-        s.save(t0()).unwrap();
-        let p = d.path().join("grants.json");
-        let text = std::fs::read_to_string(&p)
-            .unwrap()
-            .replace("\"DB\"", "\"PROD\"");
-        std::fs::write(&p, text).unwrap();
-        let s = open(d.path());
-        assert_eq!((s.grants.len(), s.rejected), (0, 1));
-    }
-
-    #[test]
-    fn a_key_that_does_not_decrypt_reads_nothing() {
-        let d = tempdir().unwrap();
-        let mut s = open(d.path());
-        s.add(approval(KindId::Secret, "DB", &who("o", "s"), None));
-        s.save(t0()).unwrap();
-        let s = Store::open(d.path(), &Xor(9), None).unwrap();
-        assert_eq!((s.grants.len(), s.rejected), (0, 1));
-    }
-
-    /// A store that could not decrypt its key must not overwrite the
-    /// files signed with the real one.
-    #[test]
-    fn a_store_with_an_undecryptable_key_refuses_to_save() {
-        let d = tempdir().unwrap();
-        let mut s = open(d.path());
-        s.add(approval(KindId::Secret, "DB", &who("o", "s"), None));
-        s.save(t0()).unwrap();
-        let wrong = Store::open(d.path(), &Xor(9), None).unwrap();
-        assert!(wrong.save(t0()).is_err());
-        assert_eq!(
-            open(d.path()).grants.len(),
-            1,
-            "the real grants were overwritten"
-        );
-    }
-
-    #[test]
-    fn revoke_and_revoke_all_persist() {
-        let d = tempdir().unwrap();
-        let mut s = open(d.path());
-        let a = who("o", "s");
-        let x = s.add(approval(KindId::Secret, "A", &a, None));
-        s.add(approval(KindId::Secret, "B", &a, None));
-        s.add(approval(KindId::Secret, "C", &a, None));
-        assert!(s.revoke(&x));
-        assert!(!s.revoke(&x), "already gone");
-        s.save(t0()).unwrap();
-        let mut s = open(d.path());
-        assert_eq!(s.grants.len(), 2);
-        assert_eq!(s.revoke_all(), 2);
-        s.save(t0()).unwrap();
-        assert!(open(d.path()).grants.is_empty());
-    }
-
-    #[test]
-    fn active_lists_only_unexpired_grants() {
-        let d = tempdir().unwrap();
-        let mut s = open(d.path());
-        let a = who("o", "s");
-        s.add(approval(
-            KindId::Secret,
-            "A",
-            &a,
-            Some(t0() + Duration::minutes(1)),
-        ));
-        s.add(approval(KindId::Secret, "B", &a, Some(t0())));
-        s.add(approval(KindId::LaneDialogBypass, "C", &a, None));
-        let mut subjects: Vec<_> = s
-            .active(t0())
-            .iter()
-            .map(|g| g.approval.subject.clone())
-            .collect();
-        subjects.sort();
-        assert_eq!(subjects, vec!["A", "C"]);
-    }
-
-    // -- the prompt gate (audit row 1) ---------------------------------------
-
-    #[test]
-    fn after_a_denial_the_same_role_and_subject_cool_down() {
-        let d = tempdir().unwrap();
-        let mut s = open(d.path());
-        let a = who("o", "s1");
-        s.record(attempt(&a, "DB", "denied", t0()), &AuditOnly);
-        let restarted = who("o", "s2");
-        assert!(
-            s.may_ask(&restarted, "DB", t0() + Duration::minutes(9), &AuditOnly)
-                .is_err(),
-            "a restart reset it"
-        );
-        assert!(s
-            .may_ask(&a, "OTHER", t0() + Duration::minutes(1), &AuditOnly)
-            .is_ok());
-        assert!(s
-            .may_ask(
-                &who("fuel", "x"),
-                "DB",
-                t0() + Duration::minutes(1),
-                &AuditOnly
-            )
-            .is_ok());
-        assert!(s
-            .may_ask(&a, "DB", t0() + DENIAL_COOLDOWN, &AuditOnly)
-            .is_ok());
-    }
-
-    #[test]
-    fn a_timeout_cools_down_too_but_an_approval_does_not() {
-        let d = tempdir().unwrap();
-        let mut s = open(d.path());
-        let a = who("o", "s1");
-        s.record(attempt(&a, "X", "timed-out", t0()), &AuditOnly);
-        s.record(attempt(&a, "Y", "approved", t0()), &AuditOnly);
-        assert!(s
-            .may_ask(&a, "X", t0() + Duration::minutes(1), &AuditOnly)
-            .is_err());
-        assert!(s
-            .may_ask(&a, "Y", t0() + Duration::minutes(1), &AuditOnly)
-            .is_ok());
-    }
-
-    #[test]
-    fn a_role_is_capped_per_rolling_hour_and_the_cap_alerts() {
-        let d = tempdir().unwrap();
-        let mut s = open(d.path());
-        let a = who("o", "s1");
-        for i in 0..PROMPTS_PER_HOUR {
-            s.record(
-                attempt(
-                    &a,
-                    &format!("S{i}"),
-                    "approved",
-                    t0() + Duration::minutes(i as i64),
-                ),
-                &AuditOnly,
-            );
-        }
-        let alerts = Alerts::default();
-        let at = t0() + Duration::minutes(30);
-        assert!(s.may_ask(&a, "NEW", at, &alerts).is_err());
-        assert_eq!(alerts.0.borrow().len(), 1, "the cap must alert");
-        assert!(
-            s.may_ask(&who("fuel", "x"), "NEW", at, &AuditOnly).is_ok(),
-            "another role"
-        );
-        assert!(
-            s.may_ask(&a, "NEW", t0() + Duration::minutes(60), &AuditOnly)
-                .is_ok(),
-            "the first one aged out"
-        );
-    }
-
-    #[test]
-    fn repeated_denials_alert() {
-        let d = tempdir().unwrap();
-        let mut s = open(d.path());
-        let a = who("o", "s1");
-        let alerts = Alerts::default();
-        for i in 0..DENIALS_BEFORE_ALERT {
-            assert!(alerts.0.borrow().is_empty(), "alerted early at {i}");
-            s.record(
-                attempt(
-                    &a,
-                    &format!("S{i}"),
-                    "denied",
-                    t0() + Duration::minutes(i as i64),
-                ),
-                &alerts,
-            );
-        }
-        assert_eq!(alerts.0.borrow().len(), 1);
-    }
-
-    #[test]
-    fn attempts_survive_a_restart_of_the_tool_and_a_forged_one_is_ignored() {
-        let d = tempdir().unwrap();
-        let mut s = open(d.path());
-        let a = who("o", "s1");
-        s.record(attempt(&a, "DB", "denied", t0()), &AuditOnly);
-        s.save(t0()).unwrap();
-        let s2 = open(d.path());
-        assert!(s2
-            .may_ask(&a, "DB", t0() + Duration::minutes(1), &AuditOnly)
-            .is_err());
-        let p = d.path().join("attempts.json");
-        let text = std::fs::read_to_string(&p)
-            .unwrap()
-            .replace("denied", "approved");
-        std::fs::write(&p, text).unwrap();
-        let s3 = open(d.path());
-        assert_eq!(s3.rejected, 1);
-    }
-
-    // -- the audit chain (audit row 13, PM condition (d)) --------------------
-
-    fn three_events(d: &Path) -> Store {
-        let s = open(d);
-        for (i, e) in ["granted", "denied", "revoked"].iter().enumerate() {
-            s.audit(
-                t0() + Duration::minutes(i as i64),
-                e,
-                &format!("detail {i}"),
-            )
-            .unwrap();
-        }
-        s
-    }
-
-    #[test]
-    fn an_intact_chain_verifies() {
-        let d = tempdir().unwrap();
-        assert_eq!(three_events(d.path()).verify_audit(), Ok(3));
-    }
-
-    #[test]
-    fn an_edited_line_breaks_the_chain_at_the_next_line() {
-        let d = tempdir().unwrap();
-        let s = three_events(d.path());
-        let p = d.path().join("audit.jsonl");
-        let text = std::fs::read_to_string(&p)
-            .unwrap()
-            .replace("detail 1", "detail X");
-        std::fs::write(&p, text).unwrap();
-        let err = s.verify_audit().unwrap_err();
-        assert!(err.contains("line 3"), "{err}");
-    }
-
-    #[test]
-    fn truncating_the_chain_disagrees_with_the_head_copy() {
-        let d = tempdir().unwrap();
-        let s = three_events(d.path());
-        let p = d.path().join("audit.jsonl");
-        let text = std::fs::read_to_string(&p).unwrap();
-        let kept: Vec<&str> = text.lines().take(2).collect();
-        std::fs::write(&p, kept.join("\n") + "\n").unwrap();
-        assert!(s.verify_audit().unwrap_err().contains("head copy"));
-    }
-
-    #[test]
-    fn deleting_the_whole_chain_is_detected() {
-        let d = tempdir().unwrap();
-        let s = three_events(d.path());
-        std::fs::remove_file(d.path().join("audit.jsonl")).unwrap();
-        assert!(s.verify_audit().is_err());
-    }
-
-    #[test]
-    fn a_missing_head_copy_is_reported() {
-        let d = tempdir().unwrap();
-        let s = three_events(d.path());
-        std::fs::remove_file(d.path().join("head.copy")).unwrap();
-        assert!(s.verify_audit().unwrap_err().contains("head copy"));
-    }
-}
+mod tests;

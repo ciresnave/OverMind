@@ -2,7 +2,7 @@
 //! `user-request list | revoke <id> | revoke --all | audit verify`.
 //!
 //! Revoking needs no Windows Hello: it only removes privilege (PM condition
-//! (c)). Every revocation is written to the audit log.
+//! (c)). Every revocation is written to the audit log before it is saved.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -13,40 +13,56 @@ use user_request::store::Store;
 
 const ENTROPY: &[u8] = b"overmind.user-request.v1";
 
-/// ⚠️ TEST-ONLY overrides: pointing them elsewhere reaches an empty store,
-/// not anyone else's grants.
+/// ⚠️ The overrides exist for this crate's tests and only in debug builds
+/// (review M4): a leaked variable must never point the panic button at
+/// another store.
+fn env_override(name: &str) -> Option<PathBuf> {
+    if cfg!(debug_assertions) {
+        std::env::var_os(name).map(PathBuf::from)
+    } else {
+        None
+    }
+}
+
 fn dir() -> Result<PathBuf, String> {
-    if let Some(d) = std::env::var_os("USER_REQUEST_DIR") {
-        return Ok(d.into());
+    if let Some(d) = env_override("USER_REQUEST_DIR") {
+        return Ok(d);
     }
     let base = std::env::var_os("LOCALAPPDATA").ok_or("LOCALAPPDATA is not set")?;
     Ok(PathBuf::from(base).join("OverMind").join("user-request"))
 }
 
 fn head_copy() -> PathBuf {
-    std::env::var_os("USER_REQUEST_HEAD")
-        .map(PathBuf::from)
+    env_override("USER_REQUEST_HEAD")
         .unwrap_or_else(|| PathBuf::from("C:/Projects/.lane-state/user-request-audit.head"))
 }
 
-fn open() -> Result<Store, String> {
-    let s = Store::open(&dir()?, &Dpapi { entropy: ENTROPY }, Some(head_copy()))?;
-    if s.rejected > 0 {
-        eprintln!(
-            "user-request: ignored {} entr(y/ies) whose signature did not verify",
-            s.rejected
-        );
+/// The store, or `None` when there is none yet. Says which store it is and
+/// whether it can be trusted.
+fn open() -> Result<Option<Store>, String> {
+    let dir = dir()?;
+    eprintln!("user-request: store {}", dir.display());
+    let s = Store::open_existing(&dir, &Dpapi { entropy: ENTROPY }, Some(head_copy()))?;
+    if let Some(Err(why)) = s.as_ref().map(Store::trustworthy) {
+        eprintln!("user-request: ⚠️ {why}");
     }
     Ok(s)
 }
 
 fn list() -> Result<u8, String> {
     let now = Utc::now();
-    let s = open()?;
+    let Some(s) = open()? else {
+        println!("no store yet: nothing has been granted");
+        return Ok(0);
+    };
+    let untrusted = s.trustworthy().is_err();
     let active = s.active(now);
     if active.is_empty() {
         println!("no active grants");
-        return Ok(0);
+        return Ok(u8::from(untrusted));
+    }
+    if untrusted {
+        println!("*** THE STORE CANNOT BE TRUSTED: none of these is honoured until it is ***");
     }
     // FOREVER grants first, loud (PM condition (a))
     let (forever, timed): (Vec<_>, Vec<_>) = active
@@ -77,30 +93,37 @@ fn list() -> Result<u8, String> {
             g.id, a.kind, a.subject, a.requester.role
         );
     }
-    Ok(0)
+    Ok(u8::from(untrusted))
 }
 
 fn revoke(target: &str) -> Result<u8, String> {
     let now = Utc::now();
-    let mut s = open()?;
+    let Some(mut s) = open()? else {
+        return Err("no store yet: nothing to revoke".into());
+    };
     if target == "--all" {
         let n = s.revoke_all();
-        s.save(now)?;
         s.audit(now, "revoked-all", &format!("{n} grant(s)"))?;
+        s.save(now)?;
         println!("revoked {n} grant(s)");
         return Ok(0);
     }
     if !s.revoke(target) {
-        return Err(format!("no grant with id {target}"));
+        return Err(format!("no active grant with id {target}"));
     }
-    s.save(now)?;
     s.audit(now, "revoked", target)?;
+    s.save(now)?;
     println!("revoked {target}");
     Ok(0)
 }
 
 fn verify() -> Result<u8, String> {
-    let n = open()?.verify_audit()?;
+    let Some(s) = open()? else {
+        println!("no store yet: no audit log to verify");
+        return Ok(0);
+    };
+    let n = s.verify_audit()?;
+    s.trustworthy()?;
     println!("audit chain intact: {n} line(s), head copy agrees");
     Ok(0)
 }

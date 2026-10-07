@@ -75,7 +75,12 @@ fn revoke_removes_one_and_the_audit_chain_records_it() {
     assert!(!out.contains(&forever) && out.contains(&timed), "{out}");
     let (code, out, err) = run(d.path(), &["audit", "verify"]);
     assert_eq!(code, 0, "{err}");
-    assert!(out.contains("1 line"), "{out}");
+    assert!(out.contains("audit chain intact"), "{out}");
+    let log = std::fs::read_to_string(d.path().join("audit.jsonl")).unwrap();
+    assert!(
+        log.contains(&format!("\"detail\":\"{forever}\"")) && log.contains("\"revoked\""),
+        "{log}"
+    );
 }
 
 #[test]
@@ -85,6 +90,8 @@ fn revoke_all_is_the_panic_button() {
     let (code, out, _) = run(d.path(), &["revoke", "--all"]);
     assert_eq!((code, out.trim()), (0, "revoked 2 grant(s)"));
     assert!(run(d.path(), &["list"]).1.contains("no active grants"));
+    let log = std::fs::read_to_string(d.path().join("audit.jsonl")).unwrap();
+    assert!(log.contains("\"revoked-all\""), "{log}");
 }
 
 #[test]
@@ -112,4 +119,18 @@ fn a_truncated_audit_log_fails_verify() {
     let (code, _, err) = run(d.path(), &["audit", "verify"]);
     assert_eq!(code, 1);
     assert!(err.contains("head copy"), "{err}");
+}
+
+#[test]
+fn read_only_commands_never_create_a_store() {
+    let d = tempfile::tempdir().unwrap();
+    let dir = d.path().join("none");
+    let (code, out, err) = run(&dir, &["list"]);
+    assert_eq!(code, 0);
+    assert!(
+        out.contains("no store yet") && err.contains("store "),
+        "{out} {err}"
+    );
+    assert_eq!(run(&dir, &["audit", "verify"]).0, 0);
+    assert!(!dir.exists());
 }

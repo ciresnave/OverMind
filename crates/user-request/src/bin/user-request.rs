@@ -173,8 +173,14 @@ fn verify() -> Result<u8, String> {
     };
     let report = s.verify_audit()?;
     s.trustworthy()?;
+    let head = match report.head_behind {
+        0 => "head copy agrees".to_string(),
+        n => format!(
+            "head copy {n} line(s) behind (it could not be updated; the next change catches it up)"
+        ),
+    };
     println!(
-        "audit chain intact: {} line(s) checked of {}, head copy agrees",
+        "audit chain intact: {} line(s) checked of {}, {head}",
         report.checked, report.lines
     );
     if report.repaired_resets > 0 {

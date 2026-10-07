@@ -1569,7 +1569,7 @@ fn an_approval_dated_outside_its_reservation_is_refused() {
     let mut s = open(d.path());
     let r = reserve(&mut s, &a, "DB", mins(10));
     for at in [
-        mins(10) - CLOCK_SKEW - Duration::seconds(1),
+        mins(10) - Duration::seconds(1),
         mins(11) + Duration::days(30),
     ] {
         let mut ap = approval(KindId::Secret, "DB", &a, Some(at + Duration::minutes(30)));
@@ -1879,4 +1879,89 @@ fn an_undone_resolve_keeps_its_alert() {
         .attempts
         .iter()
         .any(|x| x.outcome == Ended::Alerted && x.requester.role == "o"));
+}
+
+// -- round 6 (the review of 18ea704) -------------------------------------------
+
+/// Review 6, m-1: an approval given before a revocation cannot make a
+/// grant for a later reservation.
+#[test]
+fn an_earlier_approval_cannot_bring_back_a_revoked_grant() {
+    let d = tempdir().unwrap();
+    let a = who("o", "s");
+    let mut s = open(d.path());
+    let r1 = reserve(&mut s, &a, "DB", t0());
+    let first = answer("approved", &a, "DB");
+    let g = s
+        .resolve_at(&r1, &first, t0(), &AuditOnly)
+        .unwrap()
+        .unwrap();
+    s.revoke_at(&g, mins(1)).unwrap();
+    let r2 = reserve(&mut s, &a, "DB", mins(1));
+    assert!(s.resolve_at(&r2, &first, mins(1), &AuditOnly).is_err());
+    assert!(s.find_at(KindId::Secret, "db", &a, mins(1)).is_none());
+}
+
+/// Review 6, m-3: a revocation lands even when the prompts file cannot be
+/// written.
+#[test]
+fn a_revocation_lands_when_the_prompts_file_cannot_be_written() {
+    let d = tempdir().unwrap();
+    let a = who("o", "s");
+    let mut s = open(d.path());
+    let g = add(&mut s, approval(KindId::Secret, "A", &a, Some(mins(60))));
+    let p = d.path().join("attempts.json");
+    let old = std::fs::read(&p).unwrap();
+    std::fs::remove_file(&p).unwrap();
+    std::fs::create_dir(&p).unwrap();
+    assert!(
+        s.revoke_at(&g, t0()).is_err(),
+        "the failure is still reported"
+    );
+    drop(s);
+    std::fs::remove_dir(&p).unwrap();
+    std::fs::write(&p, old).unwrap();
+    let s = open(d.path());
+    assert_eq!(s.untrusted, None, "{:?}", s.untrusted);
+    assert!(
+        s.find_at(KindId::Secret, "A", &a, t0()).is_none(),
+        "the revocation did not land"
+    );
+}
+
+/// Review 6, m-4: once both files landed, a closing line that fails does
+/// not make the caller believe the grant failed (and resolve it again).
+#[test]
+fn a_grant_that_landed_is_reported_as_landed() {
+    let d = tempdir().unwrap();
+    let a = who("o", "s");
+    let mut s = open(d.path());
+    let r = reserve(&mut s, &a, "DB", t0());
+    fault::FAIL_SAVED_LINE.with(|f| f.set(true));
+    let got = s.resolve_at(&r, &answer("approved", &a, "DB"), t0(), &AuditOnly);
+    fault::FAIL_SAVED_LINE.with(|f| f.set(false));
+    let g = got.unwrap().unwrap();
+    assert!(audit_text(d.path()).contains("saved line: injected"));
+    drop(s);
+    let s = open(d.path());
+    assert_eq!(s.untrusted, None, "{:?}", s.untrusted);
+    assert_eq!(
+        s.find_at(KindId::Secret, "db", &a, t0())
+            .map(|x| x.id.clone()),
+        Some(g)
+    );
+}
+
+/// Review 6, m-5: `audit verify` says when the head copy lags.
+#[test]
+fn verify_reports_a_lagging_head_copy() {
+    let d = tempdir().unwrap();
+    let mut s = three_events(d.path());
+    assert_eq!(s.verify_audit().unwrap().head_behind, 0);
+    let head = d.path().join("head.copy");
+    let stale = std::fs::read(&head).unwrap();
+    s.audit(mins(5), "granted", "x").unwrap();
+    s.audit(mins(6), "granted", "y").unwrap();
+    std::fs::write(&head, stale).unwrap();
+    assert_eq!(s.verify_audit().unwrap().head_behind, 2);
 }

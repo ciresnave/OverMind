@@ -65,8 +65,9 @@ Every call that changes the store saves before it returns.
 
 - A grant is made only by resolving a reservation with an approval for it, and only within its
   kind's maximum. In production the approval is the channel's.
-  - The approval's time must lie between its reservation and now, allowing 2 minutes for a clock
-    stepped back by an NTP correction.
+  - The approval's time must lie between its reservation and now. A clock stepped back costs one
+    more prompt. Allowing it would let an approval given before a revocation make a grant after
+    it.
   - No caller can add a grant, clear a tombstone or clear the untrusted flag directly.
   - ⚠️ `Approval` has public fields, so code inside a process can build one itself and skip the
     person. The gate, the maximum and the reservation still apply. That is the deliberate-process
@@ -75,8 +76,11 @@ Every call that changes the store saves before it returns.
   gate window is judged.
 - Each save records the files' hashes before writing them, and records its completion after. A save
   cut short between the two files (a crash, a held file) is still recognised.
-- The prompts file is written before the grants file. A resolve cut short between them ends the
-  prompt with no grant: the person asks again. It never leaves a grant whose prompt is still open.
+- The write order depends on the operation, so a save cut short between the two files is safe:
+  - **Approving:** the prompts file is written first. A cut-short approval ends the prompt with no
+    grant, and the person is asked again. It never leaves a grant whose prompt is still open.
+  - **Revoking or repairing:** the grants file is written first, so a revocation lands even if the
+    prompts file cannot be written.
 - A file that is briefly unreadable (an antivirus scan, a backup) is retried for 2 seconds. If it
   stays unreadable, opening fails with "try again", and nothing is concluded or recorded from it.
   That includes the head copy, which a backup or sync tool may hold.
@@ -88,7 +92,8 @@ Every call that changes the store saves before it returns.
   - the files must be the ones the last save recorded;
   - no integrity problem may be on record since the last repair.
 - These checks catch a file that was deleted, rolled back, edited or copied in, and a whole folder
-  put back from a backup. Any of them makes the store **untrustworthy**, and the gate raises an
+  put back from a backup. ⚠️ While the head copy lags (see below), a folder put back to a point
+  after the copy's line is not caught. Any of these findings makes the store **untrustworthy**, and the gate raises an
   alert, once per role per hour. Under an untrusted key nothing can be recorded, so that alert
   goes to the sink on every refused prompt.
 - A chain found broken while the store is open untrusts it at once.

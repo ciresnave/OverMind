@@ -89,9 +89,6 @@ pub const GATE_CLOSED_AFTER_REPAIR: Duration = Duration::hours(1);
 /// A reservation older than this can no longer be resolved: no channel
 /// waits that long (Hello waits at most 9 minutes).
 pub const RESERVATION_TTL: Duration = Duration::minutes(15);
-/// How far the clock may step back between a reservation and its approval
-/// (an NTP correction after resume) before the approval is refused.
-pub const CLOCK_SKEW: Duration = Duration::minutes(2);
 /// How long `open` waits for another process's lock before giving up.
 pub const LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
 /// How long a read or rename that fails (a file briefly held by an
@@ -185,6 +182,8 @@ pub struct AuditReport {
     pub checked: usize,
     /// Chain resets that a later repair acknowledged.
     pub repaired_resets: usize,
+    /// How many lines the head copy is behind the log (0: it agrees).
+    pub head_behind: usize,
 }
 
 /// What `repair` did.
@@ -562,6 +561,16 @@ impl Store {
     /// untrusted may save (that is how a revocation lands) but stays
     /// untrusted: only `repair` restores trust.
     pub(crate) fn save(&mut self, now: DateTime<Utc>) -> Result<(), String> {
+        self.save_ordered(now, false)
+    }
+
+    /// `save`, with the files written in the order that keeps a save cut
+    /// short between them safe for this operation (review 6, m-3): grants
+    /// first where privilege is REMOVED (a revocation lands even if the
+    /// prompts file cannot be written), prompts first where it is ADDED (an
+    /// approval never leaves a grant whose prompt is still open, review 5,
+    /// I-1).
+    fn save_ordered(&mut self, now: DateTime<Utc>, attempts_first: bool) -> Result<(), String> {
         self.writable()?;
         if let Some(Untrusted::Key(why)) = &self.untrusted {
             return Err(format!("refusing to save: {why}"));
@@ -598,13 +607,27 @@ impl Store {
             sha(&abytes)
         );
         self.audit(now, "saving", &hashes)?;
-        // attempts first (review 5, I-1): a save cut short between the two
-        // files may leave an attempt ended with no grant (the person asks
-        // again), never a grant whose reservation is still open
-        let written = write_atomic(&self.dir.join("attempts.json"), &abytes)
-            .and_then(|()| write_atomic(&self.dir.join("grants.json"), &gbytes));
+        let (g, a) = (self.dir.join("grants.json"), self.dir.join("attempts.json"));
+        let written = if attempts_first {
+            write_atomic(&a, &abytes).and_then(|()| write_atomic(&g, &gbytes))
+        } else {
+            write_atomic(&g, &gbytes).and_then(|()| write_atomic(&a, &abytes))
+        };
         match written {
-            Ok(()) => self.audit(now, "saved", &hashes),
+            // both files landed, and the `saving` line already anchors
+            // them: a closing line that cannot be written does not make the
+            // caller believe it failed (review 6, m-4)
+            Ok(()) => {
+                let closed = if fault::fail_saved_line() {
+                    Err("injected".to_string())
+                } else {
+                    self.audit(now, "saved", &hashes)
+                };
+                if let Err(e) = closed {
+                    let _ = self.audit(now, "save-failed", &format!("saved line: {e}"));
+                }
+                Ok(())
+            }
             Err(e) => {
                 // so an audited change that did not land says so (review M-a)
                 let _ = self.audit(now, "save-failed", &e);
@@ -1057,7 +1080,10 @@ impl Store {
                 }
                 // the kind's maximum is judged from `approved_at`, so it must
                 // be a time between the reservation and now (review 4, I-B)
-                if ap.approved_at < a.at - CLOCK_SKEW || ap.approved_at > now {
+                // no allowance for a clock stepped back (review 6, m-1): it
+                // would let an approval given before a revocation make a
+                // grant after it; a stepped-back clock costs one more prompt
+                if ap.approved_at < a.at || ap.approved_at > now {
                     return Err(format!(
                         "the approval says it was given at {}, outside its reservation \
                          ({} to {now})",
@@ -1109,7 +1135,7 @@ impl Store {
                 self.alert_once(&role, "refusals", &what, now, alert)?;
             }
         }
-        self.save(now)?;
+        self.save_ordered(now, true)?;
         Ok(grant)
     }
 
@@ -1307,10 +1333,20 @@ impl Store {
                 ));
             }
         }
+        let head_behind = self
+            .head_copy
+            .as_ref()
+            .and_then(|c| read_retry(c).ok())
+            .and_then(|b| {
+                let text = String::from_utf8_lossy(&b).into_owned();
+                text.split_whitespace().next()?.parse::<usize>().ok()
+            })
+            .map_or(0, |n| lines.saturating_sub(n));
         Ok(AuditReport {
             lines,
             checked,
             repaired_resets,
+            head_behind,
         })
     }
 }
@@ -1641,6 +1677,23 @@ fn hex(bytes: &[u8]) -> String {
 
 fn sha(bytes: &[u8]) -> String {
     hex(&Sha256::digest(bytes))
+}
+
+/// A fault the tests inject where nothing outside can reach: the closing
+/// `saved` line failing after both files landed. Per thread, so tests
+/// running in parallel never see each other's.
+mod fault {
+    #[cfg(test)]
+    thread_local! {
+        pub(super) static FAIL_SAVED_LINE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    pub(super) fn fail_saved_line() -> bool {
+        #[cfg(test)]
+        return FAIL_SAVED_LINE.with(|f| f.get());
+        #[cfg(not(test))]
+        false
+    }
 }
 
 #[cfg(test)]

@@ -1,6 +1,6 @@
 # OverMind architecture: layers and spin-outs (spec, NOT implementation)
 
-**Status: proposed, approval pending: board item 143.** Nothing in it is approved, and no code moves until CireSnave rules. Asked for by the PM on
+**Status: APPROVED 2026-10-08 (board item 143); the rulings are in §8a and they override §5.2 and §8 where they differ.** Asked for by the PM on
 2026-10-07, for CireSnave. His words (verbatim, relayed by the PM):
 
 - *"Grab bag programs are bugs waiting to happen."*
@@ -529,6 +529,35 @@ ASSUMED):
    Code hooks) exists.
 7. **Language.** gate.py says the language is open (gate.py:30-32, DESIGN-PROPOSAL.md §5). *Recommend
    no change* as part of this split: move first, port later if ever.
+
+## 8a. Rulings (2026-10-08, board item 143)
+
+CireSnave's answers, verbatim as relayed by the PM, to §8's seven questions:
+
+> *"1) agentlife...but it should be a wrapper over a lane-stop, and a lane-start tool with some additional code. 2) I'm fine with either one or two crates. Use your best judgement there. 3) Keep the higher version number from either each piece's source or destination. 4) This isn't a question so I'm not sure how to answer it. If you're requesting my approval, sure. 5) Acceptable for now. 6) Again, not a question but if you're looking for my approval, sure. 7) Third time, not a question but if you're looking for my approval, sure...with the caveat that if they're not currently Rust, we should add porting them to Rust to our eventual roadmap."*
+
+The PM's rulings that apply them:
+
+1. **lane-restart goes to agentlife** as a thin wrapper over **two** tools, `lane-stop` and `lane-start`, plus the additional code (§8b).
+2. **user-request and with-secret: ONE repository, TWO crates.** One release, one version, installed together; each stays its own crate.
+3. **Each moved piece keeps the HIGHER of its source and destination version numbers.** The version still changes with the move.
+4. The six Python-importing probes **stay with OverMind**.
+5. "What loaded" for a Claude Code lane stays labelled **unverified**.
+6. Harness and model adapter are **one program** with a small versioned boundary.
+7. **No language change now.** Every piece that is not Rust today goes on the roadmap for porting. Not Rust today: `tools/*.py`, `probe/` (Python, one shell script, two TypeScript files), and the whole Python OverMind (`src/overmind`, `tests/`, `examples/`). The Rust pieces are the three crates and `lane-state`.
+
+**Publish clearance.** No path or git dependencies across repos; published versions only. Publishing `lane-state` needs CireSnave's clearance, asked of the PM when step 4 of §5.4 is reached.
+
+## 8b. lane-restart as a wrapper over `lane-stop` and `lane-start` (design, per ruling 1)
+
+- **Today** `lane-restart` is one binary that stops a lane, then relaunches it (`mod relaunch`, `crates/lane-restart/src/main.rs:730`).
+- **Target** is two tools, each useful alone:
+  - `lane-stop`: stop one lane (the kill, the wait, and the check that it is gone);
+  - `lane-start`: launch one lane and wait until it is alive. This is agentlife's `launch_and_wait` (§5.4 step 2), a launch without the kill, driven by a `LaunchSpec` and `LivenessTiming`.
+- **`lane-restart`** is the "additional code": stop, then start, plus what only a restart needs (`assert-idle`, `--self`, the HANDOFF check, the restart log). It calls the two tools' library entry points, not copies of them.
+- **Constraints (unchanged from §5.3).** The installed `lane-restart.exe`'s name, location and command line do not change. The move commit changes no behaviour (same tests before and after, same `describe_dry_run` output). Hooks fail open.
+- **Order.** The split into the two tools happens in the library, in place (Phase 1), before the move to agentlife. Each tool gets its own tests first.
+- **Not yet measured:** where `relaunch`'s stop and start halves divide in `main.rs:730` onward. Phase 1's plan reads it first and fixes the seam from the code, not from this paragraph.
 
 ## 9. Phased plan
 

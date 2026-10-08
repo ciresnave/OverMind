@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/lane-restart", "crates/user-request", "crates/with-secret"]
+members = ["crates/lane-restart", "crates/lane-state", "crates/user-request", "crates/with-secret"]
 
 # ⚠️ ONE VERSION NUMBER PER PROJECT (CIRESNAVE-EXPECTATIONS.md §2.2). OverMind's
 # Python package and every crate here share pyproject.toml's version - keep

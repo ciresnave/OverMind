@@ -6,7 +6,13 @@ members = ["crates/lane-restart", "crates/lane-state", "crates/user-request", "c
 # Python package and every crate here share pyproject.toml's version - keep
 # them in lockstep by hand until something automates it.
 [workspace.package]
-version = "0.11.0"
+version = "0.11.1"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/ciresnave/OverMind"
+
+# `lane-state` is published to crates.io, so its dependents name it by VERSION
+# as well as by workspace path (cargo drops the path when it packages them).
+# One place to keep in step with `[workspace.package] version` above.
+[workspace.dependencies]
+lane-state = { version = "0.11.1", path = "crates/lane-state" }

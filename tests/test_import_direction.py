@@ -77,5 +77,63 @@ class TestExtractor(unittest.TestCase):
         self.assertEqual(overmind_imports(src, "agent"), set())
 
 
+# (importer, imported) at origin/main cbeaba6, measured 2026-10-08 with this
+# file's own extractor. Phase 0 changes nothing: a new edge fails until it is
+# added here on purpose, in review. Later phases move this toward spec §1.
+ALLOWED: frozenset[tuple[str, str]] = frozenset({
+    ("agent", "fork"),          # agent.py:50 (TYPE_CHECKING), :280 (lazy, inside run_agent)
+    ("agent", "gate"),          # agent.py:46
+    ("agent", "providers"),     # agent.py:47
+    ("dispatch", "agent"),      # dispatch.py:37
+    ("dispatch", "gate"),       # dispatch.py:38
+    ("dispatch_mcp", "lanework"),    # dispatch_mcp.py:57
+    ("dispatch_mcp", "ledger"),      # dispatch_mcp.py:56 (`from . import ledger`)
+    ("dispatch_mcp", "quota"),       # dispatch_mcp.py:58
+    ("dispatch_mcp", "repo_probe"),  # dispatch_mcp.py:59
+    ("fork", "agent"),          # fork.py:23 (with agent->fork: today's one cycle)
+    ("fork", "gate"),           # fork.py:24
+    ("fork", "providers"),      # fork.py:26
+    ("lanework", "agent"),      # lanework.py:63
+    ("lanework", "gate"),       # lanework.py:64
+    ("lanework", "outcome"),    # lanework.py:68
+    ("lanework", "providers"),  # lanework.py:69
+    ("lanework", "quota"),      # lanework.py:70
+    ("providers", "quota"),     # providers.py:61
+})
+
+# The modules this test knows. A new module must be added here AND its edges
+# reviewed into ALLOWED; otherwise the control below fails, naming it.
+MODULES: frozenset[str] = frozenset({
+    "agent", "dispatch", "dispatch_mcp", "fork", "gate", "lanework",
+    "ledger", "mcp_tools", "outcome", "providers", "quota", "repo_probe",
+})
+
+
+def actual_edges() -> set[tuple[str, str]]:
+    edges: set[tuple[str, str]] = set()
+    for path in sorted(SRC.glob("*.py")):
+        own = path.stem
+        for imported in overmind_imports(path.read_text(encoding="utf-8"), own):
+            edges.add((own, imported))
+    return edges
+
+
+class TestImportDirection(unittest.TestCase):
+    def test_the_module_set_is_the_known_one(self):
+        """Positive control: an empty or moved src/overmind would give zero
+        edges and an empty set equal to an empty ALLOWED. This fails instead."""
+        found = {p.stem for p in SRC.glob("*.py")}
+        self.assertEqual(found, set(MODULES),
+                         f"new: {sorted(found - MODULES)}, gone: {sorted(MODULES - found)}")
+
+    def test_no_import_edge_outside_the_allow_list(self):
+        actual = actual_edges()
+        self.assertTrue(actual, "no edges found at all: the extractor or SRC is wrong")
+        new = sorted(actual - ALLOWED)
+        gone = sorted(ALLOWED - actual)
+        self.assertEqual(new, [], f"import edges not on the allow-list: {new}")
+        self.assertEqual(gone, [], f"allowed edges that no longer exist (remove them): {gone}")
+
+
 if __name__ == "__main__":
     unittest.main()

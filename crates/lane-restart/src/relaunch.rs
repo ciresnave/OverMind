@@ -9,6 +9,7 @@
 use crate::facts::{KillError, ProcessIdentity, SystemFacts};
 use crate::launch::{
     launch_argv, prepare_launch, wait_for_liveness, LaunchSpec, LivenessTiming, PreparedLaunch,
+    SpawnFn,
 };
 use crate::state::LaneState;
 use crate::stop::stop_lane;
@@ -595,7 +596,7 @@ pub fn kill_and_relaunch_with(
     identity: &ProcessIdentity,
     policy_default: &str,
     allow_opus: bool,
-    spawn: &dyn Fn(&LaunchSpec, &[String]) -> Result<(), RelaunchError>,
+    spawn: &SpawnFn,
     sleep: &mut dyn FnMut(std::time::Duration),
     on_awaiting: &mut dyn FnMut(),
 ) -> Result<RelaunchOutcome, RelaunchError> {

@@ -42,6 +42,10 @@ impl From<&LaneState> for LaunchSpec {
     }
 }
 
+/// How a launch is spawned: given the spec and the argv, start the lane's
+/// window. The real one is `relaunch::spawn_launch`; tests pass a recorder.
+pub type SpawnFn = dyn Fn(&LaunchSpec, &[String]) -> Result<(), RelaunchError>;
+
 /// A launch that passed every check and is ready to spawn.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PreparedLaunch {
@@ -223,7 +227,7 @@ pub fn launch_and_wait_with(
     timing: &LivenessTiming,
     policy_default: &str,
     allow_opus: bool,
-    spawn: &dyn Fn(&LaunchSpec, &[String]) -> Result<(), RelaunchError>,
+    spawn: &SpawnFn,
     sleep: &mut dyn FnMut(Duration),
     on_awaiting: &mut dyn FnMut(),
 ) -> Result<RelaunchOutcome, RelaunchError> {
@@ -690,10 +694,11 @@ mod tests {
 
     #[test]
     fn a_start_refuses_a_bad_launch_before_it_spawns_or_even_reads_the_clock() {
-        let cases: Vec<(&str, Box<dyn Fn(&mut LaunchSpec)>)> = vec![
-            ("role", Box::new(|s| s.role = "a&calc".into())),
-            ("name", Box::new(|s| s.name = "a|b".into())),
-            ("cwd", Box::new(|s| s.cwd = "C:/x;calc".into())),
+        type Mutate = fn(&mut LaunchSpec);
+        let cases: Vec<(&str, Mutate)> = vec![
+            ("role", |s| s.role = "a&calc".into()),
+            ("name", |s| s.name = "a|b".into()),
+            ("cwd", |s| s.cwd = "C:/x;calc".into()),
         ];
         for (what, mutate) in cases {
             let l = log();

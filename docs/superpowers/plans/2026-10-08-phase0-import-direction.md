@@ -2,8 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-> **Status: a plan only. Do not start it.** It waits for CireSnave's ruling on board item 143 (the
-> architecture spec). Written 2026-10-08, against `origin/main` `cbeaba6`.
+> **Status: a plan; the spec is approved (board item 143, 2026-10-08, rulings in spec §8a).** It is
+> executed as its own PR after this docs PR merges. Written 2026-10-08, against `origin/main`
+> `cbeaba6`. Order of the whole split, per the PM: (1) this docs PR; (2) this Phase 0 test PR;
+> (3) the shared `lane-state` crate inside OverMind, with `relaunch` moved into lane-restart's library
+> and split into `lane-stop` / `lane-start` entry points (spec §8b); one PR at a time, tests first.
 
 **Goal:** A unit test that fails whenever an `overmind` module imports another `overmind` module
 along an edge that is not on an explicit allow-list. The allow-list starts as **exactly today's

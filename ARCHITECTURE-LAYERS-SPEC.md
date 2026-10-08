@@ -53,12 +53,13 @@ MODEL CLIENT  (HTTP to providers; quota; failover WITHIN the route it is given)
 | Handler → Model client | `ModelClient.post(route, payload) -> Response`; failover inside the route | `model_client.api` only |
 | Orchestrator → Model client | **read-only data**: model cards, quota view (§6) | `model_client.cards`, `model_client.quota_view` |
 
-**Enforced import direction (ASSUMED design; the mechanism is MEASURED as already used here).**
+**Enforced import direction (ASSUMED: a new test; nothing like it exists yet).**
 - A unit test parses every module's imports with `ast` and fails on any edge not in the table above.
-- `tests/test_mcp_tools.py` `TestGateBoundaryDidNotMove` already enforces a boundary the same way: it
-  asserts that `gate.py`'s source names no transport (MEASURED: test_mcp_tools.py:216-257, run by CI's
-  `gate-boundary` job).
-- The new test generalises that one, so the direction holds by test, not by convention.
+- The nearest existing check is much weaker. `TestGateBoundaryDidNotMove` lowercases `gate.py`'s source
+  and asserts that four words ("mcp", "clientsession", "stdio", "jsonrpc") do not appear in it
+  (MEASURED: test_mcp_tools.py:248-257, run by CI's `gate-boundary` job). It is a substring check, not an
+  import check; nothing in `tests/` parses imports today.
+- The new test replaces convention with a test. It is part of Phase 0 (§9).
 
 **Today, against that picture (MEASURED, cbeaba6).**
 - The **harness core** exists:
@@ -85,6 +86,7 @@ Every hook receives a `SessionContext` and returns a value the harness acts on. 
 |---|---|---|
 | `on_session_start(ctx)` | once, before the first turn | `Ok` or `Refuse(reason)`: the session does not start |
 | `on_message_in(ctx, msg)` | each message entering the session (task text, inbound channel message) | `Pass`, `Rewrite(msg)`, `Drop(reason)` |
+| `on_message_out(ctx, msg)` | each message leaving the session for another party (for example a reply on a channel; today `DispatchService`'s reply, dispatch.py:172) | `Pass`, `Redact(msg)`, `Drop(reason)` |
 | `on_model_output(ctx, turn)` | each handler `Turn`, before any tool call in it runs | `Pass`, `Correct(note)` (another turn), `Stop(reason)` |
 | `before_tool_call(ctx, call)` | each tool call, in pipeline order | `Allow`, `Deny(reason)`; any `Deny` wins (today's `Gate.decide` rule) |
 | `after_tool_call(ctx, call, result)` | each executed call | `Pass`, `Redact(result)` |
@@ -97,9 +99,11 @@ Every hook receives a `SessionContext` and returns a value the harness acts on. 
 - the **services** it needs: for example, a Synapse connection or an MCP server it wants launched;
 - the **facts** it provides to policies (today's `FactSource`).
 
-**Ordering.** The pipeline runs plug-ins in config order. For `before_tool_call`, every plug-in is
-asked, and any denial denies. That is today's semantics: a call is denied when no policy applies, and
-any denial wins (MEASURED: `Gate.decide`, gate.py:458-536).
+**Ordering.** The pipeline runs plug-ins in config order. For `before_tool_call` it keeps today's
+semantics exactly (MEASURED: `Gate.decide`, gate.py:501-536):
+- only the plug-ins whose policy applies to the call are asked;
+- the first denial returns at once ("any denial wins, immediately", gate.py:533);
+- a call that no policy applies to is denied (gate.py:502-507).
 
 **SessionConfig** (ASSUMED schema, JSON; a file or an in-memory object):
 
@@ -159,9 +163,10 @@ any denial wins (MEASURED: `Gate.decide`, gate.py:458-536).
   ask for a correction or stop the run, but never execute anything.
 - **Not gated, by construction, because the model cannot reach them:**
   - the model HTTP call itself (providers.py:506-508);
-  - before the session: the requirements-URL fetch (dispatch_mcp.py:85), the clone
-    (dispatch_mcp.py:96) and the MCP server spawn (mcp_tools.py:252);
-  - after the run: the check, commit, push and PR (lanework.py:649 and 667-686).
+  - before the session: the requirements-URL fetch (dispatch_mcp.py:86), the clone
+    (`prepare_clone`, dispatch_mcp.py:115-127, which runs it at 123) and the MCP server spawn
+    (mcp_tools.py:252);
+  - after the run: the check, commit, push and PR (lanework.py:649 and 667-682).
 - **The weak point:** the chokepoint holds by **convention**, not by structure.
   - `GatedExecutor` keeps a plain `self.tools` dict (gate.py:575).
   - `McpToolSource.call` (mcp_tools.py:390) and the `Workspace` methods are public and directly
@@ -173,7 +178,7 @@ any denial wins (MEASURED: `Gate.decide`, gate.py:458-536).
 
 1. **Static.** A test parses every plug-in module with `ast`. It fails on any import of `subprocess`,
    `socket`, `urllib`, `http.client`, `os.system`/`os.popen`, `ctypes`, or a direct import of another
-   plug-in's tool module. This is the same technique as `TestGateBoundaryDidNotMove`.
+   plug-in's tool module. It is new: today's boundary test is a substring check (§1).
 2. **Dynamic.** The harness installs a `sys.addaudithook` for the session.
    - It records `subprocess.Popen`, `socket.connect`, `urllib.Request` and `open` (with a write mode)
      events.
@@ -212,11 +217,11 @@ Layer key: **O** orchestrator, **H** harness, **P** harness plug-in, **D** handl
 | `mcp_tools.py` | MCP server as a tool source, plus FAM/Synapse channel bindings | **P** (MCP plug-in; Synapse plug-in) | `convert_tool` (94-142) produces OpenAI function schemas, which is **D** work. |
 | `outcome.py` | `claims_success`, `reconcile` | **P** (check) | `reconcile` has no caller in `src/` (only examples and probe). |
 | `dispatch.py` | `classify` (71-94) plus `DispatchService` (124-209), which calls `run_agent` (151) once per inbound message | `classify` is the Synapse **P**'s `on_message_in`. `DispatchService` is **O**: it starts one session per message. | The PM's suspicion that it is a plug-in is **partly refuted**: it calls the pipeline, it isn't called by it (dispatch.py:151). |
-| `lanework.py` | task spec `Task` (124-176), `LaneResult` (180-213), path confinement and `WorkspaceConfined` policy (220-322), `Workspace` tools (359-455), schemas and system prompt (458-~500), `claims_done` (507-514), the PR recipe (531-590), `build_client` (593-615), `run_task` (618-708), CLI (711-725) | split: **O** (Task, LaneResult, recipe, `build_client`, `run_task`, CLI); **P** (WorkspaceConfined, Workspace tools, claims_done) | The suspicion "loop plus recipe plus check" is **partly refuted**: the loop is not here; `run_task` calls `run_agent` (lanework.py:644). Shared `_run`/`_git` helpers (329-352) become a harness effect function. |
-| `providers.py` | provider registry `PROVIDERS`, `ProviderClient` (469-707), `RoutedClient` (710-738), `available_providers` (741-749) | **M**, with the request building and response parsing in `ProviderClient.chat` moving to **D** | `RoutedClient` is **partly refuted** as a mix: it only fails over across providers in the order it is given (providers.py:727-736). The choice is the caller's: `Task.provider_keys` (lanework.py:174) and `build_client`. The real mix is `ProviderClient.chat`: HTTP, failover across models, quota recording and the wire format in one method. |
-| `quota.py` | free-tier allowance book | **M** (the book), with a read view for **O** | One book is shared by routing (reads) and the client (writes on refusals). |
+| `lanework.py` | task spec `Task` (124-176), `LaneResult` (180-213), path confinement and `WorkspaceConfined` policy (220-322), `Workspace` tools (359-455), schemas and system prompt (458-491), `claims_done` (507-514), the PR recipe (531-590), `build_client` (593-615), `run_task` (618-708), CLI (711-725) | split: **O** (Task, LaneResult, recipe, `build_client`, `run_task`, CLI); **P** (WorkspaceConfined, Workspace tools, claims_done) | The suspicion "loop plus recipe plus check" is **partly refuted**: the loop is not here; `run_task` calls `run_agent` (lanework.py:644). The shared `_run`/`_git` helpers (329-342) become a harness effect function; `scrubbed_env` and `_clip` (345-352) go with them. |
+| `providers.py` | provider registry `PROVIDERS`, `ProviderClient` (469-707), `RoutedClient` (710-738), `available_providers` (741-749) | **M**, with the request building and response parsing in `ProviderClient.chat` moving to **D** | `RoutedClient` is **partly refuted** as a mix: it only fails over across providers in the order it is given (providers.py:727-738). The choice is the caller's: `Task.provider_keys` (lanework.py:174) and `build_client`. The real mix is `ProviderClient.chat`: HTTP, failover across models, quota recording and the wire format in one method. |
+| `quota.py` | free-tier allowance book | **M** (the book), plus a new read view for **O** | Today only the client uses it: it reads the book before choosing a model (`self.quota.blocked`, providers.py:574-578 and 611-626) and writes it on every request (`record_request`, providers.py:655, saving at quota.py:245-247). `build_client` only constructs it (lanework.py:600, 613). Routing does not read it yet. |
 | `ledger.py` | per-dispatch record, collection only | **O** (results ledger) | It shares a name with `gate.Ledger`, which is a different thing. Rename one. |
-| `dispatch_mcp.py` | MCP front door: `dispatch_lane_task` | **O** | It has its own `_run` (dispatch_mcp.py:94-97), a duplicate of lanework's. |
+| `dispatch_mcp.py` | MCP front door: `dispatch_lane_task` | **O** | It has its own `_run` (dispatch_mcp.py:94-97), a near-duplicate of lanework's: no `shutil.which`, no `env` argument, a 300 s default instead of 120 s. |
 | `repo_probe.py` | infers a repo's check command | **O** (task-type → check) | none |
 
 ### Everything else
@@ -225,8 +230,9 @@ Layer key: **O** orchestrator, **H** harness, **P** harness plug-in, **D** handl
 |---|---|
 | `tests/` | Split along the modules above. `test_gate_fleet.py` and `test_spdx.py` go with tools (below). `test_desktop_grade.py` and `test_paper_summaries.py` go with the probe home. |
 | `crates/lane-restart`, `crates/user-request`, `crates/with-secret` | **S**: §5 |
-| `tools/spdx.py`, `tools/preflight.py`, `tools/gate_fleet.py`, `.github/spdx_gate.py`, `.github/workflows/gate-fleet.yml` | **S**: portfolio licence tooling. gate-fleet already compares the copies of `spdx_gate.py` across four repos. |
-| `probe/` (34 files), `research/`, `MEASUREMENTS.md` | **S**: a measurements home. ⚠️ Six probes import `overmind` (daily_limits, free_capacity, ledger_context, local_throughput, p1_bench, paper_summaries), so they cannot leave before §8 Q4 is settled. |
+| `tools/spdx.py`, `tools/preflight.py`, `tools/gate_fleet.py`, `.github/workflows/gate-fleet.yml` | **S**: portfolio licence tooling. gate-fleet already compares the copies of `spdx_gate.py` across four repos. |
+| `.github/spdx_gate.py` | **stays**: it is OverMind's own deployment of the licence gate, run by ci.yml's `spdx` job (ci.yml:41-52) and checked by the fleet as one of its four copies. Only the tooling that manages the copies moves. |
+| `probe/` (34 files), `research/`, `MEASUREMENTS.md` | **S**: a measurements home. ⚠️ Six probes import `overmind` (daily_limits, free_capacity, ledger_context, local_throughput, p1_bench, paper_summaries), so they cannot leave before §8 Q4 is settled. `probe/desktop_grade.py` also runs through the installed `with-secret.exe`, so the measurements home depends on that binary at runtime. |
 | `examples/` (5) | **H**/**O** documentation; they move with whatever they demonstrate |
 | `RESTART-TOOL-DESIGN.md`, `USER-REPO-APP-FOLDERS-SPEC.md` | with lane-restart |
 | `WITH-SECRET-DESIGN.md`, `docs/WITH-SECRET-RUNBOOK.md`, `docs/superpowers/plans/2026-10-01-with-secret.md` | with with-secret |
@@ -247,15 +253,27 @@ Layer key: **O** orchestrator, **H** harness, **P** harness plug-in, **D** handl
 - **user-request and lane-restart** have no path dependency on another workspace crate.
 - **No Python code or test uses any crate.** All three take `version.workspace = true` from
   Cargo.toml:9.
-- **agentlife carries a temporary copy** of lane-restart items in `src/claude_proc.rs` (agentlife
-  `docs/COPIED-FROM-OVERMIND.md` at `ad558af`, a local ref, not fetched).
-  - The copied items come from `lane_state_writer.rs` and `paths.rs`.
-  - Its named blocker: *"OverMind extracts a small crate containing these items, and CireSnave clears
-    its publish"*. Owner: the OverMind lane.
-  - agentlife also asks that `mod relaunch`, private in `crates/lane-restart/src/main.rs:730`, become
-    `pub mod relaunch` in the library (agentlife `docs/OVERMIND-EXTRACTION-NOTE.md`).
-- **Names are free on crates.io:** `lane-restart`, `user-request`, `with-secret` and `overmind` all
-  answer 404. `serde` answers 200 as a control (MEASURED, 2026-10-07).
+- **agentlife carries two temporary copies** of lane-restart items (agentlife
+  `docs/COPIED-FROM-OVERMIND.md` at `ad558af`, which is agentlife's `origin/main`):
+  - `src/claude_proc.rs`: items from `lane_state_writer.rs` and `paths.rs`;
+  - `src/launch.rs`: `SESSION_IDENTITY_ENV_VARS`, from lane-restart's `main.rs`, inside the private
+    `mod relaunch` (that doc's section "Second copy (M3b)").
+  - Both have the same named blocker: *"OverMind extracts a small crate containing these items, and
+    CireSnave clears its publish"*. Owner: the OverMind lane. End state: both copies are deleted.
+- **agentlife's extraction note asks for more than a move** (agentlife `docs/OVERMIND-EXTRACTION-NOTE.md`;
+  it says it is "a design note, not a request to start", and that its `V0.1.md` does not depend on it):
+  - `mod relaunch` (private, `crates/lane-restart/src/main.rs:730`) moves into the library as
+    `pub mod relaunch`, with about a dozen of its private items made `pub`;
+  - three seams, each its own commit: `LaunchSpec` (launching from a roster entry, not a state file),
+    `LivenessTiming` (today's hard-coded 20 s / 15 min become parameters) and `launch_and_wait` (launch
+    without the kill);
+  - no behaviour change to the installed `lane-restart.exe` in the move commit (same tests before and
+    after, and the same `describe_dry_run` output);
+  - the two real-process tests must run in the library crate's CI.
+- **Names are free on crates.io:** `lane-restart`, `user-request`, `with-secret`, `overmind`,
+  `lane-state` and `consent` all answer 404, and `serde` answers 200 as a control (MEASURED,
+  2026-10-07). The API needs a `User-Agent` header (no email address in it); without one, every name,
+  `serde` included, answers 403.
 - **How lanes use the binaries:**
   - Every lane's hooks call absolute paths: `C:/Projects/.claude-hooks/lane-restart.exe state <event>`
     and `C:/Projects/.claude-hooks/with-secret.exe hook pre-tool-use|post-tool-use`.
@@ -268,8 +286,8 @@ Layer key: **O** orchestrator, **H** harness, **P** harness plug-in, **D** handl
 
 | Piece | Proposed home | Why |
 |---|---|---|
-| lane-state facts (`facts`, `state`, `paths`, and the `lane_state_writer` items agentlife copied) | a small crate, **`lane-state`**, published first | Both with-secret and agentlife need it. Publishing it ends agentlife's copy (its stated end state) and with-secret's path dependency on lane-restart. |
-| lane-restart (with `relaunch` made public) | **agentlife**, or its own repo | agentlife's README says it "absorbs and supersedes OverMind's lane-restart over time" (agentlife README.md, *Intended scope*). |
+| lane-state facts: `facts`, `state`, `paths`, the `lane_state_writer` items agentlife copied, and `SESSION_IDENTITY_ENV_VARS` | a small crate, **`lane-state`**, that lives **with lane-restart** (same repo, same version) and is published from there | with-secret and agentlife both need it. Publishing it ends both of agentlife's copies and with-secret's path dependency on lane-restart. |
+| lane-restart (its `relaunch` module moved into the library) | **agentlife**, or its own repo | agentlife's README says it "absorbs and supersedes OverMind's lane-restart over time" (agentlife README.md, *Intended scope*). |
 | user-request + with-secret | **one repo** (for example `consent`): asking a person, and the secrets that need asking | They are installed together, and with-secret calls user-request's store. One repo means one version number. |
 | licence tooling (`tools/`, `spdx_gate.py`, gate-fleet) | a portfolio tooling repo | not OverMind's job |
 | probes, research, MEASUREMENTS.md | a measurements repo | evidence, not product |
@@ -285,8 +303,9 @@ Layer key: **O** orchestrator, **H** harness, **P** harness plug-in, **D** handl
   - The new repo's first commit carries its CI, and protection requires those checks before any
     second PR.
   - **In the same step, OverMind's required contexts must change.** Today they require `rust
-    (ubuntu-latest)` and `rust (windows-latest)` (MEASURED: branch protection, 9 contexts). Once the
-    last crate leaves, those jobs stop reporting and every PR blocks.
+    (ubuntu-latest)` and `rust (windows-latest)` (MEASURED: branch protection, 9 contexts). The `rust`
+    job has no path filter and runs `cargo test --workspace` (ci.yml:127-159). Once the last crate leaves,
+    it would fail red on every PR. The job and its two required contexts go in the same PR.
 - **Dependencies are crates.io versions**, never `path =` or `git =` across repos.
   - So the order is: publish `lane-state`, then switch with-secret to it by version. Then move
     with-secret.
@@ -296,6 +315,8 @@ Layer key: **O** orchestrator, **H** harness, **P** harness plug-in, **D** handl
     survives.
   - Licences (`MIT OR Apache-2.0`, LICENSE files) and SPDX headers go with it.
   - OverMind keeps a one-line pointer to the new home for each piece it gave up.
+  - OverMind keeps its own deployment of the licence gate (`.github/spdx_gate.py` and ci.yml's `spdx`
+    job); only the tooling that manages the copies moves.
 - **No lane may break.**
   - Binary names, the `.claude-hooks` paths and the hook command lines stay the same.
   - A binary is installed from its new repo only after that repo's first release passes the same smoke
@@ -305,23 +326,37 @@ Layer key: **O** orchestrator, **H** harness, **P** harness plug-in, **D** handl
 
 ### 5.4 Order of moves, and rollback
 
-1. **`lane-state` crate, inside OverMind's workspace** (no repo move).
-   - Extract `facts`, `state`, `paths` and the items agentlife copied.
-   - lane-restart and with-secret depend on it by workspace path, which is still one repo.
-   - Rollback: revert the PR.
-2. **`pub mod relaunch`** in lane-restart's library, per agentlife's note. Rollback: revert.
-3. **Publish `lane-state`** (with CireSnave's clearance). agentlife deletes `src/claude_proc.rs`.
-   - Rollback: yank, and agentlife restores its copy from git.
-4. **Move user-request and with-secret** to their repo, with history.
-   - OverMind deletes them only after the new repo's first release is installed and smoke-tested.
-   - Until then both copies exist, and OverMind's copy is frozen: a notice in its README.
-   - Rollback: reinstall the `.prev` binary; OverMind's copy is still there.
-5. **Move lane-restart** (to agentlife, or its own repo), the same way. Rollback: the same.
-6. **Move the licence tooling and the measurements home.**
+The spin-outs do not depend on the harness work (§9 phases 3-5), so they come first.
+
+1. **Extract, in place (one OverMind PR, no repo move).**
+   - Create the `lane-state` crate in OverMind's workspace: `facts`, `state`, `paths`, the
+     `lane_state_writer` items agentlife copied, and `SESSION_IDENTITY_ENV_VARS`.
+   - lane-restart and with-secret depend on it by workspace path (still one repo).
+   - Move `mod relaunch` into lane-restart's library, per agentlife's note: a pure move, no behaviour
+     change, the same tests before and after.
+   - Rollback: revert the PR. Nothing is installed differently.
+2. **agentlife's three seams** (`LaunchSpec`, `LivenessTiming`, `launch_and_wait`), each its own commit.
+   - Only when agentlife needs them: its note says `V0.1.md` does not.
+   - Rollback: revert.
+3. **Move lane-restart and `lane-state` to their home** (§8 Q1), with history, CI and protection.
+   - OverMind keeps its copies until step 5.
+   - Rollback: OverMind's copies are still there; the installed binary is untouched.
+4. **Publish `lane-state` from its home** (with CireSnave's clearance).
+   - agentlife then deletes `src/claude_proc.rs` and its copy in `src/launch.rs`, and depends on the
+     published crate.
+   - Rollback: yank; agentlife restores its copies from git.
+5. **OverMind switches with-secret to the published `lane-state`, and deletes lane-restart and
+   `lane-state`.**
+   - Only after the new home's first `lane-restart.exe` is installed and smoke-tested.
+   - Rollback: reinstall the `.prev` binary, and revert the OverMind PR.
+6. **Move user-request and with-secret** to their repo (§8 Q2), with history.
+   - The new repo's first release is installed and smoke-tested before OverMind deletes its copies.
+   - In the same OverMind PR: remove the `rust` job and its two required contexts (§5.3).
+   - Rollback: reinstall the `.prev` binaries; until that PR merges, OverMind's copy is still there.
+7. **Move the licence-tooling sources and the measurements home.**
+   - OverMind keeps `.github/spdx_gate.py`.
    - The six probes that import `overmind` wait for §8 Q4.
-   - Rollback: revert, since these are not installed anywhere.
-7. **Branch protection**: update OverMind's required contexts in the same PR that removes the last
-   crate.
+   - Rollback: revert, since nothing here is installed.
 
 ## 6. Where the routing layer goes
 
@@ -334,7 +369,7 @@ Routing belongs to the **orchestrator** (ASSUMED placement; the facts it uses ar
 | **Spend book**: money | does not exist; `quota.py` tracks free-tier allowances, not spend | New. **Paid providers need CireSnave's explicit approval**, per provider and per budget (PM brief). The book refuses a route that would exceed an approved budget. |
 | **Choice across providers** | `Task.provider_keys` (lanework.py:174), passed to `build_client` (lanework.py:593-615) | The orchestrator writes `route` into the SessionConfig. |
 | **Failover within the route** | `RoutedClient` (providers.py:710-738) tries the given clients in order; `ProviderClient.chat` fails over across models inside a provider | Stays in the **model client**. It executes a route; it does not choose one. |
-| **Quota** | `QuotaBook`, written by the client on a provider's refusal, read when building a route | Owned by the model client, with a read view for routing. |
+| **Quota** | `QuotaBook`: only the client uses it. It reads it before choosing a model (providers.py:574-578, 611-626) and writes it on every request (providers.py:655). `build_client` only constructs it (lanework.py:600, 613). | Owned by the model client, plus a new read view for routing (nothing reads it for routing today). |
 
 ## 7. The Claude Code question
 
@@ -367,7 +402,7 @@ ASSUMED):
 ## 8. Not decided: questions for CireSnave
 
 1. **Where does lane-restart go: agentlife, or a repo of its own?** *Recommend agentlife*, since its
-   README already plans to absorb it. The shared `lane-state` crate comes first either way.
+   README already plans to absorb it. `lane-state` goes wherever lane-restart goes, and is published from there.
 2. **user-request and with-secret: one repo, or two?** *Recommend one* (one version, installed together,
    with-secret already calls user-request's store).
 3. **Version numbers for the new repos: start fresh at 0.1.0, or continue from 0.6.x?** *Recommend
@@ -386,25 +421,27 @@ ASSUMED):
 
 ## 9. Phased plan
 
-Each phase is its own PR, red-first where it adds code, reviewed and gated by the PM.
+Each phase is its own PR or PRs, red-first where it adds code, reviewed and gated by the PM.
 
 - **Phase 0 (the cheapest safe first step: tests only, nothing moves).**
-  - Add the import-direction test with **today's** actual edges as its allow-list. It documents the
-    graph and freezes it.
+  - Add the import-direction test (new; §1) with **today's** actual edges as its allow-list. It
+    documents the graph and freezes it.
   - Add the rogue plug-in tests (§3) against today's `GatedExecutor`. Those expected to fail today are
     marked as such.
   - No behaviour changes, and these are the tests every later phase must keep green.
-- **Phase 1: the `lane-state` crate and `pub mod relaunch`** (§5.4 steps 1-2). This unblocks agentlife.
-- **Phase 2: harness and plug-in API inside OverMind.**
+- **Phase 1: extract in place** (§5.4 step 1): the `lane-state` crate, and `relaunch` into
+  lane-restart's library.
+- **Phase 2: the spin-outs** (§5.4 steps 2-7), one PR per move, each with its rollback.
+  - agentlife's blocker clears at step 4, without waiting for any harness work.
+- **Phase 3: harness and plug-in API inside OverMind.**
   - `SessionConfig`, `LoadedManifest`, and the hooks of §2.
   - Today's gate, ledger, workspace tools, fork and MCP become plug-ins.
   - lanework becomes an orchestrator recipe that writes a config.
   - The audit-hook chokepoint test turns green.
-- **Phase 3: the handler.** OpenAI shapes leave `agent.py` and `providers.py` for `handler/openai_chat`.
+- **Phase 4: the handler.** OpenAI shapes leave `agent.py` and `providers.py` for `handler/openai_chat`.
   The model client keeps HTTP, quota and failover within a route.
-- **Phase 4: routing.** Route choice moves to the orchestrator: model cards, results ledger, and the
-  spend book with its approval rule.
-- **Phase 5: the spin-outs** (§5.4 steps 3-7), one PR per move, each with its rollback.
+- **Phase 5: routing.** Route choice moves to the orchestrator: model cards, results ledger, the quota
+  read view, and the spend book with its approval rule.
 
 ---
 

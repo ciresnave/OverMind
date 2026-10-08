@@ -21,7 +21,10 @@ pub mod launch;
 pub mod log;
 pub mod notify;
 pub mod relaunch;
+pub mod stop;
 pub mod tab_close;
+#[cfg(test)]
+mod testing;
 
 /// `C:/Projects/.lane-state` - RESTART-TOOL-DESIGN.md section 7. Not
 /// configurable via CLI on purpose: a caller-supplied state directory would

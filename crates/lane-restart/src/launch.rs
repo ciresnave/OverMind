@@ -7,8 +7,9 @@
 
 use crate::facts::SystemFacts;
 use crate::relaunch::{
-    extra_launch_args, first_unsafe_argument, has_dev_channels_flag, resolve_launch_model,
-    valid_identifier, RelaunchError, RelaunchOutcome, StateReader,
+    allow_opus_from_env, extra_launch_args, first_unsafe_argument, has_dev_channels_flag,
+    policy_default_model, resolve_launch_model, spawn_launch, valid_identifier, RelaunchError,
+    RelaunchOutcome, StateReader,
 };
 use crate::state::LaneState;
 use std::time::Duration;
@@ -204,6 +205,72 @@ pub fn wait_for_liveness(
         sleep(timing.poll_interval);
         waited += timing.poll_interval;
     }
+}
+
+/// Launches a lane and waits until it is working: NO kill. This is
+/// `lane-start` (spec 8b; agentlife's seam 3). Every check runs before
+/// anything is spawned, and the clock is read after the checks, so the new
+/// process is recognised by starting after (now - the clock margin).
+/// `previous_session` is the session being replaced, if any; a restore has
+/// none. The policy default model, the Opus override, the spawn and the sleep
+/// are parameters so the order is testable; `launch_and_wait` fills them in.
+#[allow(clippy::too_many_arguments)]
+pub fn launch_and_wait_with(
+    facts: &dyn SystemFacts,
+    state_reader: &dyn StateReader,
+    spec: &LaunchSpec,
+    previous_session: Option<&str>,
+    timing: &LivenessTiming,
+    policy_default: &str,
+    allow_opus: bool,
+    spawn: &dyn Fn(&LaunchSpec, &[String]) -> Result<(), RelaunchError>,
+    sleep: &mut dyn FnMut(Duration),
+    on_awaiting: &mut dyn FnMut(),
+) -> Result<RelaunchOutcome, RelaunchError> {
+    let PreparedLaunch {
+        argv,
+        carries_dev_channels_flag,
+    } = prepare_launch(spec, policy_default, allow_opus)?;
+    let launched_after_secs = crate::stop::launched_after(facts.now());
+    spawn(spec, &argv)?;
+    wait_for_liveness(
+        facts,
+        state_reader,
+        &spec.cwd,
+        &spec.role,
+        previous_session,
+        launched_after_secs,
+        carries_dev_channels_flag,
+        timing,
+        sleep,
+        on_awaiting,
+    )
+}
+
+/// `launch_and_wait_with` on this machine: the real spawn (`wt.exe`, else
+/// `conhost.exe`), the real sleep, the portfolio policy model and the Opus
+/// override from the environment. NOT unit tested, like `spawn_launch`: it
+/// starts a real window.
+pub fn launch_and_wait(
+    facts: &dyn SystemFacts,
+    state_reader: &dyn StateReader,
+    spec: &LaunchSpec,
+    previous_session: Option<&str>,
+    timing: &LivenessTiming,
+    on_awaiting: &mut dyn FnMut(),
+) -> Result<RelaunchOutcome, RelaunchError> {
+    launch_and_wait_with(
+        facts,
+        state_reader,
+        spec,
+        previous_session,
+        timing,
+        &policy_default_model(&crate::state_dir()),
+        allow_opus_from_env(),
+        &spawn_launch,
+        &mut std::thread::sleep,
+        on_awaiting,
+    )
 }
 
 #[cfg(test)]
@@ -546,5 +613,165 @@ mod tests {
         );
         assert!(out.is_err());
         assert_eq!(slept, 2);
+    }
+
+    // -- launch_and_wait (seam 3): a start with no stop ----------------------
+
+    use crate::testing::{log, state_at, RecordingFacts, ScriptedReader};
+
+    fn start(
+        l: &crate::testing::Log,
+        facts: &RecordingFacts,
+        reader: &ScriptedReader,
+        spec: &LaunchSpec,
+        previous: Option<&str>,
+    ) -> Result<RelaunchOutcome, RelaunchError> {
+        let lg = std::rc::Rc::clone(l);
+        launch_and_wait_with(
+            facts,
+            reader,
+            spec,
+            previous,
+            &short(),
+            "sonnet",
+            false,
+            &move |s, argv| {
+                lg.borrow_mut()
+                    .push(format!("spawn {} {} {}", s.role, s.cwd, argv.join(" ")));
+                Ok(())
+            },
+            &mut |_| {},
+            &mut || {},
+        )
+    }
+
+    fn fuel() -> LaunchSpec {
+        LaunchSpec {
+            role: "fuel".into(),
+            name: "fuel".into(),
+            cwd: "C:/Projects/fuel".into(),
+            permission_mode: None,
+            remote_control: false,
+            launch_args: None,
+        }
+    }
+
+    /// A start never kills: `kill_verified` would be logged.
+    #[test]
+    fn a_start_spawns_and_waits_and_kills_nothing() {
+        let l = log();
+        let facts = RecordingFacts::new(&l);
+        let reader =
+            ScriptedReader::new(&l, vec![Some(state_at("fuel", "s1", "UserPromptSubmit"))]);
+        let out = start(&l, &facts, &reader, &fuel(), None).unwrap();
+        assert_eq!(out, RelaunchOutcome::Relaunched);
+        let log = l.borrow();
+        assert_eq!(
+            log[0], "now",
+            "the clock is read first, for the earliest start time"
+        );
+        assert_eq!(
+            log[1],
+            "spawn fuel C:/Projects/fuel claude read fuel HANDOFF and continue --name fuel --model sonnet"
+        );
+        assert!(!log.iter().any(|e| e.starts_with("kill")), "{log:?}");
+    }
+
+    /// The new process must have started after (now - the clock margin).
+    #[test]
+    fn a_start_asks_for_a_process_newer_than_the_clock_minus_the_margin() {
+        let l = log();
+        let facts = RecordingFacts::new(&l);
+        let reader = ScriptedReader::new(&l, vec![Some(state_at("fuel", "s1", "SessionStart"))]);
+        let _ = start(&l, &facts, &reader, &fuel(), None);
+        let want = format!("poll C:/Projects/fuel after={}", facts.now.timestamp() - 5);
+        assert!(l.borrow().contains(&want), "{:?}", l.borrow());
+    }
+
+    #[test]
+    fn a_start_refuses_a_bad_launch_before_it_spawns_or_even_reads_the_clock() {
+        let cases: Vec<(&str, Box<dyn Fn(&mut LaunchSpec)>)> = vec![
+            ("role", Box::new(|s| s.role = "a&calc".into())),
+            ("name", Box::new(|s| s.name = "a|b".into())),
+            ("cwd", Box::new(|s| s.cwd = "C:/x;calc".into())),
+        ];
+        for (what, mutate) in cases {
+            let l = log();
+            let facts = RecordingFacts::new(&l);
+            let reader = ScriptedReader::new(&l, vec![None]);
+            let mut s = fuel();
+            mutate(&mut s);
+            assert!(start(&l, &facts, &reader, &s, None).is_err(), "{what}");
+            assert!(l.borrow().is_empty(), "{what}: {:?}", l.borrow());
+        }
+        // Opus, without the override
+        let l = log();
+        let facts = RecordingFacts::new(&l);
+        let reader = ScriptedReader::new(&l, vec![None]);
+        let out = launch_and_wait_with(
+            &facts,
+            &reader,
+            &fuel(),
+            None,
+            &short(),
+            "claude-opus-5",
+            false,
+            &|_, _| panic!("spawned an Opus launch"),
+            &mut |_| {},
+            &mut || {},
+        );
+        assert!(matches!(out, Err(RelaunchError::OpusRefused(_))));
+        assert!(l.borrow().is_empty());
+    }
+
+    #[test]
+    fn a_failed_spawn_is_the_result_and_nothing_is_waited_for() {
+        let l = log();
+        let facts = RecordingFacts::new(&l);
+        let reader = ScriptedReader::new(&l, vec![None]);
+        let out = launch_and_wait_with(
+            &facts,
+            &reader,
+            &fuel(),
+            None,
+            &short(),
+            "sonnet",
+            false,
+            &|_, _| Err(RelaunchError::Spawn("no wt".into())),
+            &mut |_| {},
+            &mut || {},
+        );
+        assert!(matches!(out, Err(RelaunchError::Spawn(_))));
+        assert!(
+            !l.borrow().iter().any(|e| e.starts_with("read")),
+            "{:?}",
+            l.borrow()
+        );
+    }
+
+    #[test]
+    fn a_start_uses_the_timing_it_is_given() {
+        let l = log();
+        let mut facts = RecordingFacts::new(&l);
+        facts.alive = false;
+        let reader = ScriptedReader::new(&l, vec![None]);
+        let mut slept = 0;
+        let out = launch_and_wait_with(
+            &facts,
+            &reader,
+            &fuel(),
+            None,
+            &short(),
+            "sonnet",
+            false,
+            &|_, _| Ok(()),
+            &mut |_| slept += 1,
+            &mut || {},
+        );
+        assert!(matches!(
+            out,
+            Err(RelaunchError::SessionNeverProcessedPrompt)
+        ));
+        assert_eq!(slept, 2, "the 2 s progress timeout of `short()`");
     }
 }

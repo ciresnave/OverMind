@@ -7,8 +7,11 @@
 //! lanes before `--yes` is ever used for real.
 
 use crate::facts::{KillError, ProcessIdentity, SystemFacts};
-use crate::launch::{launch_argv, prepare_launch, LaunchSpec, LivenessTiming, PreparedLaunch};
+use crate::launch::{
+    launch_argv, prepare_launch, wait_for_liveness, LaunchSpec, LivenessTiming, PreparedLaunch,
+};
 use crate::state::LaneState;
+use crate::stop::stop_lane;
 
 /// PM finding, 2026-09-18: `role` and `name` come from a file the
 /// TARGET LANE wrote about itself, and reached a `cmd.exe /C start`
@@ -455,10 +458,10 @@ pub fn models_report(state_dir: &std::path::Path) -> String {
     out
 }
 
-pub fn spawn_relaunch(state: &LaneState, argv: &[String]) -> Result<(), RelaunchError> {
-    let hosted_argv = host_wrapped_argv(&state.role, argv);
+pub fn spawn_launch(spec: &LaunchSpec, argv: &[String]) -> Result<(), RelaunchError> {
+    let hosted_argv = host_wrapped_argv(&spec.role, argv);
     let mut wt = std::process::Command::new("wt.exe");
-    wt.args(["-w", "new", "-d", &state.cwd]);
+    wt.args(["-w", "new", "-d", &spec.cwd]);
     wt.args(&hosted_argv);
     strip_session_identity_env(&mut wt);
     match wt.spawn() {
@@ -471,12 +474,16 @@ pub fn spawn_relaunch(state: &LaneState, argv: &[String]) -> Result<(), Relaunch
 
     let mut conhost = std::process::Command::new("conhost.exe");
     conhost.args(&hosted_argv);
-    conhost.current_dir(&state.cwd);
+    conhost.current_dir(&spec.cwd);
     strip_session_identity_env(&mut conhost);
     conhost
         .spawn()
         .map(|_| ())
         .map_err(|e| RelaunchError::Spawn(e.to_string()))
+}
+
+pub fn spawn_relaunch(state: &LaneState, argv: &[String]) -> Result<(), RelaunchError> {
+    spawn_launch(&LaunchSpec::from(state), argv)
 }
 
 /// Reads the target role's OWN current state file - injected so the
@@ -576,11 +583,20 @@ fn prepare(spec: &LaunchSpec) -> Result<PreparedLaunch, RelaunchError> {
     )
 }
 
-pub fn kill_and_relaunch(
+/// `kill_and_relaunch` with its spawn, sleep and policy injected so the ORDER is
+/// testable: every check, then the stop (`stop::stop_lane`), then the start
+/// (`launch::wait_for_liveness` after the spawn). A restart is `lane-stop`
+/// then `lane-start` (spec 8b) plus what only a restart needs.
+#[allow(clippy::too_many_arguments)]
+pub fn kill_and_relaunch_with(
     facts: &dyn SystemFacts,
     state_reader: &dyn StateReader,
     state: &LaneState,
     identity: &ProcessIdentity,
+    policy_default: &str,
+    allow_opus: bool,
+    spawn: &dyn Fn(&LaunchSpec, &[String]) -> Result<(), RelaunchError>,
+    sleep: &mut dyn FnMut(std::time::Duration),
     on_awaiting: &mut dyn FnMut(),
 ) -> Result<RelaunchOutcome, RelaunchError> {
     let spec = LaunchSpec::from(state);
@@ -588,33 +604,38 @@ pub fn kill_and_relaunch(
     let PreparedLaunch {
         argv,
         carries_dev_channels_flag,
-    } = prepare(&spec)?;
-
-    facts
-        .kill_verified(state.pid, identity)
-        .map_err(RelaunchError::Kill)?;
-    // Give the OS a moment to finish tearing the process down before a
-    // new `claude` process claims the same working directory's lock.
-    std::thread::sleep(std::time::Duration::from_millis(500));
-    // ⚠️ A SMALL SAFETY MARGIN, not a guess: `facts.now()` is wall-clock
-    // time, but `find_claude_process_in`'s `start_time` comes from the
-    // OS (on Linux, ticks-since-boot converted to a Unix timestamp) -
-    // two different clock sources that can disagree by a second or two
-    // without either being "wrong" - confirmed live, this crate's own
-    // real-process liveness test failed on a CI runner for exactly this
-    // reason before the margin was added.
-    let killed_at_secs = facts.now().timestamp().max(0).saturating_sub(5) as u64;
-
-    spawn_relaunch(state, &argv)?;
-
-    wait_for_relaunch_liveness(
+    } = prepare_launch(&spec, policy_default, allow_opus)?;
+    let stopped = stop_lane(facts, state.pid, identity, sleep)?;
+    spawn(&spec, &argv)?;
+    wait_for_liveness(
         facts,
         state_reader,
         &state.cwd,
         &state.role,
-        &state.session_id,
-        killed_at_secs,
+        Some(&state.session_id),
+        stopped.launched_after_secs,
         carries_dev_channels_flag,
+        &LivenessTiming::default(),
+        sleep,
+        on_awaiting,
+    )
+}
+
+pub fn kill_and_relaunch(
+    facts: &dyn SystemFacts,
+    state_reader: &dyn StateReader,
+    state: &LaneState,
+    identity: &ProcessIdentity,
+    on_awaiting: &mut dyn FnMut(),
+) -> Result<RelaunchOutcome, RelaunchError> {
+    kill_and_relaunch_with(
+        facts,
+        state_reader,
+        state,
+        identity,
+        &policy_default_model(&crate::state_dir()),
+        allow_opus_from_env(),
+        &spawn_launch,
         &mut std::thread::sleep,
         on_awaiting,
     )

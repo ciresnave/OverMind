@@ -237,6 +237,8 @@ fn revoke_ends_secrets_grants_in_the_store_and_nothing_else() {
     use user_request::request::{Approval, KindId, Requester};
     use user_request::store::{AuditOnly, Store};
 
+    // A lane-bound LaneDialogBypass subject (user-request #5).
+    const FUEL_TRUST: &str = "lane 'fuel', dialog 'trust'";
     let scratch = tempfile::tempdir().unwrap().keep();
     let (dir, head) = (scratch.join("user-request"), scratch.join("head"));
     let lane = |role: &str| Requester {
@@ -341,6 +343,3 @@ fn a_scratch_vault_never_reaches_the_real_approvals() {
         .unwrap();
     assert_eq!(out.status.code(), Some(0), "{out:?}");
 }
-
-/// A lane-bound LaneDialogBypass subject (user-request #5).
-const FUEL_TRUST: &str = "lane 'fuel', dialog 'trust'";

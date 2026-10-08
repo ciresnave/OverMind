@@ -4,7 +4,7 @@ members = ["crates/lane-restart", "crates/lane-state", "crates/user-request", "c
 
 # ⚠️ ONE VERSION NUMBER PER PROJECT (CIRESNAVE-EXPECTATIONS.md §2.2). OverMind's
 # Python package and every crate here share pyproject.toml's version - keep
-# them in lockstep by hand until something automates it.
+# them in lockstep: tests/test_version_lockstep.py fails CI when they differ.
 [workspace.package]
 version = "0.11.1"
 edition = "2021"

@@ -176,8 +176,25 @@ impl<P: Protector> VaultStore<P> {
     /// `masks.<pid>.<16 hex>.tmp` or `vault.<pid>.<16 hex>.tmp` and older than
     /// `max_age`. Best effort: nothing here may stop the hook.
     pub fn remove_stale_temp_files(&self, max_age: std::time::Duration) -> usize {
-        let _ = max_age;
-        0
+        let Ok(entries) = std::fs::read_dir(&self.dir) else {
+            return 0;
+        };
+        let mut removed = 0;
+        for entry in entries.flatten() {
+            let is_leftover = entry.file_name().to_str().is_some_and(is_write_atomic_temp);
+            let age = entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.elapsed().ok());
+            if is_leftover
+                && age.is_some_and(|a| a >= max_age)
+                && std::fs::remove_file(entry.path()).is_ok()
+            {
+                removed += 1;
+            }
+        }
+        removed
     }
 
     /// The masks' plaintext (`mask::masks_json` bytes), or `None` if there are
@@ -198,6 +215,27 @@ impl<P: Protector> VaultStore<P> {
             .map(Some)
             .map_err(|e| format!("{} cannot be decrypted: {e}", path.display()))
     }
+}
+
+/// `masks.<pid>.<16 hex>.tmp` or `vault.<pid>.<16 hex>.tmp`: the names
+/// `write_atomic` gives its temp files. Anything else is not ours to delete.
+fn is_write_atomic_temp(name: &str) -> bool {
+    let Some(rest) = name
+        .strip_prefix("masks.")
+        .or_else(|| name.strip_prefix("vault."))
+    else {
+        return false;
+    };
+    let Some(rest) = rest.strip_suffix(".tmp") else {
+        return false;
+    };
+    let Some((pid, nonce)) = rest.split_once('.') else {
+        return false;
+    };
+    !pid.is_empty()
+        && pid.bytes().all(|b| b.is_ascii_digit())
+        && nonce.len() == 16
+        && nonce.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 /// The legacy file's bytes if it exists and is a JSON list.

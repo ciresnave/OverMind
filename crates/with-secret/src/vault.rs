@@ -419,6 +419,7 @@ mod tests {
         leftover(d, "notes.tmp", DAY2); // not our naming
         leftover(d, "masks.abc.d8905001dd337276.tmp", DAY2); // pid not digits
         leftover(d, "masks.1.d8905001dd33727.tmp", DAY2); // 15 hex, not 16
+        leftover(d, "masks.1.zzzzzzzzzzzzzzzz.tmp", DAY2); // 16 chars, not hex
         leftover(d, "masks.1.d8905001dd337276.tmp.bak", DAY2);
         let removed = xor_store(d).remove_stale_temp_files(STALE_TEMP_AGE);
         assert_eq!(removed, 2);
@@ -433,6 +434,7 @@ mod tests {
                 "access.log",
                 "masks.1.d8905001dd33727.tmp",
                 "masks.1.d8905001dd337276.tmp.bak",
+                "masks.1.zzzzzzzzzzzzzzzz.tmp",
                 "masks.54596.d8905001dd337277.tmp",
                 "masks.abc.d8905001dd337276.tmp",
                 "masks.bin",

@@ -47,7 +47,7 @@ MODEL CLIENT  (HTTP to providers; quota; failover WITHIN the route it is given)
 
 | From → To | Interface (proposed names) | May import |
 |---|---|---|
-| Orchestrator → Harness | `spawn(config: SessionConfig) -> SessionHandle`; `handle.loaded() -> LoadedManifest`; `handle.events()`; `handle.stop()` | `harness.api` only |
+| Orchestrator → Harness | `spawn(config: SessionConfig) -> SessionHandle` (one harness process per session, §3); `handle.loaded() -> LoadedManifest`; `handle.events()`; `handle.stop()` | `harness.api` only |
 | Harness → Plug-in | the hooks in §2 | plug-ins import `harness.plugin_api` only |
 | Harness → Handler | `Handler.turn(messages, tool_schemas, limits) -> Turn` (text, tool calls, finish reason, usage) | `handler.api` only |
 | Handler → Model client | `ModelClient.post(route, payload) -> Response`; failover inside the route | `model_client.api` only |
@@ -98,11 +98,12 @@ Every hook receives a `SessionContext` and returns a value the harness acts on. 
 - the **tools** it contributes: name, JSON schema, and an effect function the harness will call. An
   effect function does its I/O only through the **effect primitives** `plugin_api` hands it (run a
   process, make a request, write a file).
-  - The harness tracks **two separate states**, per thread, in `contextvars` variables:
+  - The harness tracks **two separate states**, per thread (`threading.local`, §3):
     - **`allowed_call`**: the tool call that **this pipeline itself** allowed, set only while that
       call's effect function runs. It is cleared while any hook runs, `after_tool_call` included.
-      Every pipeline starts with it cleared, so a fork's child pipeline, which runs inside the parent's
-      allowed `fork` call (fork.py:398-400, through gate.py:596), starts with no allowed call.
+      That rule also covers a fork. A fork's child pipeline runs inside the parent's allowed `fork`
+      call (fork.py:398-400, through gate.py:596), but the child's hooks still run with
+      `allowed_call` cleared.
     - **`primitive_frame`**: set only while a primitive itself executes.
   - A primitive called when `allowed_call` is clear **is refused** (it raises). Otherwise it runs
     inside its own `primitive_frame`, attributed to that call.
@@ -199,18 +200,29 @@ semantics exactly (MEASURED: `Gate.decide`, gate.py:501-536):
    primitives": `import asyncio` with `asyncio.create_subprocess_exec`, `os.posix_spawn`, a third-party
    HTTP library, `open(..., "w")`, `pathlib` writes and `__import__("subprocess")` all pass it. Those are
    the dynamic layer's job. The test is new: today's boundary test is a substring check (§1).
-2. **Dynamic.** The harness installs **one** `sys.addaudithook` per process, at start-up, with a
-   per-session switch. Python offers no way to remove an audit hook, so one hook serves every session.
-   The switch, `allowed_call` and `primitive_frame` live in `contextvars` variables, so concurrent sessions
-   in one process do not see each other's state (ASSUMED; not yet tested).
+2. **Dynamic.** **One session per harness process**: `spawn` (§1) starts a process for each session.
+   - The harness installs its `sys.addaudithook` and **arms** it as the first thing the process does,
+     before any plug-in module is imported. It **never disarms**: the process ends with the session.
+     Python offers no way to remove an audit hook (MEASURED, Python 3.14.7: `sys` has `addaudithook`
+     and `audit`, nothing else).
+   - The armed flag is process-wide. `allowed_call` and `primitive_frame` are **thread-local**
+     (`threading.local`), so every new thread starts with neither set, whatever the interpreter's
+     context-inheritance setting.
+     - Not `contextvars`. On Python 3.14.7 a new thread does not inherit context by default, so a
+       contextvar switch would leave threads unarmed. With `-X thread_inherit_context=1` (the default on
+       free-threaded builds), threads inherit context, so they would inherit a frame's exemption. Both
+       were measured by the fifth audit of this spec, 2026-10-07.
    - It records `subprocess.Popen`, `socket.connect`, `urllib.Request` and `open` (with a write mode)
      events.
-   - **Default deny.** While a session is armed, any such event that is not inside a `primitive_frame`
-     or a harness-owned frame stops the session and is reported. Harness-owned frames are the harness's
-     own I/O: the model call, MCP server launch, the ledger.
-     - This holds whenever the event happens. That covers code run when a plug-in module is imported or
-       `declares()` is called, and work deferred to a thread, a logging handler or `atexit`. A new
-       thread starts with neither frame set, so its I/O is flagged.
+   - **Default deny.** Any such event in the process that is not inside a `primitive_frame` or a
+     harness-owned frame stops the session and is reported. Harness-owned frames are the harness's own
+     I/O: the model call, MCP server launch, the ledger.
+     - This holds whenever the event happens, because the process is armed from before plug-ins load
+       until it exits. That covers code run when a plug-in module is imported or `declares()` is
+       called, and work deferred to a thread or `atexit`. A new thread starts with neither frame set, so
+       its I/O is flagged.
+     - **Harness-owned frames never call plug-in code.** For example, the harness installs no logging
+       handler a plug-in supplies, so plug-in code never runs inside a harness exemption.
      - ASSUMED: that the harness can mark all of its own I/O as harness-owned (third-party libraries
        it calls included) without false stops. This is to be measured in Phase 3.
    - ASSUMED: that these audit events cover the cases. Python documents them as stdlib audit events;
@@ -249,8 +261,11 @@ semantics exactly (MEASURED: `Gate.decide`, gate.py:501-536):
    - with the static scan removed, the static-only fixture's test must turn red;
    - with the primitives' refusal removed, both pipeline-only fixtures' tests must turn red. Without
      the refusal, the process start would run inside a `primitive_frame`, and nothing else stops it;
-   - with the child pipeline inheriting the parent's `allowed_call` (no reset at pipeline entry), the
-     fork fixture's test must turn red.
+   - with hooks **not** clearing `allowed_call`, the fork fixture's test must turn red: the child's
+     hook would then run with the parent's `fork` call still allowed. The first pipeline-only fixture
+     stays green, because no call is allowed in its case;
+   - with the armed flag held in a `contextvars` variable instead of process-wide, the thread
+     fixture's test must turn red: on Python 3.14's default, the new thread would start unarmed.
    This repo's practice is to prove that a test fails, not just that it passes.
 
 **Honest limit.** In-process Python cannot stop a deliberately hostile plug-in. An audit hook cannot be

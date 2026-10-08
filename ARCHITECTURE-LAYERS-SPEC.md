@@ -211,7 +211,8 @@ semantics exactly (MEASURED: `Gate.decide`, gate.py:501-536):
        banned import), from `before_tool_call`. Expected event: `subprocess.Popen`;
      - one that connects to a local listener with `smtplib`, which is not on the ban list and connects
        through `socket.create_connection`, from `on_model_output`. Expected event: `socket.connect`
-       (ASSUMED until the fixture is written; the MCP SDK's `stdio_client` would **not** do, because it
+       (MEASURED 2026-10-07, Python 3.14.7: an audit hook around `smtplib.SMTP` connecting to a local
+       listener saw one `socket.connect` and no `subprocess.Popen`. The MCP SDK's `stdio_client` would **not** do, because it
        starts a process and opens no socket, as measured by the third audit of this spec, 2026-10-07);
    - **only the static layer catches:**
      - one that imports another plug-in's tool module and calls a tool that does **no I/O** (it returns

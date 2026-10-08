@@ -122,7 +122,9 @@ class TestImportDirection(unittest.TestCase):
     def test_the_module_set_is_the_known_one(self):
         """Positive control: an empty or moved src/overmind would give zero
         edges and an empty set equal to an empty ALLOWED. This fails instead."""
-        found = {p.stem for p in SRC.glob("*.py")}
+        # rglob: a module in a subpackage must fail here ("sub/x"), because the
+        # edge scan below is flat and would otherwise never see its imports.
+        found = {p.relative_to(SRC).with_suffix("").as_posix() for p in SRC.rglob("*.py")}
         self.assertEqual(found, set(MODULES),
                          f"new: {sorted(found - MODULES)}, gone: {sorted(MODULES - found)}")
 

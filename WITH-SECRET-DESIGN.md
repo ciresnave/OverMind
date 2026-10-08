@@ -81,9 +81,15 @@ plaintext it already holds.
   `masks.json`, so a copy of that file was a fast offline check of guessed values. A slow KDF
   was ruled out because the hook hashes every window of every tool output.
 - The first hook run of 0.7 or later seals a leftover `masks.json` into `masks.bin` and
-  deletes it. Its salts stay the same until the next `vault set` or `remove`, because renewing
-  them needs the vault. A `masks.json` that already exists always wins, since only an older
-  binary writes one.
+  deletes it. It also deletes the plaintext `masks.tmp` that a crashed 0.6 write could leave.
+  The salts stay the same until the next `vault set` or `remove`, because renewing them needs
+  the vault.
+- A `masks.json` that holds a JSON list wins over `masks.bin`, since only an older binary
+  writes one. A `masks.json` that is not a list is deleted without replacing `masks.bin`. If
+  sealing fails, the hook still masks from the legacy file and tries again on the next call.
+- Known race, during migration only: a hook that read the old `masks.json` just before a
+  `vault set` can write it over that set's `masks.bin`. The newly set secret is then unmasked
+  until the next `set` or `remove`.
 
 ## 3. Threat model — the honest limit (state it this way, never more strongly)
 

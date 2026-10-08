@@ -376,7 +376,12 @@ fn hook(kind: Option<&str>) -> ExitCode {
         Some("post-tool-use") => {
             // Fails open, like every hook here: an unreadable masks file
             // means no masking for this call, never a blocked tool.
-            let masks: Vec<HashMask> = match store().and_then(|s| s.load_masks()) {
+            let masks: Vec<HashMask> = match store().and_then(|s| {
+                if let Err(e) = s.migrate_legacy_masks() {
+                    eprintln!("with-secret hook: sealing the legacy masks failed ({e}); masking from them anyway");
+                }
+                s.load_masks()
+            }) {
                 Ok(Some(b)) => serde_json::from_slice(&b).unwrap_or_else(|e| {
                     eprintln!("with-secret hook: {MASKS_FILE} is not valid ({e}); not masking");
                     Vec::new()

@@ -42,7 +42,7 @@ fn vault() -> Vault {
 }
 
 /// Every offline hit a copier gets from the directory's bytes alone.
-fn offline_hits(dir: &std::path::Path) -> usize {
+fn offline_hits(dir: &std::path::Path, expected_files: usize) -> usize {
     let mut files = 0;
     let mut hits = 0;
     for entry in std::fs::read_dir(dir).unwrap() {
@@ -52,8 +52,8 @@ fn offline_hits(dir: &std::path::Path) -> usize {
             hits += mask_with_hashes(VALUE, &masks).1;
         }
     }
-    // Positive control: the store wrote vault.bin AND a masks file.
-    assert_eq!(files, 2, "expected vault.bin and one masks file");
+    // Positive control: every file the store should have left was read.
+    assert_eq!(files, expected_files, "unexpected file count in {dir:?}");
     hits
 }
 
@@ -65,7 +65,11 @@ fn copied_store_gives_no_offline_check<P: Protector>(protector: P) {
     };
     let v = vault();
     store.save(&v, masks_json(&v).unwrap()).unwrap();
-    assert_eq!(offline_hits(dir.path()), 0, "a copied file checks a guess");
+    assert_eq!(
+        offline_hits(dir.path(), 2),
+        0,
+        "a copied file checks a guess"
+    );
 }
 
 #[test]
@@ -79,7 +83,44 @@ fn a_copied_dpapi_masks_file_gives_no_offline_check() {
     copied_store_gives_no_offline_check(with_secret::dpapi::DpapiProtector);
 }
 
-/// The control for the two tests above: the same query DOES find the value
+/// A 0.6 install left plaintext masks.json, and a crashed 0.6 write left
+/// plaintext masks.tmp. After the hook's migration, a copy checks nothing.
+fn copied_store_after_migration_gives_no_offline_check<P: Protector>(protector: P) {
+    let dir = tempfile::tempdir().unwrap();
+    let plain = masks_json(&vault()).unwrap();
+    std::fs::write(dir.path().join("masks.json"), &plain).unwrap();
+    std::fs::write(dir.path().join("masks.tmp"), &plain).unwrap();
+    assert_eq!(
+        offline_hits(dir.path(), 2),
+        2,
+        "control: legacy files check a guess"
+    );
+    let store = VaultStore {
+        dir: dir.path().into(),
+        protector,
+    };
+    store.migrate_legacy_masks().unwrap();
+    assert_eq!(
+        offline_hits(dir.path(), 1),
+        0,
+        "a copied file checks a guess"
+    );
+    // ...and the hook still has the masks.
+    assert_eq!(store.load_masks().unwrap(), Some(plain));
+}
+
+#[test]
+fn a_copied_store_after_migration_gives_no_offline_check() {
+    copied_store_after_migration_gives_no_offline_check(XorProtector(0x5a));
+}
+
+#[cfg(windows)]
+#[test]
+fn a_copied_dpapi_store_after_migration_gives_no_offline_check() {
+    copied_store_after_migration_gives_no_offline_check(with_secret::dpapi::DpapiProtector);
+}
+
+/// The control for the copied-store tests above: the same query DOES find the value
 /// in a plaintext masks list, so a zero there is not a broken query.
 #[test]
 fn control_a_plaintext_masks_list_is_an_offline_check() {

@@ -191,7 +191,10 @@ impl Grant {
         }
     }
 
-    /// When it ends if shown at `now`: `Ok(None)` for forever. Checked: a
+    /// When it ends if shown at `now`: `Ok(None)` for NO END, which is both
+    /// `Forever` and `OneUse` (a one-use grant is spent, not timed out): tell
+    /// them apart by the variant, or by `KindId::max()`, never by `None`
+    /// alone. Checked: a
     /// `For` too large to add is `Err`, never a panic.
     pub fn end_at(&self, now: DateTime<Utc>) -> Result<Option<DateTime<Utc>>, Unrepresentable> {
         match self {

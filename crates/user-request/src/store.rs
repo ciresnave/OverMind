@@ -741,6 +741,10 @@ impl Store {
     /// requester - and never from an untrustworthy store. The store reads
     /// the clock itself (review 4, I-B): no caller can pick the time a grant
     /// or a gate window is judged at.
+    ///
+    /// ⚠️ For a one-use kind (`RestorePlan`) `find` only LOOKS: the approval
+    /// stays unspent. A consumer must authorise the action with
+    /// `spend_one_use` (and run it only on `Ok`), never with `find` alone.
     pub fn find(&self, kind: KindId, subject: &str, requester: &Requester) -> Option<&StoredGrant> {
         self.find_at(kind, subject, requester, Utc::now())
     }
@@ -1917,7 +1921,13 @@ fn append(path: &Path, text: &str) -> Result<(), String> {
 /// rename onto a file someone briefly holds is retried (review 3, I2).
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let tmp = path.with_extension(format!("tmp-{}", random_id()));
-    std::fs::write(&tmp, bytes).map_err(|e| format!("write {}: {e}", tmp.display()))?;
+    // flushed to the disk BEFORE the rename: a spent one-use approval must not
+    // come back after a power loss (the rename itself is journaled)
+    let written = std::fs::File::create(&tmp).and_then(|mut f| {
+        f.write_all(bytes)?;
+        f.sync_all()
+    });
+    written.map_err(|e| format!("write {}: {e}", tmp.display()))?;
     let deadline = Instant::now() + RETRY_FOR;
     loop {
         match std::fs::rename(&tmp, path) {

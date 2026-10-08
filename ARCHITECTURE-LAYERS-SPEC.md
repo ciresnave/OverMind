@@ -110,7 +110,15 @@ Every hook receives a `SessionContext` and returns a value the harness acts on. 
   - Today's `_run`/`_git` helpers (lanework.py:329-342) become the first effect primitives.
   - These are for plug-ins only. Orchestrator code is not a plug-in: it keeps its own helpers for work
     before and after a session, such as `run_task`'s fetch and worktree (lanework.py:623, 630-631);
-- the **services** it needs: for example, a Synapse connection or an MCP server it wants launched;
+- the **services** it needs: for example, a Synapse connection or an MCP server it wants launched.
+  - The harness opens each service, and the plug-in never holds the connection.
+  - A service's operations reach the model only as **pipeline tools** (today, an MCP server's tools go
+    through `GatedExecutor` already: `callables`, mcp_tools.py:420, gated in the loop).
+  - A plug-in's own code reaches a service only through a **service primitive**, refused like any
+    primitive while `allowed_call` is clear. So a hook cannot use a service, and an effect function
+    can, only for its allowed call.
+  - Service loop threads (MCP's runs its own event loop, mcp_tools.py:237-240) run only harness code.
+    Inbound messages are queued, and plug-in hooks see them on the session thread (`on_message_in`);
 - the **facts** it provides to policies (today's `FactSource`).
 
 **Ordering.** The pipeline runs plug-ins in config order. For `before_tool_call` it keeps today's
@@ -147,7 +155,7 @@ semantics exactly (MEASURED: `Gate.decide`, gate.py:501-536):
 
 **How the orchestrator verifies what loaded (a state read, not an assumption).**
 - After loading, the harness writes a **LoadedManifest**: each plug-in's name, version, `api_version`
-  and the SHA-256 of its source file, plus the tool names the session exposes.
+  and the SHA-256 of its source file, plus the tool names and the services the session exposes.
 - `SessionHandle.loaded()` returns it.
 - The orchestrator compares it with the config it wrote. Any difference stops the session before the
   first turn.
@@ -205,15 +213,20 @@ semantics exactly (MEASURED: `Gate.decide`, gate.py:501-536):
      before any plug-in module is imported. It **never disarms**: the process ends with the session.
      Python offers no way to remove an audit hook (MEASURED, Python 3.14.7: `sys` has `addaudithook`
      and `audit`, nothing else).
-   - The armed flag is process-wide. `allowed_call` and `primitive_frame` are **thread-local**
-     (`threading.local`), so every new thread starts with neither set, whatever the interpreter's
-     context-inheritance setting.
+   - The armed flag is process-wide. `allowed_call`, `primitive_frame` and harness-owned frames are
+     all **thread-local** (`threading.local`). Every new thread starts with none set, whatever the
+     interpreter's context-inheritance setting, and a harness frame on one thread exempts no other.
+   - A **fork** is part of its parent's session and process, not a session of its own. It loads no
+     plug-in code: its pipeline is built from the parent's already-loaded plug-ins (today fork.py:315
+     builds the child's gate from the parent's policies). So no plug-in import or `declares()` ever runs
+     inside the parent's allowed `fork` call.
      - Not `contextvars`. On Python 3.14.7 a new thread does not inherit context by default, so a
        contextvar switch would leave threads unarmed. With `-X thread_inherit_context=1` (the default on
        free-threaded builds), threads inherit context, so they would inherit a frame's exemption. Both
        were measured by the fifth audit of this spec, 2026-10-07.
-   - It records `subprocess.Popen`, `socket.connect`, `urllib.Request` and `open` (with a write mode)
-     events.
+   - It records `subprocess.Popen`, `socket.connect`, `urllib.Request` and `open` events. An `open` is
+     treated as a write by its mode **or its flags**, because `os.open` raises the event with mode
+     `None`.
    - **Default deny.** Any such event in the process that is not inside a `primitive_frame` or a
      harness-owned frame stops the session and is reported. Harness-owned frames are the harness's own
      I/O: the model call, MCP server launch, the ledger.
@@ -240,13 +253,17 @@ semantics exactly (MEASURED: `Gate.decide`, gate.py:501-536):
      - one whose **effect function** (not a hook) writes a file with `open(..., "w")` instead of using a
        primitive, when its allowed tool call runs. Expected event: `open` with a write mode, outside
        any `primitive_frame`;
-     - one that starts a `threading.Thread` from `on_session_start`, which opens a socket after the hook
-       has returned. Expected event: `socket.connect`, from a thread with no frame;
+     - one that starts a `threading.Thread` from `on_session_start`, which connects with `smtplib`
+       after the hook has returned (`threading` and `smtplib` are not banned, so the scan passes it).
+       Expected event: `socket.connect`, from a thread with no frame;
    - **only the static layer catches:**
      - one that imports another plug-in's tool module and calls a tool that does **no I/O** (it returns
        data, which skips the gate and the ledger). No audit event fires and no primitive is called, so
        only the scan sees it;
    - **only the pipeline catches:**
+     - one whose `on_model_output` calls its declared service (an MCP server's write tool, say)
+       directly. The service primitive refuses, because `allowed_call` is clear. The scan sees nothing
+       banned, and no audit event fires, because the connection is already open;
      - one whose `before_tool_call` runs the tool's own effect function itself, before returning
        `Allow` (approving its own call after doing it). The effect's process primitive is called with
        `allowed_call` clear, so it refuses (§2). Expected: that refusal, raised inside
@@ -267,6 +284,12 @@ semantics exactly (MEASURED: `Gate.decide`, gate.py:501-536):
    - with the armed flag held in a `contextvars` variable instead of process-wide, the thread
      fixture's test must turn red: on Python 3.14's default, the new thread would start unarmed.
    This repo's practice is to prove that a test fails, not just that it passes.
+
+**When it is built.** This section fixes the **guarantee** and the **test obligations**: the fixtures,
+the layer that must catch each one, and the mutations. Phase 3 builds the mechanism red-first against
+them and gets its own adversarial review, as #116 and #119 did. Six audit rounds on this spec already
+changed its design (process per session, thread-local frames, service primitives), and the built
+version will be measured, not argued.
 
 **Honest limit.** In-process Python cannot stop a deliberately hostile plug-in. An audit hook cannot be
 removed, but code that means to can get around it, for example with `ctypes`, by patching the harness's

@@ -13,7 +13,7 @@ in a working directory, whose hooks write a small JSON state file about it.
 |---|---|
 | `state` | the `<role>.json` state file (`LaneState`: role, session id, pid and start time, cwd, model, permission mode, launch arguments, busy flag, ...) and `load`. It only reads: the lane's own hooks write it. |
 | `facts` | the OS facts a decision needs, behind one trait (`SystemFacts`) so the logic is testable against a fake: is this pid a live `claude`, what is its cwd and start time, kill it only if it is still the process that was checked (`kill_verified`), find a new `claude` started after some moment. `SysinfoFacts` is the real implementation, on top of `sysinfo`. |
-| `paths` | path comparison that survives trailing separators, `/` against `\` and Windows case, and the directory name Claude Code files a session's transcript under. |
+| `paths` | path comparison that survives trailing separators, `/` against `\` and Windows case, the directory name Claude Code files a session's transcript under (`project_dir_name`), and the user's home directory (`home_dir`). |
 | `claude_proc` | finding the `claude` process from a hook's ancestry (skipping only known shells, refusing a stranger), parsing the flags of its launch command line, reading a hook's JSON payload, and `SESSION_IDENTITY_ENV_VARS`: the environment variables that name a running session, which a relaunch must not hand on. |
 
 ## Scope, honestly
@@ -26,7 +26,9 @@ in a working directory, whose hooks write a small JSON state file about it.
   fields a lane never wrote stay `None` rather than being guessed.
 - The real process code (`SysinfoFacts`) is developed and tested on **Windows** (the tools it serves run
   there); it builds and its pure parts are tested on Linux in CI.
-- Nothing here starts, restarts or stops a lane; `lane-restart` does that, and agentlife will.
+- Nothing here decides to start, restart or stop a lane, and nothing launches one. It can kill a process only
+  through `SystemFacts::kill_verified`, which a caller such as `lane-restart` invokes after its own checks, and
+  which refuses a pid whose identity changed since it was checked.
 - The minimum Rust version is the highest one declared by a dependency (currently `sysinfo`'s); it is not
   separately tested against older toolchains.
 

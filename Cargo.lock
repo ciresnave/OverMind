@@ -304,9 +304,10 @@ dependencies = [
 
 [[package]]
 name = "lane-restart"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "chrono",
+ "lane-state",
  "portable-pty",
  "serde",
  "serde_json",
@@ -315,6 +316,17 @@ dependencies = [
  "tempfile",
  "vt100",
  "windows-sys",
+]
+
+[[package]]
+name = "lane-state"
+version = "0.9.1"
+dependencies = [
+ "chrono",
+ "serde",
+ "serde_json",
+ "sysinfo",
+ "tempfile",
 ]
 
 [[package]]
@@ -717,7 +729,7 @@ checksum = "b4ac048d71ede7ee76d585517add45da530660ef4390e49b098733c6e897f254"
 
 [[package]]
 name = "user-request"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "chrono",
  "chrono-tz",
@@ -949,11 +961,11 @@ dependencies = [
 
 [[package]]
 name = "with-secret"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "chrono",
  "getrandom",
- "lane-restart",
+ "lane-state",
  "serde",
  "serde_json",
  "sha2",

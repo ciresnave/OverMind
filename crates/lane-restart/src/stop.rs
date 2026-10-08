@@ -182,4 +182,67 @@ mod tests {
         ));
         assert_eq!(*l.borrow(), vec!["kill 4242 start=99"]);
     }
+
+    /// The wait of a restart gets what the restart knows: the flag of the argv
+    /// about to launch, and the default 15 minute total (here with a fake
+    /// sleep, so no real wait).
+    #[test]
+    fn a_restart_of_a_lane_with_the_dev_channels_flag_reports_the_dialog() {
+        let l = log();
+        let facts = RecordingFacts::new(&l);
+        let mut st = state_at("overmind", "old", "Stop");
+        st.launch_args = Some(vec![
+            "claude".into(),
+            "--dangerously-load-development-channels".into(),
+            "server:claude-peers".into(),
+        ]);
+        let reader =
+            ScriptedReader::new(&l, vec![Some(state_at("overmind", "new", "SessionStart"))]);
+        let mut slept = 0u32;
+        let mut awaiting = 0;
+        let out = kill_and_relaunch_with(
+            &facts,
+            &reader,
+            &st,
+            &identity(),
+            "sonnet",
+            false,
+            &|_, _| Ok(()),
+            &mut |_| slept += 1,
+            &mut || awaiting += 1,
+        );
+        assert_eq!(out.unwrap(), RelaunchOutcome::AwaitingConfirmation);
+        assert_eq!(awaiting, 1, "reported once");
+        // 1 settle sleep, then 15 minutes in 1 s polls
+        assert_eq!(slept, 1 + 15 * 60);
+    }
+
+    /// The session being replaced is the state's own: its later events are not
+    /// the fresh session, so a restart does not call it done.
+    #[test]
+    fn a_restart_does_not_mistake_the_old_session_for_the_new_one() {
+        let l = log();
+        let mut facts = RecordingFacts::new(&l);
+        facts.alive = false;
+        let st = state_at("overmind", "old", "Stop");
+        let reader = ScriptedReader::new(
+            &l,
+            vec![Some(state_at("overmind", "old", "UserPromptSubmit"))],
+        );
+        let out = kill_and_relaunch_with(
+            &facts,
+            &reader,
+            &st,
+            &identity(),
+            "sonnet",
+            false,
+            &|_, _| Ok(()),
+            &mut |_| {},
+            &mut || {},
+        );
+        assert!(matches!(
+            out,
+            Err(RelaunchError::SessionNeverProcessedPrompt)
+        ));
+    }
 }

@@ -28,6 +28,10 @@ pub const MAX_PENDING_PER_ROLE: usize = 20;
 pub const MAX_PENDING: usize = 100;
 /// `bound_hash` is a hash, not a document.
 const MAX_BOUND_HASH_CHARS: usize = 128;
+/// A record never expires, so what it may hold is bounded too. The prompt clips
+/// a subject at 200 characters; a longer one hides its tail from the person.
+const MAX_SUBJECT_CHARS: usize = 200;
+const MAX_TEXT_CHARS: usize = 1024;
 
 /// One request nobody has answered yet.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -139,6 +143,15 @@ impl Store {
             return Err(format!(
                 "requester role is longer than {MAX_ROLE_CHARS} characters"
             ));
+        }
+        for (what, text, max) in [
+            ("subject", &req.subject, MAX_SUBJECT_CHARS),
+            ("summary", &req.summary, MAX_TEXT_CHARS),
+            ("reason", &req.reason, MAX_TEXT_CHARS),
+        ] {
+            if text.chars().count() > max {
+                return Err(format!("the {what} is longer than {max} characters"));
+            }
         }
         if !grant.within(req.kind.max(), now.with_timezone(&Local)) {
             return Err(format!(

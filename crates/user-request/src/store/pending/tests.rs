@@ -551,3 +551,57 @@ fn a_request_is_answered_by_one_prompt_at_a_time() {
     assert!(err.contains("no longer pending"), "{err}");
     assert_eq!(s.grants().len(), 1);
 }
+
+/// `id` and `created_at` are sealed too, so one record's body cannot be filed
+/// under another's id, nor a record be given a later birth.
+#[test]
+fn the_seal_covers_the_id_and_the_creation_time() {
+    let d = tempdir().unwrap();
+    let id = submit(d.path(), "overmind", "TJ_DB", "plan-1");
+    let mut s = open(d.path());
+    s.pending[0].created_at = mins(5);
+    let err = s
+        .begin_answer_at(&id, "plan-1", t0(), &AuditOnly)
+        .map(|_| ())
+        .unwrap_err();
+    assert!(err.contains("altered"), "{err}");
+    drop(s);
+    let d = tempdir().unwrap();
+    submit(d.path(), "overmind", "TJ_DB", "plan-1");
+    let mut s = open(d.path());
+    s.pending[0].id = "someone-elses".into();
+    let err = s
+        .begin_answer_at("someone-elses", "plan-1", t0(), &AuditOnly)
+        .map(|_| ())
+        .unwrap_err();
+    assert!(err.contains("altered"), "{err}");
+}
+
+#[test]
+fn a_prompt_the_channel_could_not_show_leaves_the_request_pending() {
+    let d = tempdir().unwrap();
+    let id = submit(d.path(), "overmind", "TJ_DB", "plan-1");
+    let ch = hello(|| ConsentOutcome::Unavailable("no Hello".into()), t0());
+    assert_eq!(
+        answer_via(d.path(), &id, "plan-1", &ch, t0()).unwrap(),
+        None
+    );
+    assert_eq!(open(d.path()).pending().len(), 1);
+}
+
+#[test]
+fn a_request_cannot_carry_unbounded_text() {
+    let d = tempdir().unwrap();
+    let mut s = open(d.path());
+    let mut r = req("overmind", "TJ_DB");
+    r.summary = "x".repeat(MAX_TEXT_CHARS + 1);
+    assert!(s.submit_at(&r, &hour(), "h", t0()).is_err());
+    let mut r = req("overmind", "TJ_DB");
+    r.reason = "x".repeat(MAX_TEXT_CHARS + 1);
+    assert!(s.submit_at(&r, &hour(), "h", t0()).is_err());
+    let r = req("overmind", &"s".repeat(MAX_SUBJECT_CHARS + 1));
+    assert!(s.submit_at(&r, &hour(), "h", t0()).is_err());
+    assert!(s.pending().is_empty());
+    let r = req("overmind", &"s".repeat(MAX_SUBJECT_CHARS));
+    assert!(s.submit_at(&r, &hour(), "h", t0()).is_ok());
+}

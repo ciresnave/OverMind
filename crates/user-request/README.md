@@ -164,7 +164,9 @@ withdraw(id)                                  the requester gives up (a prompt a
   it is signed, anchored in the audit chain and covered by the integrity checks like a grant.
 - **A restored request re-prompts and never approves by itself.** `begin_answer` reserves a NEW prompt
   through the gate (cooldown and caps apply), and only the channel's approval makes a grant. A prompt
-  nobody answered (`TimedOut`, `Unavailable`) leaves the request pending for the next try.
+  nobody answered (`TimedOut`, `Unavailable`) leaves the request pending for the next try. Both still count
+  as prompts toward the hourly caps, and a `TimedOut` starts the same 10-minute cooldown as a Cancel, so the
+  next try is at least 10 minutes later.
 - **`bound_hash` binds the request to the consumer's artifact** (agentlife: the frozen plan hash). The
   consumer passes the hash it holds now to `begin_answer`; any difference **voids** the request (audited
   `pending-stale`) and the person is never asked.
@@ -172,6 +174,8 @@ withdraw(id)                                  the requester gives up (a prompt a
   id, time, request, grant and `bound_hash`. A record whose seal does not match is voided, alerted and
   audited (`pending-altered`) before any prompt, so an altered subject, length, requester or hash is never
   shown. The seal catches an edit of a record. It cannot stop a process that holds the key (see the limits).
+- A request whose `bound_hash` no longer matches is voided for good; the consumer submits a new one.
+- A subject over 200 characters, or a summary or reason over 1024, is refused at `submit`.
 - **Stale** also means the requested end has passed, or the grant is no longer within the kind's maximum.
 - **Duplicate:** submitting the exact same request and `bound_hash` again returns the existing id. A
   different `bound_hash` is a different request.

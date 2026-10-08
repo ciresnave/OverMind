@@ -51,7 +51,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::channel::Outcome;
-use crate::request::{Approval, Grant, KindId, Requester, Scope};
+use crate::request::{Approval, Grant, KindId, Request, Requester, Scope};
 
 /// Encrypts the store's key at rest (`dpapi::Dpapi` in production).
 pub trait Protector {
@@ -164,6 +164,9 @@ pub struct Attempt {
     /// Normalised (`normal_subject`), so `DB`, `db` and `DB ` share a cooldown.
     pub subject: String,
     pub outcome: Ended,
+    /// The durable pending request this prompt answers, if any (`pending.rs`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending: Option<String>,
 }
 
 /// What `may_ask` hands back: the pending attempt to resolve once the person
@@ -209,6 +212,10 @@ struct GrantsFile {
     /// (second review of #2b, finding 4). Absent in older files.
     #[serde(default)]
     ended: BTreeMap<String, DateTime<Utc>>,
+    /// Requests nobody has answered yet; they outlive the process, the
+    /// reboot and the day (`pending.rs`). Absent in older files.
+    #[serde(default)]
+    pending: Vec<PendingRequest>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -253,6 +260,7 @@ pub struct Store {
     grants: Vec<StoredGrant>,
     revoked: BTreeSet<String>,
     ended: BTreeMap<String, DateTime<Utc>>,
+    pending: Vec<PendingRequest>,
     attempts: Vec<Attempt>,
     untrusted: Option<Untrusted>,
     /// `grants.json` was there but could not be read under this key.
@@ -353,6 +361,7 @@ impl Store {
             grants: Vec::new(),
             revoked: BTreeSet::new(),
             ended: BTreeMap::new(),
+            pending: Vec::new(),
             attempts: Vec::new(),
             untrusted,
             grants_unreadable: false,
@@ -456,6 +465,7 @@ impl Store {
                     self.grants = g.grants;
                     self.revoked = g.revoked;
                     self.ended = g.ended;
+                    self.pending = g.pending;
                     self.seq = seq;
                 }
                 Err(e) => {
@@ -600,6 +610,7 @@ impl Store {
                 .filter(|(_, at)| **at > now - Duration::days(1))
                 .map(|(id, at)| (id.clone(), *at))
                 .collect(),
+            pending: self.pending.clone(),
         };
         let attempts: Vec<&Attempt> = self
             .attempts
@@ -923,6 +934,7 @@ impl Store {
             kind: KindId::Secret,
             subject: "repair".into(),
             outcome: Ended::Repaired,
+            pending: None,
         });
         self.save(now)?;
         self.audit(
@@ -968,6 +980,21 @@ impl Store {
         now: DateTime<Utc>,
         alert: &dyn Alert,
     ) -> Result<Reservation, String> {
+        self.reserve(requester, kind, subject, now, alert, None)
+    }
+
+    /// `may_ask_at`, for a prompt that answers durable pending request
+    /// `pending` (the attempt remembers which, so an answer ends that request
+    /// in the same save as the grant).
+    pub(super) fn reserve(
+        &mut self,
+        requester: &Requester,
+        kind: KindId,
+        subject: &str,
+        now: DateTime<Utc>,
+        alert: &dyn Alert,
+        pending: Option<String>,
+    ) -> Result<Reservation, String> {
         self.writable()?;
         let subject = normal_subject(subject);
         let role = requester.role.clone();
@@ -1005,6 +1032,7 @@ impl Store {
             kind,
             subject: subject.clone(),
             outcome: Ended::Pending,
+            pending,
         });
         let recorded = self
             .audit(
@@ -1109,6 +1137,7 @@ impl Store {
             self.grants.clone(),
             self.revoked.clone(),
             self.attempts.clone(),
+            self.pending.clone(),
         );
         let result = self.resolve_once(reservation, outcome, now, alert);
         if result.is_err() {
@@ -1118,7 +1147,7 @@ impl Store {
                 .filter(|a| a.outcome == Ended::Alerted && !before.2.contains(a))
                 .cloned()
                 .collect();
-            (self.grants, self.revoked, self.attempts) = before;
+            (self.grants, self.revoked, self.attempts, self.pending) = before;
             // the alert was delivered and audited: keep its record (review 5,
             // M-4)
             self.attempts.extend(alerted);
@@ -1264,6 +1293,7 @@ impl Store {
             kind: KindId::Secret,
             subject: tag,
             outcome: Ended::Alerted,
+            pending: None,
         });
         self.audit(now, "ALERT", what)?;
         alert.alert(what);
@@ -1793,6 +1823,9 @@ mod fault {
         false
     }
 }
+
+mod pending;
+pub use pending::{Asking, PendingRequest, MAX_PENDING, MAX_PENDING_PER_ROLE};
 
 #[cfg(test)]
 mod tests;

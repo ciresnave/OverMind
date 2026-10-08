@@ -85,7 +85,13 @@ pub trait Protector {
 }
 
 pub const VAULT_FILE: &str = "vault.bin";
-pub const MASKS_FILE: &str = "masks.json";
+/// The hook's masks, protected like the vault. ⚠️ Row 5: they used to sit in
+/// `masks.json` as plain salted SHA-256, so a COPY of that file was a fast
+/// offline check of guessed values. A slow KDF was not an option: the hook
+/// hashes every window of every tool output.
+pub const MASKS_FILE: &str = "masks.bin";
+/// The pre-0.7 plaintext masks file. Read only to migrate it, then deleted.
+pub const LEGACY_MASKS_FILE: &str = "masks.json";
 // `approvals.key` and `approvals.json` are no longer read: approvals live in
 // the user-request store since #2b, so an old copy put back grants nothing.
 pub const AUDIT_FILE: &str = "access.log";
@@ -124,15 +130,57 @@ impl<P: Protector> VaultStore<P> {
             .map_err(|e| format!("the vault decrypted but is not valid: {e}"))
     }
 
-    /// `masks` is the already-serialised `masks.json` (`mask::masks_json`), so
-    /// this module never depends on `mask.rs`.
+    /// `masks` is the already-serialised masks list (`mask::masks_json`), so
+    /// this module never depends on `mask.rs`. It is stored protected.
     pub fn save(&self, vault: &Vault, masks: Vec<u8>) -> Result<(), String> {
         std::fs::create_dir_all(&self.dir)
             .map_err(|e| format!("create {}: {e}", self.dir.display()))?;
         let plain = serde_json::to_vec(vault).map_err(|e| e.to_string())?;
         let blob = self.protector.protect(&plain)?;
         write_atomic(&self.dir.join(VAULT_FILE), &blob)?;
-        write_atomic(&self.dir.join(MASKS_FILE), &masks)
+        write_atomic(&self.dir.join(MASKS_FILE), &self.protector.protect(&masks)?)?;
+        remove_if_present(&self.dir.join(LEGACY_MASKS_FILE))
+    }
+
+    /// The masks' plaintext (`mask::masks_json` bytes), or `None` if there are
+    /// none. A legacy `masks.json` is sealed into `masks.bin` and deleted.
+    /// ⚠️ It wins over `masks.bin`: only a pre-0.7 binary writes it, so it is
+    /// newer (a rollback's `vault set`). Its salts stay the same: renewing
+    /// them needs the vault, which the hook never opens (design §2.4). The
+    /// next `vault set` or `remove` renews them.
+    pub fn load_masks(&self) -> Result<Option<Vec<u8>>, String> {
+        let path = self.dir.join(MASKS_FILE);
+        let legacy = self.dir.join(LEGACY_MASKS_FILE);
+        match std::fs::read(&legacy) {
+            Ok(plain) => {
+                write_atomic(&path, &self.protector.protect(&plain)?)?;
+                remove_if_present(&legacy)?;
+                return Ok(Some(plain));
+            }
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                return Err(format!("read {}: {e}", legacy.display()))
+            }
+            Err(_) => {}
+        }
+        let blob = match std::fs::read(&path) {
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(format!("read {}: {e}", path.display())),
+        };
+        self.protector
+            .unprotect(&blob)
+            .map(Some)
+            .map_err(|e| format!("{} cannot be decrypted: {e}", path.display()))
+    }
+}
+
+/// Two hooks can migrate at once; the loser finds the file already gone.
+fn remove_if_present(path: &Path) -> Result<(), String> {
+    match std::fs::remove_file(path) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+            Err(format!("remove {}: {e}", path.display()))
+        }
+        _ => Ok(()),
     }
 }
 
@@ -247,7 +295,74 @@ mod tests {
         let raw = std::fs::read(dir.path().join("vault.bin")).unwrap();
         assert!(!String::from_utf8_lossy(&raw).contains("supersecretvalue"));
         assert_eq!(store.load().unwrap(), v);
-        assert_eq!(std::fs::read(dir.path().join("masks.json")).unwrap(), b"[]");
+        assert_eq!(store.load_masks().unwrap().as_deref(), Some(&b"[]"[..]));
+    }
+
+    fn xor_store(dir: &Path) -> VaultStore<XorProtector> {
+        VaultStore {
+            dir: dir.into(),
+            protector: XorProtector(0x5a),
+        }
+    }
+
+    #[test]
+    fn save_stores_the_masks_protected_and_drops_a_legacy_masks_json() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(LEGACY_MASKS_FILE), b"[\"old\"]").unwrap();
+        xor_store(dir.path())
+            .save(&Vault::default(), b"[\"new\"]".to_vec())
+            .unwrap();
+        let raw = std::fs::read(dir.path().join(MASKS_FILE)).unwrap();
+        assert_eq!(raw, XorProtector(0x5a).protect(b"[\"new\"]").unwrap());
+        assert!(!dir.path().join(LEGACY_MASKS_FILE).exists());
+    }
+
+    #[test]
+    fn no_masks_file_is_none_not_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(xor_store(dir.path()).load_masks().unwrap(), None);
+    }
+
+    #[test]
+    fn a_legacy_masks_json_is_sealed_then_deleted() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(LEGACY_MASKS_FILE), b"[\"old\"]").unwrap();
+        let store = xor_store(dir.path());
+        assert_eq!(
+            store.load_masks().unwrap().as_deref(),
+            Some(&b"[\"old\"]"[..])
+        );
+        assert!(!dir.path().join(LEGACY_MASKS_FILE).exists());
+        let raw = std::fs::read(dir.path().join(MASKS_FILE)).unwrap();
+        assert_eq!(raw, XorProtector(0x5a).protect(b"[\"old\"]").unwrap());
+    }
+
+    #[test]
+    fn a_masks_json_written_after_masks_bin_wins() {
+        // Rolled back to 0.6, `vault set` writes masks.json with the new
+        // secret; masks.bin is now stale and must not hide that secret.
+        let dir = tempfile::tempdir().unwrap();
+        let store = xor_store(dir.path());
+        store
+            .save(&Vault::default(), b"[\"stale\"]".to_vec())
+            .unwrap();
+        std::fs::write(dir.path().join(LEGACY_MASKS_FILE), b"[\"rollback\"]").unwrap();
+        assert_eq!(
+            store.load_masks().unwrap().as_deref(),
+            Some(&b"[\"rollback\"]"[..])
+        );
+        assert!(!dir.path().join(LEGACY_MASKS_FILE).exists());
+    }
+
+    #[test]
+    fn an_undecryptable_masks_file_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(MASKS_FILE), b"garbage").unwrap();
+        let store = VaultStore {
+            dir: dir.path().into(),
+            protector: FailingProtector,
+        };
+        assert!(store.load_masks().is_err());
     }
 
     #[test]

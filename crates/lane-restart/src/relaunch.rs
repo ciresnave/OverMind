@@ -7,6 +7,7 @@
 //! lanes before `--yes` is ever used for real.
 
 use crate::facts::{KillError, ProcessIdentity, SystemFacts};
+use crate::launch::{launch_argv, prepare_launch, LaunchSpec, PreparedLaunch};
 use crate::state::LaneState;
 
 /// PM finding, 2026-09-18: `role` and `name` come from a file the
@@ -302,30 +303,11 @@ pub fn has_dev_channels_flag(launch_args: &[String]) -> bool {
 /// general property this now guarantees for every allowlisted variadic
 /// flag, not just this one.
 pub fn claude_argv(name: &str, state: &LaneState, prompt: &str, model: &str) -> Vec<String> {
-    let mut argv = vec!["claude".to_string(), prompt.to_string()];
-    argv.push("--name".to_string());
-    argv.push(name.to_string());
-    argv.push("--model".to_string());
-    argv.push(model.to_string());
-    if let Some(permission_mode) = &state.permission_mode {
-        argv.push("--permission-mode".to_string());
-        argv.push(permission_mode.clone());
-    }
-    if state.remote_control {
-        argv.push("--remote-control".to_string());
-    }
-    if let Some(launch_args) = &state.launch_args {
-        let (extra, dropped_unknown) = extra_launch_args(launch_args);
-        argv.extend(extra);
-        if !dropped_unknown.is_empty() {
-            eprintln!(
-                "lane-restart: dropping unrecognised launch flag(s), not carrying them \
-                 over to the relaunch: {}",
-                dropped_unknown.join(", ")
-            );
-        }
-    }
-    argv
+    let spec = LaunchSpec {
+        name: name.to_string(),
+        ..LaunchSpec::from(state)
+    };
+    launch_argv(&spec, prompt, model)
 }
 
 /// PM finding, 2026-09-18: `wt.exe`'s own argument parser reads `;` as
@@ -418,8 +400,8 @@ pub fn is_opus(model: &str) -> bool {
 /// The `--model` value of the ORIGINAL launch, if it had one: the only
 /// explicit per-lane setting. `state.model` is deliberately NOT used -
 /// it records what the session happened to run on, not what was chosen.
-fn explicit_launch_model(state: &LaneState) -> Option<String> {
-    let args = state.launch_args.as_ref()?;
+fn explicit_launch_model(launch_args: Option<&Vec<String>>) -> Option<String> {
+    let args = launch_args?;
     let i = args.iter().position(|a| a == "--model")?;
     args.get(i + 1).filter(|v| !is_flag_token(v)).cloned()
 }
@@ -431,7 +413,16 @@ pub fn resolve_model(
     policy_default: &str,
     allow_opus: bool,
 ) -> Result<String, RelaunchError> {
-    let model = explicit_launch_model(state).unwrap_or_else(|| policy_default.to_string());
+    resolve_launch_model(state.launch_args.as_ref(), policy_default, allow_opus)
+}
+
+/// `resolve_model`, from the launch flags alone (a `LaunchSpec` has no state).
+pub fn resolve_launch_model(
+    launch_args: Option<&Vec<String>>,
+    policy_default: &str,
+    allow_opus: bool,
+) -> Result<String, RelaunchError> {
+    let model = explicit_launch_model(launch_args).unwrap_or_else(|| policy_default.to_string());
     if is_opus(&model) && !allow_opus {
         return Err(RelaunchError::OpusRefused(model));
     }
@@ -602,23 +593,17 @@ pub fn wait_for_relaunch_liveness(
 /// calls the EXACT SAME `claude_argv` the real launch calls, so the two
 /// can never drift apart again.
 pub fn describe_dry_run(state: &LaneState) -> Result<Vec<String>, RelaunchError> {
-    let name = state.name.as_deref().unwrap_or(&state.role);
-    if !valid_identifier(&state.role) {
-        return Err(RelaunchError::InvalidIdentifier(format!(
-            "role {:?}",
-            state.role
-        )));
-    }
-    if !valid_identifier(name) {
-        return Err(RelaunchError::InvalidIdentifier(format!("name {name:?}")));
-    }
-    let prompt = format!("read {} HANDOFF and continue", state.role);
-    let model = resolve_model(
-        state,
+    Ok(prepare(&LaunchSpec::from(state))?.argv)
+}
+
+/// `prepare_launch` with this machine's policy default model and the Opus
+/// override from the environment.
+fn prepare(spec: &LaunchSpec) -> Result<PreparedLaunch, RelaunchError> {
+    prepare_launch(
+        spec,
         &policy_default_model(&crate::state_dir()),
         allow_opus_from_env(),
-    )?;
-    Ok(claude_argv(name, state, &prompt, &model))
+    )
 }
 
 pub fn kill_and_relaunch(
@@ -628,37 +613,12 @@ pub fn kill_and_relaunch(
     identity: &ProcessIdentity,
     on_awaiting: &mut dyn FnMut(),
 ) -> Result<RelaunchOutcome, RelaunchError> {
-    let name = state.name.as_deref().unwrap_or(&state.role);
-    if !valid_identifier(&state.role) {
-        return Err(RelaunchError::InvalidIdentifier(format!(
-            "role {:?}",
-            state.role
-        )));
-    }
-    if !valid_identifier(name) {
-        return Err(RelaunchError::InvalidIdentifier(format!("name {name:?}")));
-    }
-
-    let prompt = format!("read {} HANDOFF and continue", state.role);
-    let model = resolve_model(
-        state,
-        &policy_default_model(&crate::state_dir()),
-        allow_opus_from_env(),
-    )?;
-    let argv = claude_argv(name, state, &prompt, &model);
-    if let Some(bad) = first_unsafe_argument(
-        std::iter::once(state.cwd.as_str()).chain(argv.iter().map(String::as_str)),
-    ) {
-        return Err(RelaunchError::UnsafeArgument(bad.to_string()));
-    }
-    // ⚠️ PM finding, 2026-09-19 (real-restart test): must check the argv
-    // this call is ACTUALLY ABOUT TO LAUNCH, not re-derive a guess from
-    // old `state.launch_args` - `argv` is the single source of truth for
-    // what's really being carried over (it already went through
-    // `extra_launch_args`'s allowlist, which `state.launch_args` alone
-    // doesn't reflect), and checking it directly can never disagree with
-    // what actually gets launched two lines below.
-    let carries_dev_channels_flag = has_dev_channels_flag(&argv);
+    let spec = LaunchSpec::from(state);
+    // every check runs BEFORE anything is killed
+    let PreparedLaunch {
+        argv,
+        carries_dev_channels_flag,
+    } = prepare(&spec)?;
 
     facts
         .kill_verified(state.pid, identity)

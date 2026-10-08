@@ -821,18 +821,26 @@ impl Store {
             .filter(|a| a.outcome == Ended::Pending && matches(a.kind, &a.subject))
             .map(|a| a.id.clone())
             .collect();
+        let requests: Vec<String> = self
+            .pending
+            .iter()
+            .filter(|p| matches(p.request.kind, &p.request.subject))
+            .map(|p| p.id.clone())
+            .collect();
         self.audit(
             now,
             "revoked-matching",
             &format!(
-                "kind={kind:?} subject={} n={} ids={} pending-ended={}",
+                "kind={kind:?} subject={} n={} ids={} pending-ended={} requests-dropped={}",
                 subject.as_deref().unwrap_or("*"),
                 ids.len(),
                 ids.join(","),
-                pending.join(",")
+                pending.join(","),
+                requests.join(",")
             ),
         )?;
         let n = ids.len();
+        self.pending.retain(|p| !requests.contains(&p.id));
         self.revoked.extend(ids);
         for a in self.attempts.iter_mut().filter(|a| pending.contains(&a.id)) {
             a.outcome = Ended::NotAsked;
@@ -857,15 +865,18 @@ impl Store {
             .filter(|a| a.outcome == Ended::Pending)
             .map(|a| a.id.clone())
             .collect();
+        let requests: Vec<String> = self.pending.iter().map(|p| p.id.clone()).collect();
         self.audit(
             now,
             "revoked-all",
             &format!(
-                "n={n} ids={} pending-ended={}",
+                "n={n} ids={} pending-ended={} requests-dropped={}",
                 ids.join(","),
-                pending.join(",")
+                pending.join(","),
+                requests.join(",")
             ),
         )?;
+        self.pending.clear();
         self.revoked.extend(ids);
         for a in self
             .attempts
@@ -922,6 +933,7 @@ impl Store {
             self.grants.clear();
             self.revoked.clear();
             self.ended.clear();
+            self.pending.clear();
             self.attempts.clear();
             self.seq = 0;
             self.untrusted = Some(Untrusted::Files(was.clone()));
@@ -1189,6 +1201,24 @@ impl Store {
             ));
         }
         let (role, subject) = (a.requester.role.clone(), a.subject.clone());
+        // a prompt that answers a durable pending request needs the request
+        // to be still there (a second prompt for it, or a withdrawal, must not
+        // land) and, when approved, to be for the length that was asked
+        let (pending_id, reserved_at) = (a.pending.clone(), a.at);
+        let asked = match &pending_id {
+            Some(pid) => Some(
+                self.pending
+                    .iter()
+                    .find(|p| p.id == *pid)
+                    .map(|p| p.grant.clone())
+                    .ok_or_else(|| {
+                        format!(
+                            "pending request {pid} is no longer pending (answered or withdrawn)"
+                        )
+                    })?,
+            ),
+            None => None,
+        };
         let ended = match outcome {
             Outcome::Approved(ap) => {
                 if ap.kind != a.kind
@@ -1217,6 +1247,13 @@ impl Store {
                         ap.expires_at.map(|e| e.to_rfc3339()).unwrap_or_default()
                     ));
                 }
+                if let Some(asked) = &asked {
+                    if !pending::is_what_was_requested(asked, ap, reserved_at) {
+                        return Err(
+                            "the approval is not for the duration that was requested".into()
+                        );
+                    }
+                }
                 Ended::Approved
             }
             Outcome::Denied => Ended::Denied,
@@ -1231,13 +1268,22 @@ impl Store {
             // (review 3, M6)
             grant = Some(self.add(ap.clone(), now)?);
         }
+        // an answer spends its request in the same save as the grant; a prompt
+        // nobody answered leaves it pending
+        let spent = pending_id.filter(|_| !matches!(ended, Ended::TimedOut | Ended::Unavailable));
+        if let Some(pid) = &spent {
+            self.pending.retain(|p| p.id != *pid);
+        }
         self.audit(
             now,
             "resolved",
             &format!(
-                "outcome={} role={role} subject={subject} attempt={}",
+                "outcome={} role={role} subject={subject} attempt={}{}",
                 ended.name(),
-                reservation.attempt_id
+                reservation.attempt_id,
+                spent
+                    .map(|p| format!(" pending-spent={p}"))
+                    .unwrap_or_default()
             ),
         )?;
         if let Some(a) = self

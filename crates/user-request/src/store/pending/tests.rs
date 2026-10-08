@@ -514,3 +514,40 @@ fn a_bound_hash_must_be_a_short_plain_string() {
         .submit_at(&req("overmind", "TJ_DB"), &hour(), &"a".repeat(64), t0())
         .is_ok());
 }
+
+/// Two prompts for one request could each be approved: the second is not
+/// started while the first is up, and a second reservation that slipped in
+/// anyway cannot land once the first has spent the request.
+#[test]
+fn a_request_is_answered_by_one_prompt_at_a_time() {
+    let d = tempdir().unwrap();
+    let id = submit(d.path(), "overmind", "TJ_DB", "plan-1");
+    let mut s = open(d.path());
+    let first = s.begin_answer_at(&id, "plan-1", t0(), &AuditOnly).unwrap();
+    let err = s
+        .begin_answer_at(&id, "plan-1", mins(1), &AuditOnly)
+        .map(|_| ())
+        .unwrap_err();
+    assert!(err.contains("already being answered"), "{err}");
+    // the first is approved and spends the request
+    let ok = hello(approve, t0()).present(&first.request, &first.grant, WAIT);
+    s.resolve_at(&first.reservation, &ok, t0(), &AuditOnly)
+        .unwrap();
+    // a reservation for the same request made some other way cannot land
+    let stray = s
+        .reserve(
+            &who("overmind"),
+            KindId::Secret,
+            "TJ_DB",
+            mins(2),
+            &AuditOnly,
+            Some(id.clone()),
+        )
+        .unwrap();
+    let again = hello(approve, mins(2)).present(&first.request, &first.grant, WAIT);
+    let err = s
+        .resolve_at(&stray, &again, mins(2), &AuditOnly)
+        .unwrap_err();
+    assert!(err.contains("no longer pending"), "{err}");
+    assert_eq!(s.grants().len(), 1);
+}

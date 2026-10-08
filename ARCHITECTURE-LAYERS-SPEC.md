@@ -95,7 +95,11 @@ Every hook receives a `SessionContext` and returns a value the harness acts on. 
 **Declaration** (`declares()`):
 - the plug-in's name and version;
 - `api_version` (integer);
-- the **tools** it contributes: name, JSON schema, and an effect function the harness will call;
+- the **tools** it contributes: name, JSON schema, and an effect function the harness will call. An
+  effect function does its I/O only through the **effect primitives** `plugin_api` hands it (run a
+  process, make a request, write a file). The harness runs each primitive inside an effect-call frame,
+  attributed to the allowed tool call. Today's `_run`/`_git` helpers (lanework.py:329-342) become the
+  first such primitives;
 - the **services** it needs: for example, a Synapse connection or an MCP server it wants launched;
 - the **facts** it provides to policies (today's `FactSource`).
 
@@ -155,7 +159,8 @@ semantics exactly (MEASURED: `Gate.decide`, gate.py:501-536):
   - The loop: agent.py:504.
   - A fork: agent.py:492, then fork.py:398-400. The fork's own gate inherits the parent's policies,
     built at fork.py:315.
-  - A dispatch reply: dispatch.py:172.
+  - A service-initiated call goes through it too: `DispatchService`'s reply (dispatch.py:172). The
+    service makes that call, not the model.
   - gate.py:580 decides and gate.py:596 calls the tool. No call site was found that skips it. The
     search was a regex over `src/`, so a dynamic call (`getattr`) is not ruled out.
 - **Model text is never gated.** That is gate.py's second constraint: it never reads prose (MEASURED:
@@ -164,8 +169,8 @@ semantics exactly (MEASURED: `Gate.decide`, gate.py:501-536):
 - **Not gated, by construction, because the model cannot reach them:**
   - the model HTTP call itself (providers.py:506-508);
   - before the session: the requirements-URL fetch (dispatch_mcp.py:86), the clone
-    (`prepare_clone`, dispatch_mcp.py:115-127, which runs it at 123) and the MCP server spawn
-    (mcp_tools.py:252);
+    (`prepare_clone`, dispatch_mcp.py:115-127, which runs it at 123), `run_task`'s own fetch, worktree
+    add and switch (lanework.py:623, 630-631), and the MCP server spawn (mcp_tools.py:252);
   - after the run: the check, commit, push and PR (lanework.py:649 and 667-682).
 - **The weak point:** the chokepoint holds by **convention**, not by structure.
   - `GatedExecutor` keeps a plain `self.tools` dict (gate.py:575).
@@ -174,33 +179,48 @@ semantics exactly (MEASURED: `Gate.decide`, gate.py:501-536):
   - Nothing in `src/` calls them around the executor. But nothing would stop a new plug-in from doing
     so.
 
-**The tests that make it structural (ASSUMED design; they are the first code in §9's plan).**
+**The tests that make it structural (ASSUMED design; written red-first with the plug-in API, §9 Phase 3).**
 
-1. **Static.** A test parses every plug-in module with `ast`. It fails on any import of `subprocess`,
-   `socket`, `urllib`, `http.client`, `os.system`/`os.popen`, `ctypes`, or a direct import of another
-   plug-in's tool module. It is new: today's boundary test is a substring check (§1).
-2. **Dynamic.** The harness installs a `sys.addaudithook` for the session.
+1. **Static.** A test parses every plug-in module with `ast`. It fails on:
+   - any import of `subprocess`, `socket`, `urllib`, `http.client`, `ctypes`, `multiprocessing` or
+     `asyncio.subprocess`;
+   - any use of `os.system`, `os.popen`, `os.spawn*` or `os.exec*`;
+   - a direct import of another plug-in's tool module.
+   Plug-ins reach I/O only through `plugin_api`'s effect primitives (§2). The test is new: today's
+   boundary test is a substring check (§1).
+2. **Dynamic.** The harness installs **one** `sys.addaudithook` per process, at start-up, with a
+   per-session switch. Python offers no way to remove an audit hook, so one hook serves every session.
    - It records `subprocess.Popen`, `socket.connect`, `urllib.Request` and `open` (with a write mode)
      events.
-   - Any such event raised while a plug-in hook is running, outside a harness effect-call frame, stops
-     the session and is reported.
+   - Any such event raised while a plug-in hook is running, outside an effect-call frame, stops the
+     session and is reported.
    - ASSUMED: that these audit events cover the cases. Python documents them as stdlib audit events;
      this is not yet tested here.
-3. **Rogue plug-in fixtures, each of which must fail:**
-   - one that spawns a process from `before_tool_call`;
-   - one that opens a socket from `on_model_output`;
-   - one that calls another plug-in's tool function directly;
-   - one that contributes a tool whose effect runs before `before_tool_call` returns.
-   Each must be refused at load (static) or stop the session (dynamic). Each test names the event it
-   expects, so a test that passes for the wrong reason is caught.
-4. **Mutation.** Remove the audit hook, or the static scan, and the matching rogue test must turn red.
-   This repo's practice is to prove that a test fails, not just that it passes (see MEASUREMENTS.md and
-   the PR records).
+3. **Rogue plug-in fixtures**, each built so that **exactly one** layer catches it. That way, each
+   layer's test can be shown to fail without it:
+   - **only the dynamic layer catches:**
+     - one that starts a process through a helper module outside the plug-in package (the scan sees no
+       banned import), from `before_tool_call`;
+     - one that opens a socket through a library it may import (the MCP SDK's `stdio_client`, say),
+       from `on_model_output`;
+   - **only the static layer catches:**
+     - one that imports another plug-in's tool module and calls its tool directly. That raises no audit
+       event, so only the scan sees it;
+   - **the pipeline itself catches:**
+     - one that contributes a tool whose effect would run before `before_tool_call` returns. The
+       harness never calls an effect before the allow.
+   Each test names the event or refusal it expects, so a test that passes for the wrong reason is
+   caught.
+4. **Mutation.** Each layer must be shown necessary:
+   - with the audit hook switched off, the dynamic-only fixtures' tests must turn red;
+   - with the static scan removed, the static-only fixture's test must turn red.
+   This repo's practice is to prove that a test fails, not just that it passes.
 
-**Honest limit.** In-process Python cannot stop a deliberately hostile plug-in; an audit hook can be
-removed by code that means to. This guarantee is against **accidental** bypass by plug-in authors and
-against a model's influence. Plug-ins are chosen by the orchestrator, never by the model. That is the
-same line with-secret draws (WITH-SECRET-DESIGN.md §3).
+**Honest limit.** In-process Python cannot stop a deliberately hostile plug-in. An audit hook cannot be
+removed, but code that means to can get around it, for example with `ctypes`, by patching the harness's
+own state, or through calls that raise no audit event. This guarantee is against **accidental** bypass
+by plug-in authors, and against a model's influence. Plug-ins are chosen by the orchestrator, never by
+the model. That is the same line with-secret draws (WITH-SECRET-DESIGN.md §3).
 
 ## 4. File-by-file map (cbeaba6)
 
@@ -277,8 +297,11 @@ Layer key: **O** orchestrator, **H** harness, **P** harness plug-in, **D** handl
 - **How lanes use the binaries:**
   - Every lane's hooks call absolute paths: `C:/Projects/.claude-hooks/lane-restart.exe state <event>`
     and `C:/Projects/.claude-hooks/with-secret.exe hook pre-tool-use|post-tool-use`.
-  - They are wired only in the user settings, `C:\Users\cires\.claude\settings.json`, lines 70-166
+  - They are wired only in the user settings, `C:\Users\cires\.claude\settings.json`: the
+    lane-restart and with-secret entries are at lines 70-166 of a `hooks` block that starts at line 60
     (MEASURED 2026-10-07; no project settings file references them).
+  - `user-request.exe` is installed there too (2026-10-07), but no hook calls it: it is the person's
+    `list`, `revoke` and `repair` command.
   - **Moving source code changes nothing a lane runs.** Lanes break only if a binary's name, location
     or command-line interface changes.
 
@@ -289,7 +312,7 @@ Layer key: **O** orchestrator, **H** harness, **P** harness plug-in, **D** handl
 | lane-state facts: `facts`, `state`, `paths`, the `lane_state_writer` items agentlife copied, and `SESSION_IDENTITY_ENV_VARS` | a small crate, **`lane-state`**, that lives **with lane-restart** (same repo, same version) and is published from there | with-secret and agentlife both need it. Publishing it ends both of agentlife's copies and with-secret's path dependency on lane-restart. |
 | lane-restart (its `relaunch` module moved into the library) | **agentlife**, or its own repo | agentlife's README says it "absorbs and supersedes OverMind's lane-restart over time" (agentlife README.md, *Intended scope*). |
 | user-request + with-secret | **one repo** (for example `consent`): asking a person, and the secrets that need asking | They are installed together, and with-secret calls user-request's store. One repo means one version number. |
-| licence tooling (`tools/`, `spdx_gate.py`, gate-fleet) | a portfolio tooling repo | not OverMind's job |
+| licence tooling (`tools/` and gate-fleet; **not** OverMind's own `.github/spdx_gate.py`, which stays, §4) | a portfolio tooling repo | not OverMind's job |
 | probes, research, MEASUREMENTS.md | a measurements repo | evidence, not product |
 
 ### 5.3 Rules every move follows (CLAUDE.md §9; CIRESNAVE-EXPECTATIONS §6.4a, §6.5, §6.6, §6.8)
@@ -302,10 +325,15 @@ Layer key: **O** orchestrator, **H** harness, **P** harness plug-in, **D** handl
 - **CI and branch protection on day one.**
   - The new repo's first commit carries its CI, and protection requires those checks before any
     second PR.
-  - **In the same step, OverMind's required contexts must change.** Today they require `rust
-    (ubuntu-latest)` and `rust (windows-latest)` (MEASURED: branch protection, 9 contexts). The `rust`
-    job has no path filter and runs `cargo test --workspace` (ci.yml:127-159). Once the last crate leaves,
-    it would fail red on every PR. The job and its two required contexts go in the same PR.
+  - **OverMind's required contexts must change when its last crate leaves.** Today they require `rust
+    (ubuntu-latest)` and `rust (windows-latest)` (MEASURED: branch protection, 9 contexts,
+    `enforcement_level: non_admins`). The `rust` job has no path filter and runs `cargo test
+    --workspace` (ci.yml:127-159).
+    - A PR that deletes the job never reports those two contexts, so it would wait on them forever.
+    - So the order is: the PR that deletes the job is reviewed and green on everything else; **then the
+      PM removes the two contexts from branch protection; then the PR merges.**
+  - Related gap: the licence gate's context ("Every source file declares the licence") is **not**
+    required today. Each new repo should require its own from day one.
 - **Dependencies are crates.io versions**, never `path =` or `git =` across repos.
   - So the order is: publish `lane-state`, then switch with-secret to it by version. Then move
     with-secret.
@@ -321,7 +349,8 @@ Layer key: **O** orchestrator, **H** harness, **P** harness plug-in, **D** handl
   - Binary names, the `.claude-hooks` paths and the hook command lines stay the same.
   - A binary is installed from its new repo only after that repo's first release passes the same smoke
     test used for the 0.6.0 install (2026-10-07).
-  - The same rename-then-copy install, with the old binary kept as `.prev`.
+  - The same rename-then-copy install, with the old binary kept as `<name>.<version>.prev` (for
+    example `with-secret.exe.0.5.4.prev`).
   - Hooks fail open, and their errors go to `C:/Projects/.lane-state/hook-errors.log`.
 
 ### 5.4 Order of moves, and rollback
@@ -351,7 +380,8 @@ The spin-outs do not depend on the harness work (§9 phases 3-5), so they come f
    - Rollback: reinstall the `.prev` binary, and revert the OverMind PR.
 6. **Move user-request and with-secret** to their repo (§8 Q2), with history.
    - The new repo's first release is installed and smoke-tested before OverMind deletes its copies.
-   - In the same OverMind PR: remove the `rust` job and its two required contexts (§5.3).
+   - The same OverMind PR deletes the `rust` job. The PM removes its two required contexts just before
+     merging (§5.3).
    - Rollback: reinstall the `.prev` binaries; until that PR merges, OverMind's copy is still there.
 7. **Move the licence-tooling sources and the measurements home.**
    - OverMind keeps `.github/spdx_gate.py`.
@@ -405,9 +435,15 @@ ASSUMED):
    README already plans to absorb it. `lane-state` goes wherever lane-restart goes, and is published from there.
 2. **user-request and with-secret: one repo, or two?** *Recommend one* (one version, installed together,
    with-secret already calls user-request's store).
-3. **Version numbers for the new repos: start fresh at 0.1.0, or continue from 0.6.x?** *Recommend
-   continuing* (0.6.x → 0.7.0 on the move), so an installed binary's number still says which release it
-   came from.
+3. **Version numbers after the move.**
+   - **A new repo** (consent; or lane-restart's own repo, if Q1 is answered that way): start fresh at
+     0.1.0, or continue from 0.6.x? *Recommend continuing* (0.6.x → 0.7.0 on the move), so an installed
+     binary's number still says which release it came from.
+   - **If lane-restart goes into agentlife** (Q1's recommendation): agentlife is at 0.2.7 (agentlife
+     Cargo.toml at `ad558af`), and one version per project means `lane-restart.exe` would take
+     agentlife's number. That reads as a downgrade from 0.6.0. *Recommend* that agentlife's release which
+     takes lane-restart in jumps to **0.7.0**, which is still one number for the project. The other
+     options are accepting the apparent downgrade, or answering Q1 "its own repo".
 4. **Probes that import `overmind`: do they stay with OverMind, or does `overmind` become a published
    Python package they depend on?** *Recommend they stay* until the harness is its own package; only the
    standalone probes and records move now.
@@ -426,9 +462,9 @@ Each phase is its own PR or PRs, red-first where it adds code, reviewed and gate
 - **Phase 0 (the cheapest safe first step: tests only, nothing moves).**
   - Add the import-direction test (new; §1) with **today's** actual edges as its allow-list. It
     documents the graph and freezes it.
-  - Add the rogue plug-in tests (§3) against today's `GatedExecutor`. Those expected to fail today are
-    marked as such.
-  - No behaviour changes, and these are the tests every later phase must keep green.
+  - No behaviour changes; this is a test every later phase must keep green.
+  - The rogue plug-in tests (§3) are **not** in Phase 0: the hooks they act from do not exist until
+    Phase 3. They are written red-first in Phase 3, with the plug-in API.
 - **Phase 1: extract in place** (§5.4 step 1): the `lane-state` crate, and `relaunch` into
   lane-restart's library.
 - **Phase 2: the spin-outs** (§5.4 steps 2-7), one PR per move, each with its rollback.
@@ -437,7 +473,8 @@ Each phase is its own PR or PRs, red-first where it adds code, reviewed and gate
   - `SessionConfig`, `LoadedManifest`, and the hooks of §2.
   - Today's gate, ledger, workspace tools, fork and MCP become plug-ins.
   - lanework becomes an orchestrator recipe that writes a config.
-  - The audit-hook chokepoint test turns green.
+  - The chokepoint tests of §3 are written red-first and turn green: the static scan, the audit hook,
+    the rogue fixtures and their mutations.
 - **Phase 4: the handler.** OpenAI shapes leave `agent.py` and `providers.py` for `handler/openai_chat`.
   The model client keeps HTTP, quota and failover within a route.
 - **Phase 5: routing.** Route choice moves to the orchestrator: model cards, results ledger, the quota

@@ -7,7 +7,7 @@
 //! lanes before `--yes` is ever used for real.
 
 use crate::facts::{KillError, ProcessIdentity, SystemFacts};
-use crate::launch::{launch_argv, prepare_launch, LaunchSpec, PreparedLaunch};
+use crate::launch::{launch_argv, prepare_launch, LaunchSpec, LivenessTiming, PreparedLaunch};
 use crate::state::LaneState;
 
 /// PM finding, 2026-09-18: `role` and `name` come from a file the
@@ -542,48 +542,18 @@ pub fn wait_for_relaunch_liveness(
     sleep: &mut dyn FnMut(std::time::Duration),
     on_awaiting: &mut dyn FnMut(),
 ) -> Result<RelaunchOutcome, RelaunchError> {
-    const PROGRESS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
-    // ⚠️ "Configurable" per the PM's own spec - not yet a CLI flag;
-    // this constant is the one place to change it until it is.
-    const TOTAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15 * 60);
-    const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
-
-    let mut waited = std::time::Duration::ZERO;
-    let mut reported_awaiting = false;
-    loop {
-        if let Some(state) = state_reader.read(role) {
-            if state.session_id != old_session_id && state.updated_by_event != "SessionStart" {
-                return Ok(RelaunchOutcome::Relaunched);
-            }
-        }
-        if waited >= PROGRESS_TIMEOUT {
-            let alive = facts.find_claude_process_in(cwd, killed_at_secs).is_some();
-            if !alive {
-                return Err(RelaunchError::SessionNeverProcessedPrompt);
-            }
-            if !reported_awaiting {
-                if !carries_dev_channels_flag {
-                    // Alive, no progress, and nothing known to explain
-                    // the stall - not the dialog case. Keep polling to
-                    // TOTAL_TIMEOUT anyway (a slow session is still a
-                    // real possibility), but never report a confirmation
-                    // that has no evidence behind it.
-                } else {
-                    on_awaiting();
-                    reported_awaiting = true;
-                }
-            }
-        }
-        if waited >= TOTAL_TIMEOUT {
-            return if reported_awaiting {
-                Ok(RelaunchOutcome::AwaitingConfirmation)
-            } else {
-                Err(RelaunchError::SessionNeverProcessedPrompt)
-            };
-        }
-        sleep(POLL_INTERVAL);
-        waited += POLL_INTERVAL;
-    }
+    crate::launch::wait_for_liveness(
+        facts,
+        state_reader,
+        cwd,
+        role,
+        Some(old_session_id),
+        killed_at_secs,
+        carries_dev_channels_flag,
+        &LivenessTiming::default(),
+        sleep,
+        on_awaiting,
+    )
 }
 
 /// PM finding, 2026-09-19: the dry-run message used to rebuild its own

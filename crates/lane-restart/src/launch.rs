@@ -5,11 +5,13 @@
 //! seam 1). A restore of a lane that is already dead has a roster entry, not a
 //! `LaneState`: `LaunchSpec` is what a launch actually reads.
 
+use crate::facts::SystemFacts;
 use crate::relaunch::{
     extra_launch_args, first_unsafe_argument, has_dev_channels_flag, resolve_launch_model,
-    valid_identifier, RelaunchError,
+    valid_identifier, RelaunchError, RelaunchOutcome, StateReader,
 };
 use crate::state::LaneState;
+use std::time::Duration;
 
 /// What a launch needs to know about the lane it starts. Built from a state
 /// file for a restart (`From<&LaneState>`), or by hand from a roster entry.
@@ -115,6 +117,93 @@ pub fn prepare_launch(
         argv,
         carries_dev_channels_flag,
     })
+}
+
+/// How long a launch is given. `Default` is what lane-restart has always
+/// used; a batch restore passes its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LivenessTiming {
+    /// How long without real progress before the process is checked.
+    pub progress_timeout: Duration,
+    /// How long in all before giving up (or reporting the dialog as final).
+    pub total_timeout: Duration,
+    pub poll_interval: Duration,
+}
+
+impl Default for LivenessTiming {
+    fn default() -> Self {
+        LivenessTiming {
+            progress_timeout: Duration::from_secs(20),
+            // "Configurable" per the PM's own spec; now it is, as a parameter.
+            total_timeout: Duration::from_secs(15 * 60),
+            poll_interval: Duration::from_secs(1),
+        }
+    }
+}
+
+/// Waits for a launched lane to show real progress: its own state file shows a
+/// session that is not `previous_session` (when there is one) and whose last
+/// event is past `SessionStart`. Three outcomes, as `relaunch`'s wait always had:
+/// `Relaunched`; `AwaitingConfirmation` (alive, no progress, and the launch
+/// carries the development-channels flag: `on_awaiting` fires once, polling
+/// goes on to the total timeout); or `Err(SessionNeverProcessedPrompt)`.
+/// `previous_session` is `None` for a lane that had no session to replace (a
+/// restore); `launched_after_secs` is the earliest start time of the new
+/// process. `sleep` and `on_awaiting` are injected so the whole protocol is
+/// testable without a real wait.
+#[allow(clippy::too_many_arguments)]
+pub fn wait_for_liveness(
+    facts: &dyn SystemFacts,
+    state_reader: &dyn StateReader,
+    cwd: &str,
+    role: &str,
+    previous_session: Option<&str>,
+    launched_after_secs: u64,
+    carries_dev_channels_flag: bool,
+    timing: &LivenessTiming,
+    sleep: &mut dyn FnMut(Duration),
+    on_awaiting: &mut dyn FnMut(),
+) -> Result<RelaunchOutcome, RelaunchError> {
+    let mut waited = std::time::Duration::ZERO;
+    let mut reported_awaiting = false;
+    loop {
+        if let Some(state) = state_reader.read(role) {
+            if previous_session.is_none_or(|old| state.session_id != old)
+                && state.updated_by_event != "SessionStart"
+            {
+                return Ok(RelaunchOutcome::Relaunched);
+            }
+        }
+        if waited >= timing.progress_timeout {
+            let alive = facts
+                .find_claude_process_in(cwd, launched_after_secs)
+                .is_some();
+            if !alive {
+                return Err(RelaunchError::SessionNeverProcessedPrompt);
+            }
+            if !reported_awaiting {
+                if !carries_dev_channels_flag {
+                    // Alive, no progress, and nothing known to explain
+                    // the stall - not the dialog case. Keep polling to
+                    // timing.total_timeout anyway (a slow session is still a
+                    // real possibility), but never report a confirmation
+                    // that has no evidence behind it.
+                } else {
+                    on_awaiting();
+                    reported_awaiting = true;
+                }
+            }
+        }
+        if waited >= timing.total_timeout {
+            return if reported_awaiting {
+                Ok(RelaunchOutcome::AwaitingConfirmation)
+            } else {
+                Err(RelaunchError::SessionNeverProcessedPrompt)
+            };
+        }
+        sleep(timing.poll_interval);
+        waited += timing.poll_interval;
+    }
 }
 
 #[cfg(test)]
@@ -279,5 +368,183 @@ mod tests {
         ]));
         let p = prepare_launch(&s, "sonnet", false).unwrap();
         assert!(p.carries_dev_channels_flag);
+    }
+
+    // -- LivenessTiming and wait_for_liveness (seam 2) ---------------------------
+
+    struct Reader(Vec<Option<LaneState>>, std::cell::RefCell<usize>);
+    impl StateReader for Reader {
+        fn read(&self, _role: &str) -> Option<LaneState> {
+            let mut calls = self.1.borrow_mut();
+            let idx = (*calls).min(self.0.len() - 1);
+            *calls += 1;
+            self.0[idx].clone()
+        }
+    }
+
+    fn reader(states: Vec<Option<LaneState>>) -> Reader {
+        Reader(states, std::cell::RefCell::new(0))
+    }
+
+    fn at(session: &str, event: &str) -> Option<LaneState> {
+        let mut st = state("overmind");
+        st.session_id = session.into();
+        st.updated_by_event = event.into();
+        Some(st)
+    }
+
+    /// Only `find_claude_process_in` is ever asked.
+    struct Alive(bool);
+    impl SystemFacts for Alive {
+        fn is_alive_claude_process(&self, _: u32) -> bool {
+            unreachable!()
+        }
+        fn cwd_of(&self, _: u32) -> Option<std::path::PathBuf> {
+            unreachable!()
+        }
+        fn has_live_shell_descendant(&self, _: u32) -> Result<bool, crate::facts::ShellCheckError> {
+            unreachable!()
+        }
+        fn transcript_is_recent(&self, _: &str, _: &str, _: Duration) -> bool {
+            unreachable!()
+        }
+        fn now(&self) -> chrono::DateTime<chrono::Utc> {
+            unreachable!()
+        }
+        fn process_identity(&self, _: u32) -> Option<crate::facts::ProcessIdentity> {
+            unreachable!()
+        }
+        fn kill_verified(
+            &self,
+            _: u32,
+            _: &crate::facts::ProcessIdentity,
+        ) -> Result<(), crate::facts::KillError> {
+            unreachable!()
+        }
+        fn find_claude_process_in(&self, _: &str, _: u64) -> Option<u32> {
+            self.0.then_some(1)
+        }
+        fn process_table(
+            &self,
+        ) -> Result<Vec<crate::facts::ProcEntry>, crate::facts::ShellCheckError> {
+            unreachable!()
+        }
+    }
+
+    fn short() -> LivenessTiming {
+        LivenessTiming {
+            progress_timeout: Duration::from_secs(2),
+            total_timeout: Duration::from_secs(5),
+            poll_interval: Duration::from_secs(1),
+        }
+    }
+
+    #[test]
+    fn the_default_timing_is_what_lane_restart_has_always_used() {
+        let t = LivenessTiming::default();
+        assert_eq!(t.progress_timeout, Duration::from_secs(20));
+        assert_eq!(t.total_timeout, Duration::from_secs(15 * 60));
+        assert_eq!(t.poll_interval, Duration::from_secs(1));
+    }
+
+    /// A batch restore wants a short wait: the parameters really are used.
+    #[test]
+    fn a_custom_timing_decides_when_the_dialog_is_reported_and_when_to_stop() {
+        let r = reader(vec![at("new", "SessionStart")]);
+        let mut slept = Vec::new();
+        let mut awaiting = 0;
+        let out = wait_for_liveness(
+            &Alive(true),
+            &r,
+            "C:/x",
+            "overmind",
+            Some("old"),
+            0,
+            true,
+            &short(),
+            &mut |d| slept.push(d),
+            &mut || awaiting += 1,
+        );
+        assert_eq!(out.unwrap(), RelaunchOutcome::AwaitingConfirmation);
+        assert_eq!(slept, vec![Duration::from_secs(1); 5], "5 s in 1 s steps");
+        assert_eq!(awaiting, 1, "reported once");
+    }
+
+    #[test]
+    fn a_dead_process_is_found_at_the_custom_progress_timeout() {
+        let r = reader(vec![None]);
+        let mut slept = 0;
+        let out = wait_for_liveness(
+            &Alive(false),
+            &r,
+            "C:/x",
+            "overmind",
+            Some("old"),
+            0,
+            false,
+            &short(),
+            &mut |_| slept += 1,
+            &mut || {},
+        );
+        assert!(matches!(
+            out,
+            Err(RelaunchError::SessionNeverProcessedPrompt)
+        ));
+        assert_eq!(slept, 2, "gave up at the 2 s progress timeout, not at 5 s");
+    }
+
+    /// A restore has no previous session: any session that got past
+    /// `SessionStart` is the fresh one.
+    #[test]
+    fn with_no_previous_session_any_progress_counts() {
+        let none = wait_for_liveness(
+            &Alive(true),
+            &reader(vec![at("whatever", "UserPromptSubmit")]),
+            "C:/x",
+            "overmind",
+            None,
+            0,
+            false,
+            &short(),
+            &mut |_| {},
+            &mut || {},
+        );
+        assert_eq!(none.unwrap(), RelaunchOutcome::Relaunched);
+        // control: still only SessionStart is not yet progress
+        let mut slept = 0;
+        let stuck = wait_for_liveness(
+            &Alive(false),
+            &reader(vec![at("whatever", "SessionStart")]),
+            "C:/x",
+            "overmind",
+            None,
+            0,
+            false,
+            &short(),
+            &mut |_| slept += 1,
+            &mut || {},
+        );
+        assert!(stuck.is_err());
+        assert_eq!(slept, 2);
+    }
+
+    /// With a previous session, its own later events are not the new session.
+    #[test]
+    fn the_previous_sessions_own_events_do_not_count() {
+        let mut slept = 0;
+        let out = wait_for_liveness(
+            &Alive(false),
+            &reader(vec![at("old", "UserPromptSubmit")]),
+            "C:/x",
+            "overmind",
+            Some("old"),
+            0,
+            false,
+            &short(),
+            &mut |_| slept += 1,
+            &mut || {},
+        );
+        assert!(out.is_err());
+        assert_eq!(slept, 2);
     }
 }

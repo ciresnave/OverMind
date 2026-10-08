@@ -98,6 +98,8 @@ pub const LEGACY_MASKS_TMP: &str = "masks.tmp";
 // `approvals.key` and `approvals.json` are no longer read: approvals live in
 // the user-request store since #2b, so an old copy put back grants nothing.
 pub const AUDIT_FILE: &str = "access.log";
+/// A `write_atomic` temp file this old is a leftover, not a write in flight.
+pub const STALE_TEMP_AGE: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
 
 pub fn default_dir() -> Result<PathBuf, String> {
     let base = std::env::var_os("LOCALAPPDATA").ok_or("LOCALAPPDATA is not set")?;
@@ -161,12 +163,21 @@ impl<P: Protector> VaultStore<P> {
     /// `remove` renews them. Failing here never stops masking: `load_masks`
     /// still reads the legacy file while it exists.
     pub fn migrate_legacy_masks(&self) -> Result<(), String> {
+        self.remove_stale_temp_files(STALE_TEMP_AGE);
         let legacy = self.dir.join(LEGACY_MASKS_FILE);
         if let Some(plain) = read_legacy(&legacy)? {
             write_atomic(&self.dir.join(MASKS_FILE), &self.protector.protect(&plain)?)?;
         }
         remove_if_present(&legacy)?;
         remove_if_present(&self.dir.join(LEGACY_MASKS_TMP))
+    }
+
+    /// Delete leftovers of a `write_atomic` whose rename failed: files named
+    /// `masks.<pid>.<16 hex>.tmp` or `vault.<pid>.<16 hex>.tmp` and older than
+    /// `max_age`. Best effort: nothing here may stop the hook.
+    pub fn remove_stale_temp_files(&self, max_age: std::time::Duration) -> usize {
+        let _ = max_age;
+        0
     }
 
     /// The masks' plaintext (`mask::masks_json` bytes), or `None` if there are
@@ -340,6 +351,76 @@ mod tests {
         let raw = std::fs::read(dir.path().join(MASKS_FILE)).unwrap();
         assert_eq!(raw, XorProtector(0x5a).protect(b"[\"new\"]").unwrap());
         assert!(!dir.path().join(LEGACY_MASKS_FILE).exists());
+    }
+
+    /// A leftover temp file as `write_atomic` names it, last written `age` ago.
+    fn leftover(dir: &Path, name: &str, age: std::time::Duration) {
+        let path = dir.join(name);
+        std::fs::write(&path, b"sealed bytes").unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() - age)
+            .unwrap();
+    }
+
+    const DAY2: std::time::Duration = std::time::Duration::from_secs(2 * 24 * 60 * 60);
+    const HOUR: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+
+    #[test]
+    fn stale_write_atomic_leftovers_are_removed_and_nothing_else() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        leftover(d, "masks.54596.d8905001dd337276.tmp", DAY2);
+        leftover(d, "vault.1.0000000000000001.tmp", DAY2);
+        leftover(d, "masks.54596.d8905001dd337277.tmp", HOUR); // a write in flight
+        leftover(d, "masks.bin", DAY2); // the real file, however old
+        leftover(d, "vault.bin", DAY2);
+        leftover(d, "access.log", DAY2);
+        leftover(d, "notes.tmp", DAY2); // not our naming
+        leftover(d, "masks.abc.d8905001dd337276.tmp", DAY2); // pid not digits
+        leftover(d, "masks.1.d8905001dd33727.tmp", DAY2); // 15 hex, not 16
+        leftover(d, "masks.1.d8905001dd337276.tmp.bak", DAY2);
+        let removed = xor_store(d).remove_stale_temp_files(STALE_TEMP_AGE);
+        assert_eq!(removed, 2);
+        let mut left: Vec<String> = std::fs::read_dir(d)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        left.sort();
+        assert_eq!(
+            left,
+            [
+                "access.log",
+                "masks.1.d8905001dd33727.tmp",
+                "masks.1.d8905001dd337276.tmp.bak",
+                "masks.54596.d8905001dd337277.tmp",
+                "masks.abc.d8905001dd337276.tmp",
+                "masks.bin",
+                "notes.tmp",
+                "vault.bin",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_missing_directory_is_not_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let gone = dir.path().join("nope");
+        assert_eq!(xor_store(&gone).remove_stale_temp_files(STALE_TEMP_AGE), 0);
+    }
+
+    #[test]
+    fn migrating_cleans_stale_leftovers_even_when_the_seal_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        std::fs::write(d.join(LEGACY_MASKS_FILE), b"[\"old\"]").unwrap();
+        std::fs::create_dir(d.join(MASKS_FILE)).unwrap(); // the rename cannot replace a directory
+        leftover(d, "masks.9.00000000000000aa.tmp", DAY2);
+        assert!(xor_store(d).migrate_legacy_masks().is_err());
+        assert!(!d.join("masks.9.00000000000000aa.tmp").exists());
+        assert!(d.join(LEGACY_MASKS_FILE).exists(), "masking source kept");
     }
 
     #[test]

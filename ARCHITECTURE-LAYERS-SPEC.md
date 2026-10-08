@@ -97,9 +97,13 @@ Every hook receives a `SessionContext` and returns a value the harness acts on. 
 - `api_version` (integer);
 - the **tools** it contributes: name, JSON schema, and an effect function the harness will call. An
   effect function does its I/O only through the **effect primitives** `plugin_api` hands it (run a
-  process, make a request, write a file). The harness runs each primitive inside an effect-call frame,
-  attributed to the allowed tool call. Today's `_run`/`_git` helpers (lanework.py:329-342) become the
-  first such primitives;
+  process, make a request, write a file).
+  - The harness runs each primitive inside an effect-call frame, attributed to the allowed tool call.
+  - A primitive called when no allowed call is in progress **is refused** (it raises). It never opens
+    a frame of its own.
+  - Today's `_run`/`_git` helpers (lanework.py:329-342) become the first effect primitives.
+  - These are for plug-ins only. Orchestrator code is not a plug-in: it keeps its own helpers for work
+    before and after a session, such as `run_task`'s fetch and worktree (lanework.py:623, 630-631);
 - the **services** it needs: for example, a Synapse connection or an MCP server it wants launched;
 - the **facts** it provides to policies (today's `FactSource`).
 
@@ -186,10 +190,14 @@ semantics exactly (MEASURED: `Gate.decide`, gate.py:501-536):
      `asyncio.subprocess`;
    - any use of `os.system`, `os.popen`, `os.spawn*` or `os.exec*`;
    - a direct import of another plug-in's tool module.
-   Plug-ins reach I/O only through `plugin_api`'s effect primitives (§2). The test is new: today's
-   boundary test is a substring check (§1).
+   The scan catches the **direct** routes to I/O. It does not, alone, guarantee "I/O only through the
+   primitives": `import asyncio` with `asyncio.create_subprocess_exec`, `os.posix_spawn`, a third-party
+   HTTP library, `open(..., "w")`, `pathlib` writes and `__import__("subprocess")` all pass it. Those are
+   the dynamic layer's job. The test is new: today's boundary test is a substring check (§1).
 2. **Dynamic.** The harness installs **one** `sys.addaudithook` per process, at start-up, with a
    per-session switch. Python offers no way to remove an audit hook, so one hook serves every session.
+   The switch and the current effect-call frame live in a `contextvars` variable, so concurrent sessions
+   in one process do not see each other's state (ASSUMED; not yet tested).
    - It records `subprocess.Popen`, `socket.connect`, `urllib.Request` and `open` (with a write mode)
      events.
    - Any such event raised while a plug-in hook is running, outside an effect-call frame, stops the
@@ -200,20 +208,27 @@ semantics exactly (MEASURED: `Gate.decide`, gate.py:501-536):
    layer's test can be shown to fail without it:
    - **only the dynamic layer catches:**
      - one that starts a process through a helper module outside the plug-in package (the scan sees no
-       banned import), from `before_tool_call`;
-     - one that opens a socket through a library it may import (the MCP SDK's `stdio_client`, say),
-       from `on_model_output`;
+       banned import), from `before_tool_call`. Expected event: `subprocess.Popen`;
+     - one that connects to a local listener with `smtplib`, which is not on the ban list and connects
+       through `socket.create_connection`, from `on_model_output`. Expected event: `socket.connect`
+       (ASSUMED until the fixture is written; the MCP SDK's `stdio_client` would **not** do, because it
+       starts a process and opens no socket, as measured by the third audit of this spec, 2026-10-07);
    - **only the static layer catches:**
-     - one that imports another plug-in's tool module and calls its tool directly. That raises no audit
-       event, so only the scan sees it;
-   - **the pipeline itself catches:**
-     - one that contributes a tool whose effect would run before `before_tool_call` returns. The
-       harness never calls an effect before the allow.
+     - one that imports another plug-in's tool module and calls a tool that does **no I/O** (it returns
+       data, which skips the gate and the ledger). No audit event fires and no primitive is called, so
+       only the scan sees it;
+   - **only the pipeline catches:**
+     - one that calls an effect primitive when no allowed call is in progress. The primitive refuses
+       (§2), and the scan and the audit hook see nothing wrong;
+     - one that contributes a tool whose effect would run before `before_tool_call` returns. The harness
+       never calls an effect before the allow.
    Each test names the event or refusal it expects, so a test that passes for the wrong reason is
    caught.
 4. **Mutation.** Each layer must be shown necessary:
    - with the audit hook switched off, the dynamic-only fixtures' tests must turn red;
-   - with the static scan removed, the static-only fixture's test must turn red.
+   - with the static scan removed, the static-only fixture's test must turn red;
+   - with the primitives' refusal outside a frame removed, the first pipeline-only fixture's test must
+     turn red.
    This repo's practice is to prove that a test fails, not just that it passes.
 
 **Honest limit.** In-process Python cannot stop a deliberately hostile plug-in. An audit hook cannot be
@@ -237,7 +252,7 @@ Layer key: **O** orchestrator, **H** harness, **P** harness plug-in, **D** handl
 | `mcp_tools.py` | MCP server as a tool source, plus FAM/Synapse channel bindings | **P** (MCP plug-in; Synapse plug-in) | `convert_tool` (94-142) produces OpenAI function schemas, which is **D** work. |
 | `outcome.py` | `claims_success`, `reconcile` | **P** (check) | `reconcile` has no caller in `src/` (only examples and probe). |
 | `dispatch.py` | `classify` (71-94) plus `DispatchService` (124-209), which calls `run_agent` (151) once per inbound message | `classify` is the Synapse **P**'s `on_message_in`. `DispatchService` is **O**: it starts one session per message. | The PM's suspicion that it is a plug-in is **partly refuted**: it calls the pipeline, it isn't called by it (dispatch.py:151). |
-| `lanework.py` | task spec `Task` (124-176), `LaneResult` (180-213), path confinement and `WorkspaceConfined` policy (220-322), `Workspace` tools (359-455), schemas and system prompt (458-491), `claims_done` (507-514), the PR recipe (531-590), `build_client` (593-615), `run_task` (618-708), CLI (711-725) | split: **O** (Task, LaneResult, recipe, `build_client`, `run_task`, CLI); **P** (WorkspaceConfined, Workspace tools, claims_done) | The suspicion "loop plus recipe plus check" is **partly refuted**: the loop is not here; `run_task` calls `run_agent` (lanework.py:644). The shared `_run`/`_git` helpers (329-342) become a harness effect function; `scrubbed_env` and `_clip` (345-352) go with them. |
+| `lanework.py` | task spec `Task` (124-176), `LaneResult` (180-213), path confinement and `WorkspaceConfined` policy (220-322), `Workspace` tools (359-455), schemas and system prompt (458-491), `claims_done` (507-514), the PR recipe (531-590), `build_client` (593-615), `run_task` (618-708), CLI (711-725) | split: **O** (Task, LaneResult, recipe, `build_client`, `run_task`, CLI); **P** (WorkspaceConfined, Workspace tools, claims_done) | The suspicion "loop plus recipe plus check" is **partly refuted**: the loop is not here; `run_task` calls `run_agent` (lanework.py:644). The shared `_run`/`_git` helpers (329-342) become the first effect primitives (§2); `scrubbed_env` and `_clip` (345-352) go with them. The orchestrator side keeps its own copy for work before and after a session. |
 | `providers.py` | provider registry `PROVIDERS`, `ProviderClient` (469-707), `RoutedClient` (710-738), `available_providers` (741-749) | **M**, with the request building and response parsing in `ProviderClient.chat` moving to **D** | `RoutedClient` is **partly refuted** as a mix: it only fails over across providers in the order it is given (providers.py:727-738). The choice is the caller's: `Task.provider_keys` (lanework.py:174) and `build_client`. The real mix is `ProviderClient.chat`: HTTP, failover across models, quota recording and the wire format in one method. |
 | `quota.py` | free-tier allowance book | **M** (the book), plus a new read view for **O** | Today only the client uses it: it reads the book before choosing a model (`self.quota.blocked`, providers.py:574-578 and 611-626) and writes it on every request (`record_request`, providers.py:655, saving at quota.py:245-247). `build_client` only constructs it (lanework.py:600, 613). Routing does not read it yet. |
 | `ledger.py` | per-dispatch record, collection only | **O** (results ledger) | It shares a name with `gate.Ledger`, which is a different thing. Rename one. |

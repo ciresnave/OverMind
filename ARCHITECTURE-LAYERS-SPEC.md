@@ -1,6 +1,6 @@
 # OverMind architecture: layers and spin-outs (spec, NOT implementation)
 
-**Status: a draft for CireSnave's approval. No code moves until it is approved.** Asked for by the PM on
+**Status: proposed, approval pending: board item 143.** Nothing in it is approved, and no code moves until CireSnave rules. Asked for by the PM on
 2026-10-07, for CireSnave. His words (verbatim, relayed by the PM):
 
 - *"Grab bag programs are bugs waiting to happen."*

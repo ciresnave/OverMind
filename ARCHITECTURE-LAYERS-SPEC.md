@@ -108,9 +108,9 @@ Every hook receives a `SessionContext` and returns a value the harness acts on. 
 - the **facts** it provides to policies (today's `FactSource`).
 
 **Ordering.** The pipeline runs plug-ins in config order. For `before_tool_call` it keeps today's
-semantics exactly (MEASURED: `Gate.decide`, gate.py:501-536):
+semantics exactly (MEASURED: `Gate.decide`, gate.py:500-536):
 - only the plug-ins whose policy applies to the call are asked;
-- the first denial returns at once ("any denial wins, immediately", gate.py:533);
+- the first denial returns at once ("any denial wins, immediately", gate.py:534);
 - a call that no policy applies to is denied (gate.py:502-507).
 
 **SessionConfig** (ASSUMED schema, JSON; a file or an in-memory object):
@@ -200,8 +200,8 @@ semantics exactly (MEASURED: `Gate.decide`, gate.py:501-536):
    in one process do not see each other's state (ASSUMED; not yet tested).
    - It records `subprocess.Popen`, `socket.connect`, `urllib.Request` and `open` (with a write mode)
      events.
-   - Any such event raised while a plug-in hook is running, outside an effect-call frame, stops the
-     session and is reported.
+   - Any such event raised while a plug-in hook **or a plug-in's effect function** is running, outside
+     an effect primitive's frame, stops the session and is reported.
    - ASSUMED: that these audit events cover the cases. Python documents them as stdlib audit events;
      this is not yet tested here.
 3. **Rogue plug-in fixtures**, each built so that **exactly one** layer catches it. That way, each
@@ -214,22 +214,26 @@ semantics exactly (MEASURED: `Gate.decide`, gate.py:501-536):
        (MEASURED 2026-10-07, Python 3.14.7: an audit hook around `smtplib.SMTP` connecting to a local
        listener saw one `socket.connect` and no `subprocess.Popen`. The MCP SDK's `stdio_client` would **not** do, because it
        starts a process and opens no socket, as measured by the third audit of this spec, 2026-10-07);
+     - one whose **effect function** (not a hook) writes a file with `open(..., "w")` instead of using a
+       primitive, when its allowed tool call runs. Expected event: `open` with a write mode;
    - **only the static layer catches:**
      - one that imports another plug-in's tool module and calls a tool that does **no I/O** (it returns
        data, which skips the gate and the ledger). No audit event fires and no primitive is called, so
        only the scan sees it;
    - **only the pipeline catches:**
-     - one that calls an effect primitive when no allowed call is in progress. The primitive refuses
-       (§2), and the scan and the audit hook see nothing wrong;
-     - one that contributes a tool whose effect would run before `before_tool_call` returns. The harness
-       never calls an effect before the allow.
+     - one whose `before_tool_call` runs the tool's own effect function itself, before returning
+       `Allow` (approving its own call after doing it). The effect's process primitive is called while no
+       allowed call is in progress, so it refuses (§2). Expected: that refusal, raised inside
+       `before_tool_call`. The scan sees nothing banned, and the audit hook sees no event, because the
+       refused primitive never starts the process.
    Each test names the event or refusal it expects, so a test that passes for the wrong reason is
    caught.
 4. **Mutation.** Each layer must be shown necessary:
    - with the audit hook switched off, the dynamic-only fixtures' tests must turn red;
    - with the static scan removed, the static-only fixture's test must turn red;
-   - with the primitives' refusal outside a frame removed, the first pipeline-only fixture's test must
-     turn red.
+   - with the primitives' refusal outside a frame removed, the pipeline-only fixture's test must turn
+     red. Without the refusal, the primitive's process start would then be caught by the audit hook
+     instead; the test still turns red, because it names the refusal it expects, not just any stop.
    This repo's practice is to prove that a test fails, not just that it passes.
 
 **Honest limit.** In-process Python cannot stop a deliberately hostile plug-in. An audit hook cannot be

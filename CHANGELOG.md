@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.13.0
+
+- **Breaking: `crates/user-request` and `crates/with-secret` are deleted from this repository** (ARCHITECTURE-LAYERS-SPEC 5.4 step 6). Both live in [`ciresnave/consent`](https://github.com/ciresnave/consent) now (one repo, two crates, history kept); `ciresnave/consent`@`45a6856` (0.12.0) was verified blob-identical to this repo's `57fae94` apart from the two crate manifests (the root workspace files differ too; they are deleted, below), `user-request` 0.12.0 is published on crates.io, and `C:\Projects\.claude-hooks\user-request.exe` and `with-secret.exe` were installed from that build and smoke-tested (the `.pre-0.12.0.prev` binaries are kept). `with-secret` is not published. Anyone who depended on either crate by path takes `user-request` from crates.io instead.
+- Also gone, with the code they describe: `WITH-SECRET-DESIGN.md`, `docs/WITH-SECRET-RUNBOOK.md` and `docs/superpowers/plans/2026-10-01-with-secret.md` (byte-identical copies are in `ciresnave/consent`); the root `Cargo.toml`/`Cargo.lock` (no Rust remains here); the CI `rust` job; `tests/test_version_lockstep.py` (it only compared pyproject with the Cargo workspace, which is gone: `pyproject.toml` is now the single version).
+- `probe/desktop_grade.py` reads the runbook at its pinned `REF` (`3bf513f`), so it is unaffected.
+- README points at the new home.
+- **Required CI contexts:** `rust (ubuntu-latest)` and `rust (windows-latest)` no longer exist; the PM removes them from branch protection just before merging this PR.
+
 ## 0.12.0
 
 - **Breaking: `crates/lane-restart` and `crates/lane-state` are deleted from this workspace** (ARCHITECTURE-LAYERS-SPEC 5.4 step 5). Both live in the agentlife repo now (two crates); `lane-restart.exe` 0.12.15 is installed from there and was smoke-tested by a real `lane-restart start`. Anyone who depended on either crate by path takes `lane-state` from crates.io instead.

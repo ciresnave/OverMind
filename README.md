@@ -44,9 +44,11 @@ the shape below by a week; read it for the FAM/MCP/PTY edges, not for how a lane
   the repo's own CI config. Everything else (CI config text, an in-repo standards file, a caller's
   extra requirements or a `https://` URL to them) is safe to fold in richly, because none of it
   becomes a subprocess argv — only informational text the model reads.
-- **`crates/with-secret`** — runs one command with one secret, after CireSnave approves via
-  Windows Hello; masks the value in output and refuses environment dumps. ⚠️ Stops accidental
-  exposure, not deliberate misuse. `docs/WITH-SECRET-RUNBOOK.md`.
+- **`user-request` and `with-secret`** — no longer here: they moved to
+  [`ciresnave/consent`](https://github.com/ciresnave/consent) (OverMind 0.13.0; one repo, two
+  crates, history kept). `with-secret` runs one command with one secret, after CireSnave approves
+  via Windows Hello; ⚠️ it stops accidental exposure, not deliberate misuse. Its design and runbook
+  (`WITH-SECRET-DESIGN.md`, `docs/WITH-SECRET-RUNBOOK.md`) are there too.
 
 Why it exists, in one measured sentence: **a model that states a prohibition perfectly violates it
 4 to 7 times out of 8 when its reasoning is disabled** (`MEASUREMENTS.md` §11, §16) — and

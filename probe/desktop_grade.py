@@ -5,7 +5,8 @@ kinds of bulk work can leave Claude (CireSnave's cost rule).
     LLAMA_DESKTOP_API_KEY=... python probe/desktop_grade.py <out.json> [--controls-only]
 
 Run it through with-secret, which holds the key and needs CireSnave's
-Windows Hello approval (docs/WITH-SECRET-RUNBOOK.md §4).
+Windows Hello approval (docs/WITH-SECRET-RUNBOOK.md §4; since OverMind 0.13.0 that file lives
+in ciresnave/consent, and this probe still reads it at the pinned OverMind `REF` below).
 
 Every input is fetched at run time from a fixed ref (CI logs by run id, docs
 by commit), so a result can be reproduced. Every grade is computed, never

@@ -453,7 +453,8 @@ The spin-outs do not depend on the harness work (§9 phases 3-5), so they come f
    `lane-state`.**
    - Only after the new home's first `lane-restart.exe` is installed and smoke-tested.
    - Rollback: reinstall the `.prev` binary, and revert the OverMind PR.
-6. **Move user-request and with-secret** to their repo (§8 Q2), with history.
+6. **Move user-request and with-secret** to their repo (§8 Q2), with history. ✅ Done: `ciresnave/consent`
+   @45a6856 (0.12.0), and OverMind 0.13.0 deletes its copies and the `rust` job.
    - The new repo's first release is installed and smoke-tested before OverMind deletes its copies.
    - The same OverMind PR deletes the `rust` job. The PM removes its two required contexts just before
      merging (§5.3).

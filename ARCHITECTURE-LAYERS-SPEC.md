@@ -453,11 +453,15 @@ The spin-outs do not depend on the harness work (§9 phases 3-5), so they come f
    `lane-state`.**
    - Only after the new home's first `lane-restart.exe` is installed and smoke-tested.
    - Rollback: reinstall the `.prev` binary, and revert the OverMind PR.
+   - **Done 2026-10-12:** OverMind#136 merged as `57fae94` (0.12.0).
 6. **Move user-request and with-secret** to their repo (§8 Q2), with history.
    - The new repo's first release is installed and smoke-tested before OverMind deletes its copies.
    - The same OverMind PR deletes the `rust` job. The PM removes its two required contexts just before
      merging (§5.3).
    - Rollback: reinstall the `.prev` binaries; until that PR merges, OverMind's copy is still there.
+   - **Done 2026-10-12:** `ciresnave/consent` merged as `45a6856` (0.12.0; `user-request` 0.12.0 is
+     published, `with-secret` is not: it waits on CireSnave's per-crate approval, board 173-A), and
+     OverMind#137 deleted the copies and the `rust` job as `56764a2` (0.13.0).
 7. **Move the licence-tooling sources and the measurements home.**
    - OverMind keeps `.github/spdx_gate.py`.
    - The six probes that import `overmind` wait for §8 Q4.

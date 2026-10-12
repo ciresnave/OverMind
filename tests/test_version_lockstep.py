@@ -41,6 +41,9 @@ class VersionLockstep(unittest.TestCase):
         self.assertNotIn("path", deps["lane-state"])
         for member in self.cargo["workspace"]["members"]:
             self.assertNotIn("lane-state", member, "lane-state is no longer a workspace member")
+            dep = load(ROOT / member / "Cargo.toml").get("dependencies", {}).get("lane-state")
+            if isinstance(dep, dict):
+                self.assertNotIn("path", dep, f"{member} must not path-depend on lane-state")
 
     def test_members_inherit_workspace_version(self) -> None:
         members = self.cargo["workspace"]["members"]

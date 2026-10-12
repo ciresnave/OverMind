@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.13.1
+
+- `ARCHITECTURE-LAYERS-SPEC.md` 5.4: steps 5 and 6 are marked done, with the merged SHAs (`57fae94`, `56764a2`; consent `45a6856`). Docs only, no code change.
+
 ## 0.13.0
 
 - **Breaking: `crates/user-request` and `crates/with-secret` are deleted from this repository** (ARCHITECTURE-LAYERS-SPEC 5.4 step 6). Both live in [`ciresnave/consent`](https://github.com/ciresnave/consent) now (one repo, two crates, history kept); `ciresnave/consent`@`45a6856` (0.12.0) was verified blob-identical to this repo's `57fae94` apart from the two crate manifests (the root workspace files differ too; they are deleted, below), `user-request` 0.12.0 is published on crates.io, and `C:\Projects\.claude-hooks\user-request.exe` and `with-secret.exe` were installed from that build and smoke-tested (the `.pre-0.12.0.prev` binaries are kept). `with-secret` is not published. Anyone who depended on either crate by path takes `user-request` from crates.io instead.

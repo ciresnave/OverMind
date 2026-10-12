@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased (PM allocates the number at gate; breaking, so 0.12.0 expected)
+## 0.12.0
 
 - **Breaking: `crates/lane-restart` and `crates/lane-state` are deleted from this workspace** (ARCHITECTURE-LAYERS-SPEC 5.4 step 5). Both live in the agentlife repo now (two crates); `lane-restart.exe` 0.12.15 is installed from there and was smoke-tested by a real `lane-restart start`. Anyone who depended on either crate by path takes `lane-state` from crates.io instead.
 - `with-secret` takes `lane-state` 0.12.15 from crates.io (`[workspace.dependencies] lane-state = "0.12.15"`, no path). It carries its own number, not this project's, so `tests/test_version_lockstep.py` no longer pins it to the workspace version; it now asserts the dependency has no `path` and no workspace member is `lane-state`.

@@ -6,7 +6,7 @@ members = ["crates/user-request", "crates/with-secret"]
 # Python package and every crate here share pyproject.toml's version - keep
 # them in lockstep: tests/test_version_lockstep.py fails CI when they differ.
 [workspace.package]
-version = "0.11.2"
+version = "0.12.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/ciresnave/OverMind"

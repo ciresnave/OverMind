@@ -13,7 +13,7 @@ half only. Nothing here reads this ledger to make a routing decision - that
 is real design work for later, deliberately not done yet (PM, 2026-09-19:
 "No design work now; just don't lose the data").
 
-Mirrors `crates/lane-restart/src/log.rs`'s own discipline, the same
+Mirrors lane-restart's `log.rs` discipline (now in the lane-restart repo), the same
 portfolio-wide pattern: one line per event, JSON, appended, NEVER rewritten
 or rotated silently, and EVERY dispatch is recorded - a verdict of
 CHECK_FAILED or ERROR is exactly the data future cost-per-success routing

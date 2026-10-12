@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-// STOCK MCP CLIENT — TypeScript SDK 1.27.1, unmodified. Two modes.
+// STOCK MCP CLIENT — TypeScript SDK (version pinned in probe/package.json), unmodified. Two modes.
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { z } from 'zod';

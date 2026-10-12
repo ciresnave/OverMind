@@ -130,10 +130,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # windows-latest is not decoration here either: lane-restart's own
-        # job is process management on the deployment platform, not a
-        # portable library - a green run on Linux alone says nothing about
-        # whether it can find or signal a real Windows process.
+        # windows-latest is not decoration here either: with-secret and
+        # user-request are DPAPI / Windows Hello on the deployment platform,
+        # not portable libraries - a green run on Linux alone says nothing
+        # about whether they work on a real Windows machine.
         os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@v5

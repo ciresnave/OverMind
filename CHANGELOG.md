@@ -1,8 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.11.2
 
 - `pyproject.toml` (the Python `overmind` package) was 0.7.2 while the crates were 0.11.1; it is now in lockstep, and `tests/test_version_lockstep.py` fails CI when pyproject, `[workspace.package] version`, the `lane-state` pin or a member's `version.workspace` differ (one number per project). No code change.
+- probe: `@modelcontextprotocol/sdk` 1.27.1 -> 1.31.0 (dependabot #126; `probe/` is a dev-only TypeScript harness, nothing shipped depends on it). CI never runs the TS probes, so the bump was measured by hand: `probe/ts-client.ts` fallback and specific modes against `probe/fam-push-server.ts` under bun at 1.27.1 and at 1.31.0 give identical results (fallback surfaces 2 notifications, the control and the subject; specific surfaces 1). `ts-client.ts` no longer hard-codes the SDK version in its header; `MEASUREMENTS.md` rows 42-43 stay at 1.27.1, the version they were measured at. No code change.
 
 ## 0.11.1
 

@@ -17,7 +17,7 @@ list is `PORTFOLIO-ROADMAP.md` in `C:\Projects`.
 
 | item | state | ruled? |
 |---|---|---|
-| `gate-fleet.yml` compares all five deployments (OverMind, kiss-ref, vulkane, synapse, consent) | **DONE**, #140 merged `a198c29`, CI green. At merge, consent `62b1788` agreed with the other four (25 functions, 42 case-tuples each) | RULED (PM TASK 2026-10-14; agentlife ROADMAP slice 3, option A) |
+| `gate-fleet.yml` compares all five deployments (OverMind, kiss-ref, vulkane, synapse, consent) | **DONE**, #140 merged `a198c29`, CI green. At merge, consent `62b1788` agreed with the other four (25 functions, 42 case-tuples each) | RULED (PM TASK 2026-10-14; agentlife ROADMAP slice 3(b) step 1, first alternative: add consent to the workflow) |
 | A change to the gate in a *different* repo is caught up to a day later (daily schedule), not on that repo's PR | known limit, stated in the workflow header; closing it means publishing the gate as a package each repo pins | UNRULED. Tied to the licence-tooling move below |
 | `gate_fleet.py`'s second trigger: "any `DIVERGENT` entry needs a second reason" | not fired; four entries, each with one reason, at `a198c29` | n/a |
 
@@ -38,7 +38,7 @@ list is `PORTFOLIO-ROADMAP.md` in `C:\Projects`.
 
 | item | state | ruled? |
 |---|---|---|
-| Open PRs including Dependabot | none open at `a198c29` (`gh pr list --state open` returned `[]`) | RULED (standing charge) |
+| Open PRs including Dependabot | none open at `a198c29` before this file's PR (#141) was opened; `gh pr list --state open` returned `[]` then | RULED (standing charge) |
 | Issue #110 and the `git grep -c` over-deny | queued, not started | waits on a PM TASK |
 | Dispatch infrastructure: `check_profile`, model pinning, per-model `max_tokens`, per-model timeouts, tool_calls consumption proof | landed (PRs #83, #84, #90, #92) | RULED, merged |
 | Local-model dispatch design and the Lightbulb OpenAI-compat checklist (#91) | design docs merged; no implementation scheduled here | UNRULED (needs the PM to schedule) |

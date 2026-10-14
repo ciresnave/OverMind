@@ -17,7 +17,7 @@ list is `PORTFOLIO-ROADMAP.md` in `C:\Projects`.
 
 | item | state | ruled? |
 |---|---|---|
-| `gate-fleet.yml` compares all five deployments (OverMind, kiss-ref, vulkane, synapse, consent) | **DONE**, #140 merged `a198c29`, CI green. At merge, consent `62b1788` agreed with the other four (25 functions, 42 case-tuples each) | RULED (PM TASK 2026-10-14; agentlife ROADMAP slice 3(b) step 1, first alternative: add consent to the workflow) |
+| The fleet comparison of the `spdx_gate.py` copies | **MOVED** with 0.13.6 to `ThinkersJournal/licence-tools` (`ci.yml` job `fleet`, six deployments, every PR + daily). Was DONE here at #140 `a198c29` (five deployments) | RULED (PM 2026-10-14) |
 | A change to the gate in a *different* repo is caught up to a day later (daily schedule), not on that repo's PR | known limit, stated in the workflow header; closing it means publishing the gate as a package each repo pins | UNRULED. Tied to the licence-tooling move below |
 | `gate_fleet.py`'s second trigger: "any `DIVERGENT` entry needs a second reason" | not fired; four entries, each with one reason, at `a198c29` | n/a |
 
@@ -27,7 +27,7 @@ list is `PORTFOLIO-ROADMAP.md` in `C:\Projects`.
 |---|---|---|
 | 5 lane-restart / lane-state to agentlife | DONE (0.12.0) | RULED |
 | 6 user-request + with-secret to `ciresnave/consent` | DONE: repo created, history kept, deleted here in 0.13.0. `user-request` 0.13.0 is published; **`with-secret` is unpublished** | RULED. Publishing `with-secret` needs CireSnave's per-crate yes (board 173-A) **and** an independent Sonnet review: UNRULED |
-| 7a Create `ciresnave/licence-tools` and move `tools/spdx.py`, `tools/preflight.py`, `tools/gate_fleet.py`, their two tests and `gate-fleet.yml` | not started; agentlife ROADMAP slice 3(b) steps 2-4 propose it | The direction is RULED (approval text: "licence tooling and measurements move out"). **The MOVE itself, the repo name and its starting version are UNRULED** (PM 2026-10-14: "step 7 move is separate, not yet ruled") |
+| 7a `licence-tools`: `tools/spdx.py`, `tools/preflight.py`, `tools/gate_fleet.py`, their two tests and the fleet workflow | **DONE**: repo `ThinkersJournal/licence-tools` 0.1.0 (`3ce26593`); removed from OverMind in 0.13.6 | RULED (PM 2026-10-14; name, 0.1.0, move) |
 | 7b Create `ciresnave/measurements` and move `MEASUREMENTS.md` and the `probe/` files that do not import `overmind` | not started | Same: direction RULED, move/name/version UNRULED |
 | The six probes that import `overmind` (`daily_limits`, `free_capacity`, `ledger_context`, `local_throughput`, `p1_bench`, `paper_summaries`) | **stay** | RULED (ruling 4, 2026-10-08) |
 | `MEASUREMENTS.md` is cited by section number from 13 files in `src/overmind` and `tests`; the name and section numbers must not change | constraint on 7b | RULED by the roadmap's own wording; how the citations are repointed is UNRULED |

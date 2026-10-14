@@ -61,11 +61,10 @@ TASKS = [
      "        return i < len(path) and fnmatch.fnmatchcase('/'.join(path[i:]), '/'.join(pat[j:]))",
      "tests.test_lanework.TestPieces",
      "a `*` in a writable glob matched across directories"),
-    ("max-of-nothing", "tools/gate_fleet.py",
-     "    top = max((c for c in counts.values() if c is not None), default=None)",
-     "    top = max(c for c in counts.values() if c)",
-     "tests.test_gate_fleet",
-     "max() of an empty sequence crashed the fleet report"),
+    # `max-of-nothing` (tools/gate_fleet.py, tests.test_gate_fleet) was the
+    # fourth task of MEASUREMENTS section 27. The file moved to
+    # ThinkersJournal/licence-tools at 0.13.6, so it is no longer a task in THIS
+    # tree; the recorded results stand, taken at OverMind a198c29 and earlier.
 ]
 
 

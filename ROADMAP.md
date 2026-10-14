@@ -31,7 +31,7 @@ list is `PORTFOLIO-ROADMAP.md` in `C:\Projects`.
 | 7b Create `ciresnave/measurements` and move `MEASUREMENTS.md` and the `probe/` files that do not import `overmind` | not started | Same: direction RULED, move/name/version UNRULED |
 | The six probes that import `overmind` (`daily_limits`, `free_capacity`, `ledger_context`, `local_throughput`, `p1_bench`, `paper_summaries`) | **stay** | RULED (ruling 4, 2026-10-08) |
 | `MEASUREMENTS.md` is cited by section number from 13 files in `src/overmind` and `tests`; the name and section numbers must not change | constraint on 7b | RULED by the roadmap's own wording; how the citations are repointed is UNRULED |
-| PM duties: remove the two `rust` required contexts (done with 0.13.0); make OverMind's licence check a required check | licence-check required status **not re-measured by this lane** | RULED (PM duty) |
+| PM duties: remove the two `rust` required contexts; make OverMind's licence check a required check | measured 2026-10-14 at `branches/main`, enforcement `non_admins`: 7 required contexts (`gate boundary is intact` and the six `tests (...)`); the two `rust` contexts are gone; **`Every source file declares the licence` is NOT required**, nor is the fleet job | RULED (PM duty); the licence-check half is OPEN, the PM's to do |
 | Port the non-Rust pieces to Rust (CireSnave's caveat, 2026-10-08, board 143) | PM ruled 2026-10-14 11:48Z "leave in place (not Rust code, not ours to move without a roadmap decision)" | RULED by the PM (not CireSnave) |
 
 ## 4. OverMind's own work (standing charge, CireSnave 2026-10-12)

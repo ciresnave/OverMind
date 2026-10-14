@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.13.4
+
+- Docs only: `ROADMAP.md` added (in-flight work, fleet-gate coverage, the OverMind split with each step marked RULED or UNRULED, ties to `PORTFOLIO-ROADMAP.md`). No code change.
+
 ## 0.13.3
 
 - `gate-fleet.yml` now compares `consent`'s `.github/spdx_gate.py` too (the fifth deployment; the trigger `gate_fleet.py` names). The wiring control, the planted-divergence control and the final comparison all take five repositories. Measured before the change: consent `62b1788` agrees with OverMind `ca9e208`, kiss-ref, vulkane and synapse at their `origin/main` (25 functions, 42 case-tuples each). `tests/test_gate_fleet.py` gains `TestWorkflowCoversTheFleet`, which reads the workflow so a deployment missing from it fails a test. No tooling moved.

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.13.2
+
+- CI only: every GitHub Action in `ci.yml` and `gate-fleet.yml` is pinned to a release commit SHA (PM pin patch 2026-10-14). No code change.
+
 ## 0.13.1
 
 - `ARCHITECTURE-LAYERS-SPEC.md` 5.4: steps 5 and 6 are marked done, with the merged SHAs (`57fae94`, `56764a2`; consent `45a6856`). Docs only, no code change.

@@ -38,24 +38,24 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: OverMind
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ThinkersJournal/kiss-ref
           path: kiss-ref
           persist-credentials: false
           sparse-checkout: .github/spdx_gate.py
           sparse-checkout-cone-mode: false
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ciresnave/vulkane
           path: vulkane
           persist-credentials: false
           sparse-checkout: .github/spdx_gate.py
           sparse-checkout-cone-mode: false
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ciresnave/synapse
           path: synapse

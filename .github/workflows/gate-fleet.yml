@@ -2,8 +2,8 @@ name: Gate fleet
 
 # ⚠️ WHY THIS EXISTS: `.github/spdx_gate.py` is hand-copied into five
 # repositories (four until consent made the fifth), and on 2026-09-11 one copy
-# lagged the other three while ALL FOUR printed PASS. No single repository's CI can see that - each checkout
-# holds one copy - so `tools/gate_fleet.py` was a tool somebody had to
+# lagged the other three while ALL FOUR printed PASS. No single repository's
+# CI can see that - each checkout holds one copy - so `tools/gate_fleet.py` was a tool somebody had to
 # remember to run. On 2026-09-16 the same blindness let all four copies carry
 # CR CR LF line endings unnoticed.
 #

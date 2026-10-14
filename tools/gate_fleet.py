@@ -46,10 +46,11 @@ RUNS, not a gate that fires - and a tool somebody runs is one that gets
 forgotten, which is the failure mode this whole session has been cataloguing.
 
 ⚠️ PARTLY SOLVED ON 2026-09-16: `.github/workflows/gate-fleet.yml` checks out
-every deployment (four then, five since consent joined; they are public, so no secret is needed) and runs this daily, on
+every deployment (four then, five since consent joined; they are public, so
+no secret is needed) and runs this daily, on
 OverMind pushes and PRs that touch the gate, and on demand - with two same-run
 controls: each checkout is the repository it claims to be, and a planted
-divergence reds. What it still cannot do is fire on a PR in the OTHER three
+divergence reds. What it still cannot do is fire on a PR in the OTHER four
 repositories; a change there is caught up to a day later.
 
 Closing it fully means publishing the gate as a package each repo pins by

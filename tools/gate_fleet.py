@@ -46,7 +46,7 @@ RUNS, not a gate that fires - and a tool somebody runs is one that gets
 forgotten, which is the failure mode this whole session has been cataloguing.
 
 ⚠️ PARTLY SOLVED ON 2026-09-16: `.github/workflows/gate-fleet.yml` checks out
-all four (they are public, so no secret is needed) and runs this daily, on
+every deployment (four then, five since consent joined; they are public, so no secret is needed) and runs this daily, on
 OverMind pushes and PRs that touch the gate, and on demand - with two same-run
 controls: each checkout is the repository it claims to be, and a planted
 divergence reds. What it still cannot do is fire on a PR in the OTHER three
@@ -56,7 +56,7 @@ Closing it fully means publishing the gate as a package each repo pins by
 version - at which point the fleet cannot diverge silently because the version
 string says so. NAMING THE
 TRIGGER is the part that stops this becoming a promise with no state: when a
-FIFTH repo gets this gate, OR WHEN ANY `DIVERGENT` ENTRY NEEDS A SECOND REASON,
+FIFTH repo gets this gate (consent did, and the workflow now compares it), OR WHEN ANY `DIVERGENT` ENTRY NEEDS A SECOND REASON,
 hand-copying stops being defensible. (The second clause is the PM's, from
 review on 2026-09-11: a declared divergence that keeps growing is a fork
 nobody has admitted to.)

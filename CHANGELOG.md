@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.13.5
+
+- CI hygiene: `.github/CODEOWNERS` (`* @ciresnave`) added, satisfying WSP-001 (portfolio triage, PM ruling 2026-10-14). No behaviour change.
+
 ## 0.13.4
 
 - Docs only: `ROADMAP.md` added (in-flight work, fleet-gate coverage, the OverMind split with each step marked RULED or UNRULED, ties to `PORTFOLIO-ROADMAP.md`). No code change.

@@ -1,5 +1,7 @@
 # OverMind
 
+> **Licence-header tooling moved (0.13.6):** `spdx.py`, `preflight.py` and `gate_fleet.py`, their tests and the fleet workflow now live in [ThinkersJournal/licence-tools](https://github.com/ThinkersJournal/licence-tools) (private; history kept). This repository keeps its own `.github/spdx_gate.py`.
+
 A multi-agent orchestrating harness for running routine agent work on **non-Claude** providers.
 
 **Status: doing real lane work, on free-tier providers only, at small daily volume.** The first

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.13.6
+
+- **Breaking for anyone who invokes these from OverMind: `tools/spdx.py`, `tools/preflight.py`, `tools/gate_fleet.py`, `tests/test_spdx.py`, `tests/test_gate_fleet.py` and `.github/workflows/gate-fleet.yml` are deleted** (OverMind split step 7a, PM ruling 2026-10-14). They live in `ThinkersJournal/licence-tools` 0.1.0 (`main` `3ce26593`) with history kept; command lines are unchanged there. The daily six-way fleet comparison now runs from that repository.
+- `.github/spdx_gate.py` stays (this repository's own deployment). Its `COPYRIGHT_EXPECTED` loses the four basenames of the deleted files (a constant, which the fleet does not compare).
+- `probe/p1_bench.py` loses its fourth task, `max-of-nothing` (it planted a bug in `tools/gate_fleet.py`). Recorded results in MEASUREMENTS sections 27, 30 and 32 stand; they were taken at earlier commits.
+- New `tests/test_p1_bench_tasks_exist.py` so a bench task whose file left the tree fails a test instead of crashing the probe.
+
 ## 0.13.5
 
 - CI hygiene: `.github/CODEOWNERS` (`* @ciresnave`) added, satisfying WSP-001 (portfolio triage, PM ruling 2026-10-14). No behaviour change.

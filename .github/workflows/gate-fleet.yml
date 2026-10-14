@@ -1,17 +1,17 @@
 name: Gate fleet
 
-# ⚠️ WHY THIS EXISTS: `.github/spdx_gate.py` is hand-copied into four
-# repositories, and on 2026-09-11 one copy lagged the other three while ALL
-# FOUR printed PASS. No single repository's CI can see that - each checkout
-# holds one copy - so `tools/gate_fleet.py` was a tool somebody had to
+# ⚠️ WHY THIS EXISTS: `.github/spdx_gate.py` is hand-copied into five
+# repositories (four until consent made the fifth), and on 2026-09-11 one copy
+# lagged the other three while ALL FOUR printed PASS. No single repository's
+# CI can see that - each checkout holds one copy - so `tools/gate_fleet.py` was a tool somebody had to
 # remember to run. On 2026-09-16 the same blindness let all four copies carry
 # CR CR LF line endings unnoticed.
 #
-# All four repositories are public, so the default token can check them out
+# All five repositories are public, so the default token can check them out
 # and this job compares them without any new secret.
 #
-# ⚠️ WHAT IT STILL CANNOT DO: fire on a pull request in kiss-ref, vulkane or
-# synapse. A change there is caught by the daily schedule, up to a day later.
+# ⚠️ WHAT IT STILL CANNOT DO: fire on a pull request in kiss-ref, vulkane,
+# synapse or consent. A change there is caught by the daily schedule, up to a day later.
 
 on:
   schedule:
@@ -62,13 +62,20 @@ jobs:
           persist-credentials: false
           sparse-checkout: .github/spdx_gate.py
           sparse-checkout-cone-mode: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ciresnave/consent
+          path: consent
+          persist-credentials: false
+          sparse-checkout: .github/spdx_gate.py
+          sparse-checkout-cone-mode: false
 
       # ⚠️ CONTROL 1: each directory holds the repository its name claims. A
-      # wiring slip that checked out OverMind four times would compare one
+      # wiring slip that checked out OverMind five times would compare one
       # file with itself and agree forever.
-      - name: Control - four different repositories
+      - name: Control - five different repositories
         run: |
-          for r in kiss-ref vulkane synapse; do
+          for r in kiss-ref vulkane synapse consent; do
             url=$(git -C "$r" remote get-url origin)
             echo "$r <- $url @ $(git -C "$r" rev-parse --short HEAD)"
             case "$url" in
@@ -92,7 +99,7 @@ jobs:
           new = b"return names if ok else []" + bytes([13, 13, 10])
           p.write_bytes(b.replace(old, new))
           PY
-          if python3 OverMind/tools/gate_fleet.py OverMind kiss-ref planted synapse > planted.txt; then
+          if python3 OverMind/tools/gate_fleet.py OverMind kiss-ref planted synapse consent > planted.txt; then
             cat planted.txt
             echo "::error::the fleet check passed a planted divergence"
             exit 1
@@ -101,5 +108,5 @@ jobs:
           grep -q "DIVERGED  tracked_sources()" planted.txt
           grep -q "LONE CR   planted: 1 CRs" planted.txt
 
-      - name: Compare the four deployments
-        run: python3 OverMind/tools/gate_fleet.py OverMind kiss-ref vulkane synapse
+      - name: Compare the five deployments
+        run: python3 OverMind/tools/gate_fleet.py OverMind kiss-ref vulkane synapse consent

@@ -172,5 +172,42 @@ class TestControlCount(unittest.TestCase):
             self.assertEqual(gate_fleet.control_count(path), 3)
 
 
+class TestWorkflowCoversTheFleet(unittest.TestCase):
+    """⚠️ THE WORKFLOW IS THE DEPLOYMENT LIST. `gate_fleet.py` compares what it
+    is handed, so a repo missing from `gate-fleet.yml` is a copy nobody
+    compares - which is how consent's gate went unwatched once it was the
+    fifth. The expected set is the one the docstring names as the trigger."""
+
+    FLEET = ("kiss-ref", "vulkane", "synapse", "consent")
+    WORKFLOW = ROOT / ".github" / "workflows" / "gate-fleet.yml"
+
+    def setUp(self):
+        self.text = self.WORKFLOW.read_bytes().decode("utf-8").replace("\r\n", "\n")
+
+    def test_every_deployment_is_checked_out_from_its_own_repository(self):
+        import re
+        found = re.findall(r"repository: [\w.-]+/([\w.-]+)\n\s+path: ([\w.-]+)",
+                           self.text)
+        self.assertEqual(sorted(n for n, _ in found), sorted(self.FLEET))
+        self.assertTrue(all(n == p for n, p in found), found)
+
+    def test_the_wiring_control_and_the_final_comparison_name_all_five(self):
+        loop = "for r in " + " ".join(self.FLEET) + "; do"
+        self.assertEqual(self.text.count(loop), 1, loop)
+        final = ("python3 OverMind/tools/gate_fleet.py OverMind "
+                 + " ".join(self.FLEET) + "\n")
+        self.assertEqual(self.text.count(final), 1, final)
+
+    def test_the_planted_divergence_runs_against_a_five_member_fleet(self):
+        self.assertEqual(self.text.count(
+            "OverMind/tools/gate_fleet.py OverMind kiss-ref planted synapse consent"),
+            1)
+
+    def test_step_names_do_not_claim_four(self):
+        for stale in ("Compare the four deployments",
+                      "Control - four different repositories"):
+            self.assertNotIn(stale, self.text)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

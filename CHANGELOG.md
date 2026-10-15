@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.14.1 (docs only)
+
+- `docs/LANE-LAUNCH-POLICY.md`: OverMind's policy for lane launch on message (Synapse signals, OverMind decides, AgentLife's service implements): decision order, dedupe key `(signal_id, attempt)`, model pin, rate caps, named refusals, durable outcome store, the tests the service must pass, and what is not decided (consent for an unattended launch; `launch_wait` unmeasured). Spec only; nothing was run.
+
 ## 0.14.0
 
 - **Breaking: provider tokens are read from the process environment only, and a missing one is an error.** CireSnave moved every provider token out of the Windows User environment into the `with-secret` vault (2026-10-15), so a process holds one only when launched `with-secret NAME --reason "..." -- <command>` (one secret per invocation). `read_secret` no longer consults the registry. New `require_secret(name)` and `SecretNotSet` (a `ProviderError`, so `RoutedClient` skips the provider): the message is `NAME not set: run via with-secret NAME --reason "..." -- <command>`.

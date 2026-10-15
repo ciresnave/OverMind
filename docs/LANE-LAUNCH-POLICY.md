@@ -10,7 +10,7 @@ restarting lane**: a lane restarts at every task boundary and may itself be the 
 **What this spec REQUIRES of AgentLife and does not find on `origin/main`:** a start-one-lane-by-role entry
 point that takes the role and an explicit model, applies the existing launcher checks (`docs/LAUNCHER.md`:
 role regex, `;`/control-character refusal, model pin, memory floor, `restore.lock`, never `--resume`) and
-reports one of the section 3 results. LAUNCHER.md today executes plans through `restore`, after a person's
+reports one of the section 3 results, and reports the role's last-stop class (section 6). LAUNCHER.md today executes plans through `restore`, after a person's
 approval. Everything below that says "the mechanism" means that entry point.
 
 ## 1. Inputs
@@ -34,7 +34,7 @@ the signal. Until it exists, section 4's time window is what separates a replay 
 | 4 | **Replay check**: a stored row WHOSE MECHANISM CALL WAS MADE with the same `(signal_id, attempt, epoch)`, younger than the replay window (section 4) | answer the recorded result; do nothing else; count nothing. A stored *refusal* is never replayed: it is re-evaluated (it is deterministic, and replaying it would re-impose a refusal the service itself just cleared) |
 | 5 | No more than 3 consecutive spawns (`started`, `awaiting-dialog`) for this role without the role having been seen online since (section 4 rule R7 keeps that observation) | else `refused: no-claim` (cleared when the role is seen online, section 4 rule 3) |
 | 6 | Rate caps: **spawns** in the last hour (rows with result `started` or reason `spawn-failed`), per role (3) and overall (12), counted from the store | else `refused: rate` |
-| 7 | Consent: an unattended launch needs a standing grant covering "start `<role>`" (section 6) | else `refused: no-grant` |
+| 7 | Consent: the role's last stop was a soft stop, which the standing grant of section 6 covers | else `refused: no-grant` |
 | 8 | Call the mechanism once, passing the role and `--model sonnet` | map as in section 3 |
 
 Rows are written for every result including refusals at 2, 3, 5, 6, 7 (for the ledger and the `transient`
@@ -80,8 +80,8 @@ uncounted: the budget can be undercounted by exactly those rows, which the 24 h 
    `/v1/waiting`, so the service will not see it again by polling. A refusal that is only *conditional* is
    therefore re-checked by the service itself, once per poll cycle (at most 30 s), from its store's
    `transient` rows, with these inputs: `refused: rate`: a slot has freed in the store's own ledger;
-   `refused: no-grant`: AgentLife's grant store shows a covering grant (an input AgentLife must expose;
-   section 6); `refused: no-claim`: `GET /v1/list` shows the role `online` (the claim signal). When the condition ends the service marks the row `clearing`, calls
+   `refused: no-grant`: the role's last stop is now classified soft (the input section 6 says is not
+   built); `refused: no-claim`: `GET /v1/list` shows the role `online` (the claim signal). When the condition ends the service marks the row `clearing`, calls
    `POST /v1/launch-clear`, and **deletes the row only after that call succeeded**; a failed call (daemon
    down, 5xx, a crash between the steps) leaves the row `clearing` and it is retried every poll cycle, so a
    role is never stranded refused with no row to re-check. Refusals are re-evaluated on a repeat (section 2
@@ -141,17 +141,28 @@ with no online observation raises exactly one `launch-stalled` alarm; (t) a `sta
 2 x `launch_wait` with the role never seen online raises it too, once; (u) after the role is seen online the
 alarm re-arms and a new streak raises a new one.
 
-## 6. Not decided, not measured
+## 6. Ruled, not decided, not measured
 
-- **Consent for an unattended launch (CireSnave).** Section 2 rule 7 is a hard stop until AgentLife's standing grants
-  (its M5) exist and CireSnave decides that launching a lane because mail arrived may be covered by one. Until
-  then the service is a notifier: `refused: no-grant`, and a person starts the lane.
+- **Consent for an unattended launch: RULED (board 216, 2026-10-15).** CireSnave, answering the PM's recommendation
+  of a narrow yes, verbatim: *"216: yes"*. The grant, as the PM recorded it:
+  - **Covered (launchable on mail):** a role whose last stop was a *soft stop*: an idle or waiting shutdown, a
+    task-boundary restart, or a crash.
+  - **Not covered (`refused: no-grant`):** a *hard stop* (a person or the PM stopped the lane on purpose), a
+    *hold* on the role, and any role whose last stop is *unclassified*. Unknown is refused, never assumed soft.
+  - **Conditions, unchanged by the grant:** the launch is the spec's own (section 2, nothing wider), always
+    `--model sonnet`, only for signals from allowlisted signed senders, inside the section 2 rate and no-claim
+    caps, with every result written to the ledger (section 4 State).
+  - **What this spec does not yet define:** how the service learns a role's last-stop class. Nobody has built
+    that input (it must come from the mechanism or Synapse, not from the sender's message); until it exists
+    every role is unclassified and rule 7 refuses it. The grant is therefore a ruling, not yet a behaviour.
+  - AgentLife's M5 grant store is not needed for this grant: the ruling is a standing one, and the open input is the
+    last-stop class above.
 - **`launch_wait` (120 s)** is Synapse's default and is unmeasured; AgentLife is to report a measured
   lane-start-to-claim time before it is relied on.
 - The rate caps (3 per role, 12 overall, per hour), the no-claim bound (3) and the replay window (5 min) are
   proposals, not measurements.
-- Inputs this spec needs and nobody has built: a grant-store read from AgentLife (for `no-grant` clearing),
-  and the `epoch` field from Synapse. (`GET /v1/list` takes any bearer session; Synapse's C3 restricts only
+- Inputs this spec needs and nobody has built: the role's last-stop class (soft, hard, hold, unclassified),
+  from the mechanism or Synapse, and the `epoch` field from Synapse. (`GET /v1/list` takes any bearer session; Synapse's C3 restricts only
   `/v1/waiting`, `/v1/launch-result` and `/v1/launch-clear`.)
 - Whether a launched lane that finds no HANDOFF claims its role at all (the launcher starts it with "there is
   no HANDOFF for `<role>`, so say so and wait for instructions"): not checked.

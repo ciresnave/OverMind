@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.14.0
+
+- **Breaking: provider tokens are read from the process environment only, and a missing one is an error.** CireSnave moved every provider token out of the Windows User environment into the `with-secret` vault (2026-10-15), so a process holds one only when launched `with-secret NAME --reason "..." -- <command>` (one secret per invocation). `read_secret` no longer consults the registry. New `require_secret(name)` and `SecretNotSet` (a `ProviderError`, so `RoutedClient` skips the provider): the message is `NAME not set: run via with-secret NAME --reason "..." -- <command>`.
+- `ProviderClient` no longer sends the placeholder bearer token `unused` for a hosted provider: no token, no request. Only `ollama` (a local server that ignores the header) keeps it.
+- **One provider = one secret.** `probe/provider_probe.py` takes the provider(s) to probe (`groq|nvidia|openrouter|google|cloudflare`; none is a usage error, not "all"), reads only their tokens and exits 2 naming every missing one before any request. `probe/compliance_api.py` and `probe/nvidia_entitlement.py` exit 2 with the named error and no longer import `winreg`. `probe/daily_limits.py` reports the named error in its status. `CLOUDFLARE_ACCOUNT_ID` is read from the environment, else discovered through the API (it is not a secret).
+- README: how to run each probe through the vault; `tests/test_secrets.py`; `tests/test_providers.py` and `tests/test_quota.py` set dummy tokens in `setUpModule`.
+- Not measured: nesting two `with-secret` calls in one command (needs two Windows Hello approvals). From the source only: the child inherits the parent environment plus the one secret, so the outer secret survives into an inner `with-secret`.
+
 ## 0.13.6
 
 - **Breaking for anyone who invokes these from OverMind: `tools/spdx.py`, `tools/preflight.py`, `tools/gate_fleet.py`, `tests/test_spdx.py`, `tests/test_gate_fleet.py` and `.github/workflows/gate-fleet.yml` are deleted** (OverMind split step 7a, PM ruling 2026-10-14). They live in `ThinkersJournal/licence-tools` 0.1.0 (`main` `3ce26593`) with history kept; command lines are unchanged there. The daily six-way fleet comparison now runs from that repository.

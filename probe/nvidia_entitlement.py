@@ -2,11 +2,17 @@
 # WHICH NVIDIA MODELS IS THIS ACCOUNT ACTUALLY ENTITLED TO?
 # A 404 "Function <uuid>: Not found for account" is returned BEFORE inference,
 # so sweeping the roster costs no quota. max_tokens=1 keeps the entitled ones cheap.
-import json, sys, time, urllib.error, urllib.request, winreg
-def reg(n):
-    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as k:
-        return winreg.QueryValueEx(k, n)[0]
-T = reg("NVIDIA_NIM_API_TOKEN")
+#
+# NEEDS ONE SECRET, run it as:
+#   with-secret NVIDIA_NIM_API_TOKEN --reason "NVIDIA entitlement sweep" -- python probe/nvidia_entitlement.py
+import json, os, sys, time, urllib.error, urllib.request
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
+from overmind.providers import SecretNotSet, require_secret  # noqa: E402
+try:
+    T = require_secret("NVIDIA_NIM_API_TOKEN")
+except SecretNotSet as exc:
+    print(exc, file=sys.stderr)
+    sys.exit(2)
 H = {"Authorization": "Bearer " + T, "Content-Type": "application/json",
      "User-Agent": "OverMind-probe/0.1", "Accept": "application/json"}
 def roster():

@@ -1,10 +1,18 @@
 # SPDX-License-Identifier: MIT OR Apache-2.0
 # WHICH OF THE FIVE FREE-TIER PROVIDERS REACHES A WORKING TOOL CALL?
 #
-# ⚠️ KEYS ARE READ FROM HKCU\Environment DIRECTLY. This process was started
-# before they were set, so os.environ does NOT have them - a probe that read
-# os.environ would report "no key" for five keys that exist. Reading the
-# registry is the positive control on the instrument.
+# ⚠️ KEYS COME FROM THE with-secret VAULT (since 2026-10-15), NOT FROM THE
+# ENVIRONMENT OR THE REGISTRY. A secret reaches this process only through
+#   with-secret NAME --reason "..." -- python probe/provider_probe.py <provider>
+# and that releases ONE secret per invocation, so the probe takes the
+# provider(s) to run and needs exactly their tokens. A missing one is a named
+# error and exit 2 before any request is made.
+#   groq       GROQ_CLOUD_API_TOKEN
+#   nvidia     NVIDIA_NIM_API_TOKEN
+#   openrouter OPENROUTER_API_TOKEN
+#   google     GOOGLE_AI_STUDIO_API_TOKEN
+#   cloudflare CLOUDFLARE_WORKERS_AI_API_TOKEN (+ CLOUDFLARE_ACCOUNT_ID if set,
+#              else discovered through the API; the id is not a secret)
 # Secrets are never printed: only presence, length and the request outcome.
 #
 # ⚠️ VERDICT OFF THE TOOL SIDE. A model that writes a tool-call-shaped JSON blob
@@ -12,15 +20,21 @@
 # failures and there is no reason for it to be rarer on a hosted model.
 #
 # ⚠️ SPEND SPARINGLY. At most one /models GET and two chat calls per provider.
-import json, sys, time, urllib.error, urllib.request, winreg
+import json, os, sys, time, urllib.error, urllib.request
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
+from overmind.providers import SecretNotSet, require_secret  # noqa: E402
 
-def reg_env(name):
-    try:
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as k:
-            v, _ = winreg.QueryValueEx(k, name)
-            return v
-    except OSError:
-        return None
+SECRETS = {
+    "groq": "GROQ_CLOUD_API_TOKEN",
+    "nvidia": "NVIDIA_NIM_API_TOKEN",
+    "openrouter": "OPENROUTER_API_TOKEN",
+    "google": "GOOGLE_AI_STUDIO_API_TOKEN",
+    "cloudflare": "CLOUDFLARE_WORKERS_AI_API_TOKEN",
+}
+
+def secrets_for(only):
+    """The secret names the selected providers need, in order."""
+    return [SECRETS[p] for p in only]
 
 TOOLS = [{"type": "function", "function": {
     "name": "get_build_status",
@@ -101,7 +115,7 @@ def score_tool(msg):
 def probe(label, base, token, model_hint=None, require_free=False, extra=None):
     print("\n===== %s =====" % label, flush=True)
     if not token:
-        print("  KEY: ABSENT in HKCU\\Environment"); return
+        print("  KEY: ABSENT"); return   # unreachable via main(): kept as a guard
     print("  KEY: present (len %d)" % len(token))
     # 1. reachability + roster (one GET)
     st, body, hdrs = http(base.rstrip("/") + "/models", token, extra=extra)
@@ -164,42 +178,58 @@ def cloudflare_account(token):
         return a.get("id"), a.get("name")
     return None, str(body.get("__error__", body))[:200]
 
-def main():
-    only = set(sys.argv[1:])
-    K = {n: reg_env(n) for n in (
-        "GROQ_CLOUD_API_TOKEN", "NVIDIA_NIM_API_TOKEN", "OPENROUTER_API_TOKEN",
-        "GOOGLE_AI_STUDIO_API_TOKEN", "CLOUDFLARE_WORKERS_AI_API_TOKEN")}
-    print("keys read from HKCU\\Environment (NOT os.environ - this process predates them):")
+def main(argv):
+    wanted = list(dict.fromkeys(argv))
+    unknown = [a for a in wanted if a not in SECRETS]
+    if not wanted or unknown:
+        if unknown:
+            print("unknown provider(s): %s" % ", ".join(unknown), file=sys.stderr)
+        print("usage: provider_probe.py <%s> [...]  (one with-secret run releases "
+              "ONE secret: probe one provider per run)" % "|".join(SECRETS), file=sys.stderr)
+        return 2
+    only = set(wanted)
+    K = {}
+    missing = []
+    for n in secrets_for(wanted):
+        try:
+            K[n] = require_secret(n)
+        except SecretNotSet as exc:
+            missing.append(str(exc))
+    if missing:
+        for m in missing:
+            print(m, file=sys.stderr)
+        return 2
+    print("secrets (present = injected by with-secret; values never printed):")
     for n, v in K.items():
-        print("  %-34s %s" % (n, ("present len=%d" % len(v)) if v else "ABSENT"))
+        print("  %-34s present len=%d" % (n, len(v)))
 
-    if not only or "groq" in only:
+    if "groq" in only:
         probe("GROQ", "https://api.groq.com/openai/v1", K["GROQ_CLOUD_API_TOKEN"])
-    if not only or "nvidia" in only:
+    if "nvidia" in only:
         probe("NVIDIA NIM", "https://integrate.api.nvidia.com/v1", K["NVIDIA_NIM_API_TOKEN"])
-    if not only or "openrouter" in only:
+    if "openrouter" in only:
         probe("OPENROUTER", "https://openrouter.ai/api/v1", K["OPENROUTER_API_TOKEN"],
               require_free=True, extra={"HTTP-Referer": "https://github.com/ciresnave/OverMind",
                                         "X-Title": "OverMind provider probe"})
-    if not only or "google" in only:
+    if "google" in only:
         probe("GOOGLE AI STUDIO (OpenAI compat)",
               "https://generativelanguage.googleapis.com/v1beta/openai",
               K["GOOGLE_AI_STUDIO_API_TOKEN"])
-    if not only or "cloudflare" in only:
+    if "cloudflare" in only:
         tok = K["CLOUDFLARE_WORKERS_AI_API_TOKEN"]
         print("\n===== CLOUDFLARE WORKERS AI =====")
-        if not tok:
-            print("  KEY: ABSENT"); return
         print("  KEY: present (len %d)" % len(tok))
-        acct = reg_env("CLOUDFLARE_ACCOUNT_ID"); note = "from HKCU\Environment"
+        acct = os.environ.get("CLOUDFLARE_ACCOUNT_ID"); note = "from the environment"
         if not acct:
             acct, note = cloudflare_account(tok)
         if not acct:
             print("  !! NO ACCOUNT ID and none in the environment; /accounts said: %s" % note)
             print("  -> Workers AI's OpenAI-compatible path needs the account id. BLOCKED.")
-            return
+            return 1
         print("  account discovered: %s (%s)" % (acct, note))
         probe("CLOUDFLARE WORKERS AI",
               "https://api.cloudflare.com/client/v4/accounts/%s/ai/v1" % acct, tok)
+    return 0
 
-main()
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

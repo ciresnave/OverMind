@@ -57,8 +57,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # windows-latest is not decoration: `read_secret` has a winreg branch
-        # that executes ONLY there, and the deployment platform is Windows.
+        # windows-latest is not decoration: the deployment platform is Windows.
         os: [ubuntu-latest, windows-latest]
         python: ["3.11", "3.12", "3.13"]
     steps:

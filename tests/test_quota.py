@@ -27,6 +27,26 @@ from overmind.quota import (                                          # noqa: E4
     next_reset,
 )
 
+
+_TOKEN_PATCH = None
+
+
+def setUpModule():
+    """Dummy provider tokens. The real ones live in the with-secret vault and a
+    hosted `ProviderClient` refuses to build a request without one, so tests
+    that drive a provider through an injected transport need a placeholder.
+    No real secret is read or sent."""
+    global _TOKEN_PATCH
+    from unittest import mock
+    from overmind.providers import PROVIDERS as _P
+    names = {p.secret_name for k, p in _P.items() if k != "ollama"} | {"NOPE"}
+    _TOKEN_PATCH = mock.patch.dict(os.environ, {n: "dummy-not-a-secret" for n in names})
+    _TOKEN_PATCH.start()
+
+
+def tearDownModule():
+    _TOKEN_PATCH.stop()
+
 # Shapes of real bodies, trimmed. Google's per-day refusal, 2026-09-17:
 GOOGLE_DAY = json.dumps([{"error": {"code": 429, "message": "You exceeded your current quota",
                                     "details": [{"violations": [{

@@ -32,7 +32,7 @@ the signal. Until it exists, section 4's time window is what separates a replay 
 | 2 | `role` matches `[A-Za-z0-9_-]{1,64}` | else `refused: invalid-role` |
 | 3 | `role` is a known lane: it has existed in AgentLife's registry or plan under the same name | else `refused: unknown-role` (a sender-chosen string is never a launch) |
 | 4 | **Replay check**: a stored row WHOSE MECHANISM CALL WAS MADE with the same `(signal_id, attempt, epoch)`, younger than the replay window (section 4) | answer the recorded result; do nothing else; count nothing. A stored *refusal* is never replayed: it is re-evaluated (it is deterministic, and replaying it would re-impose a refusal the service itself just cleared) |
-| 5 | No more than 3 consecutive spawns (`started`, `awaiting-dialog`) for this role without the role having been seen online since (section 4 rule 7 keeps that observation) | else `refused: no-claim` (cleared when the role is seen online, section 4 rule 3) |
+| 5 | No more than 3 consecutive spawns (`started`, `awaiting-dialog`) for this role without the role having been seen online since (section 4 rule R7 keeps that observation) | else `refused: no-claim` (cleared when the role is seen online, section 4 rule 3) |
 | 6 | Rate caps: **spawns** in the last hour (rows with result `started` or reason `spawn-failed`), per role (3) and overall (12), counted from the store | else `refused: rate` |
 | 7 | Consent: an unattended launch needs a standing grant covering "start `<role>`" (section 6) | else `refused: no-grant` |
 | 8 | Call the mechanism once, passing the role and `--model sonnet` | map as in section 3 |
@@ -93,15 +93,25 @@ uncounted: the budget can be undercounted by exactly those rows, which the 24 h 
    log line and an alert; a daemon that is down is retried with capped backoff (2 s doubling to 60 s).
 6. A compromised sender can at worst cause rate-capped launches of lanes that already exist.
 
-7. **Online observation and the alarm.** Every poll cycle the service reads `GET /v1/list` for each role
-   that has a spawn row in the last 24 h. A role seen `online` resets its consecutive-spawn counter (so a
+R7. **Online observation and the alarm.** Every poll cycle the service makes ONE read of `GET /v1/list`
+   (all roles with `online` and `pending`) and looks at each role that has a spawn row in the last 24 h.
+   `online` holds for 90 s after a heartbeat, so a lane that claims and exits between two 30 s cycles is
+   still observed. A role seen `online` resets its consecutive-spawn counter (so a
    legitimate launch, claim, exit, launch cycle never trips rule 5). A role with a spawn and an
    `already-running` streak of 5 answers, or a `started` older than 2 x `launch_wait`, with the role never
-   seen online, raises one named alarm, `launch-stalled: <role> <reason>` (log line and the alert path),
-   once per streak: a lane alive and sitting at the dialog is a person's job, not a retry.
+   seen online, raises one named alarm, `launch-stalled: <role> <reason>`, once per streak: a lane alive and sitting at
+   the dialog is a person's job, not a retry. **The sink is the service's own structured log line plus a
+   notification to the portfolio PM (AgentLife's notify path)**; Synapse's alert on `unreachable` is a
+   different thing and never fires for a lane that is alive (board 131 is still a seam). A streak ends, and
+   the alarm re-arms, when the role is seen online. A `started` older than 2 x `launch_wait` and the rule 5
+   refusal can fire on one cause; they are reported once, as `launch-stalled`, with `no-claim` as the reason.
 
-**State.** A small durable file, written atomically: one row per `(signal_id, attempt, epoch)` with result,
-reason, time, whether the mechanism was called, whether it spawned, and whether the refusal is `transient`. It is the replay
+**State.** A small durable file, written atomically, with two tables.
+*Request rows*, one per `(signal_id, attempt, epoch)`: result, reason, time, whether the mechanism was
+called, whether it spawned, and a status in `{answered, transient, clearing}`.
+*Role rows*, one per role: `spawns_since_online` (rule 5's counter), `last_seen_online`,
+`already_running_streak`, and `alarmed` (the once-per-streak flag). Rules 5 and 7 read and write only role
+rows; replay, the rate ledger and the clear loop use only request rows. It is the replay
 store and the rate/claim ledger. **Replay window: 5 minutes** (a proposal; long enough for a lost response
 and the next poll, short enough that a clear or a daemon restart re-evaluates). Rows are pruned after 24 h.
 **A lost or corrupt store is not harmless:** the caps reset and a replay is re-evaluated, so a lane that
@@ -127,11 +137,13 @@ and the role being seen online clears it and resets the counter; (n) records old
 `already-running`; (p) `already-running` and `held-for-memory` never consume the spawn budget; (q) a failed `launch-clear` leaves
 the row `clearing` and is retried, and the role is cleared once the daemon is back; (r) a role that launched,
 was seen online and exited three times in a day is launched a fourth time; (s) an `already-running` streak
-with no online observation raises exactly one `launch-stalled` alarm.
+with no online observation raises exactly one `launch-stalled` alarm; (t) a `started` older than
+2 x `launch_wait` with the role never seen online raises it too, once; (u) after the role is seen online the
+alarm re-arms and a new streak raises a new one.
 
 ## 6. Not decided, not measured
 
-- **Consent for an unattended launch (CireSnave).** Rule 7 is a hard stop until AgentLife's standing grants
+- **Consent for an unattended launch (CireSnave).** Section 2 rule 7 is a hard stop until AgentLife's standing grants
   (its M5) exist and CireSnave decides that launching a lane because mail arrived may be covered by one. Until
   then the service is a notifier: `refused: no-grant`, and a person starts the lane.
 - **`launch_wait` (120 s)** is Synapse's default and is unmeasured; AgentLife is to report a measured

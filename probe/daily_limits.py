@@ -24,7 +24,9 @@ import urllib.request
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-from overmind.providers import PROVIDERS, ProviderClient, read_secret  # noqa: E402
+from overmind.providers import (  # noqa: E402
+    PROVIDERS, ProviderClient, SecretNotSet, require_secret,
+)
 
 # A Windows console defaults to cp1252 and this file prints warning glyphs, so
 # printing the RESULT crashes after the measurement was taken. Fourth occurrence
@@ -78,9 +80,11 @@ def _reset_window(headers: dict) -> tuple[float | None, str]:
 
 def probe(key: str) -> dict:
     provider = PROVIDERS[key]
-    token = read_secret(provider.secret_name)
-    if not token:
-        return {"provider": key, "status": "no-credential"}
+    try:
+        token = require_secret(provider.secret_name, provider=key)
+    except SecretNotSet as exc:
+        # named, with the way to run it: never a quiet "no credential"
+        return {"provider": key, "status": "no-credential", "error": str(exc)}
     try:
         base = provider.resolved_base()
     except Exception as exc:                                # noqa: BLE001

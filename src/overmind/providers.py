@@ -35,9 +35,11 @@ WHAT WAS MEASURED, AND WHAT EACH FACT COSTS IF IGNORED:
     max_tokens=160 gemini-3.6-flash returned 2-8 visible characters, which read
     as "the model does not hold its rules" and was my own instrument.
 
-  · ⚠️ KEYS LIVE UNDER NON-CONVENTIONAL NAMES, AND A LONG-RUNNING PROCESS DOES
-    NOT INHERIT ONES SET AFTER IT STARTED. The environment a process holds is a
-    snapshot, not a reading - so the registry is consulted first on Windows.
+  · ⚠️ KEYS LIVE UNDER NON-CONVENTIONAL NAMES, AND (SINCE 2026-10-15)
+    ONLY IN THE with-secret VAULT. They are no longer in the User environment
+    or the registry: a process sees one only when launched
+    `with-secret NAME --reason ... -- <command>`, ONE secret per invocation.
+    A missing one is a named `SecretNotSet`, never an empty string.
 
   · ⚠️ NOT EVERY MODEL ON A PAID PROVIDER'S ROSTER IS FREE. Measured 2026-09-17:
     Mistral's `codestral-latest` and `mistral-code-latest` answer; `mistral-
@@ -128,23 +130,40 @@ class NoUsableModel(RuntimeError):
 # Secrets
 # --------------------------------------------------------------------------- #
 
-def read_secret(name: str) -> str | None:
-    """Read a persistent user secret.
+class SecretNotSet(ProviderError):
+    """A required secret is not in this process's environment.
 
-    ⚠️ REGISTRY FIRST ON WINDOWS. This process may predate the variable, and
-    `os.environ` would then report absent for something that exists. Measured:
-    all five provider keys were invisible to a running session.
+    ⚠️ The provider tokens live in the with-secret vault, so a process
+    that was not launched through it holds none. This is the one error for that
+    case; it names the variable and the way to run, and is a `ProviderError`
+    so a failover loop skips the provider rather than dying.
     """
-    if os.name == "nt":
-        try:
-            import winreg
-            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as key:
-                value, _ = winreg.QueryValueEx(key, name)
-                if value:
-                    return str(value)
-        except (OSError, ImportError):
-            pass
-    return os.environ.get(name)
+
+    def __init__(self, secret_name: str, provider: str | None = None) -> None:
+        text = (f"{secret_name} not set: run via "
+                f"`with-secret {secret_name} --reason \"...\" -- <command>`")
+        super().__init__(provider or secret_name, None, text)
+        self.args = (text,)
+        self.secret_name = secret_name
+
+
+def read_secret(name: str) -> str | None:
+    """The secret in this process's environment, or None (empty counts as unset).
+
+    ⚠️ ENVIRONMENT ONLY. Until 2026-10-15 this read the Windows registry
+    first; the tokens were then moved out of the User environment into the
+    with-secret vault on purpose, so a registry value is no longer consulted.
+    Use `require_secret` where absence must be an error.
+    """
+    return os.environ.get(name) or None
+
+
+def require_secret(name: str, *, provider: str | None = None) -> str:
+    """`read_secret`, but absence raises `SecretNotSet` naming how to run."""
+    value = read_secret(name)
+    if value is None:
+        raise SecretNotSet(name, provider)
+    return value
 
 
 # --------------------------------------------------------------------------- #
@@ -509,7 +528,12 @@ class ProviderClient:
             return resp.status, json.loads(resp.read() or b"{}")
 
     def _headers(self) -> dict[str, str]:
-        token = read_secret(self.provider.secret_name) or "unused"
+        if self.provider.key == "ollama":
+            # a local server that ignores the header; no secret is involved
+            token = read_secret(self.provider.secret_name) or "unused"
+        else:
+            token = require_secret(self.provider.secret_name,
+                                   provider=self.provider.key)
         return {
             "Content-Type": "application/json",
             "Accept": "application/json",

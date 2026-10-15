@@ -12,15 +12,14 @@
 # ⚠️ Groq's binding free-tier limit is OUTPUT tokens per minute (1000), so
 # max_tokens is capped hard and a 429 pauses rather than being scored as a
 # refusal - a rate limit is not a compliance datum.
-import json, os, sys, time, urllib.error, urllib.request, winreg
+#
+# ONE PROVIDER = ONE SECRET. Run it as (provider is groq | google | openrouter):
+#   with-secret GROQ_CLOUD_API_TOKEN --reason "compliance probe" -- python probe/compliance_api.py groq
+# A missing token is a named error and exit 2, never a silent skip.
+import json, os, sys, time, urllib.error, urllib.request
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
+from overmind.providers import SecretNotSet, require_secret  # noqa: E402
 from rules_lib import RULES, R1_HOW
-
-def reg(n):
-    try:
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as k:
-            return winreg.QueryValueEx(k, n)[0]
-    except OSError:
-        return None
 
 PROVIDERS = {
     "groq":       ("https://api.groq.com/openai/v1", "GROQ_CLOUD_API_TOKEN", "qwen/qwen3.6-27b"),
@@ -83,12 +82,18 @@ def behaviour(base, token, model, rule_text, tools, task, execer):
     return calls
 
 def main():
-    prov = sys.argv[1]
+    prov = sys.argv[1] if len(sys.argv) > 1 else ""
+    if prov not in PROVIDERS:
+        print("usage: compliance_api.py <%s> [rule ...]; %r is not a provider"
+              % ("|".join(PROVIDERS), prov), file=sys.stderr)
+        sys.exit(2)
     which = sys.argv[2:] or list(RULES)
     base, keyname, model = PROVIDERS[prov]
-    token = reg(keyname)
-    if not token:
-        print("no key %s" % keyname); return
+    try:
+        token = require_secret(keyname, provider=prov)
+    except SecretNotSet as exc:
+        print(exc, file=sys.stderr)
+        sys.exit(2)
     print("provider=%s model=%s N=%d" % (prov, model, N), flush=True)
     for key in which:
         rule_text, q, ok, tools, taskf, execer, scoref = RULES[key]

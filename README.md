@@ -10,6 +10,28 @@ non-Claude-written pull request merged 2026-09-17 (OverMind#31); see [`MEASUREME
 gate exists to answer. [`DESIGN-PROPOSAL.md`](DESIGN-PROPOSAL.md) is the pre-lanework design and predates
 the shape below by a week; read it for the FAM/MCP/PTY edges, not for how a lane task runs today.
 
+## Running anything that calls a provider
+
+The provider tokens are **not** in the environment any more: they are in the `with-secret` vault, and a
+process sees one only when launched through it, **one secret per invocation**. Each launch is a Windows
+Hello approval on CireSnave's desktop, so run one provider per command:
+
+| Provider | Secret | Probe |
+|---|---|---|
+| Groq | `GROQ_CLOUD_API_TOKEN` | `with-secret GROQ_CLOUD_API_TOKEN --reason "provider probe" --window-mins 30 -- python probe/provider_probe.py groq` |
+| NVIDIA NIM | `NVIDIA_NIM_API_TOKEN` | `... -- python probe/provider_probe.py nvidia` (entitlement sweep: `probe/nvidia_entitlement.py`) |
+| OpenRouter | `OPENROUTER_API_TOKEN` | `... -- python probe/provider_probe.py openrouter` |
+| Google AI Studio | `GOOGLE_AI_STUDIO_API_TOKEN` | `... -- python probe/provider_probe.py google` |
+| Cloudflare Workers AI | `CLOUDFLARE_WORKERS_AI_API_TOKEN` (+ `CLOUDFLARE_ACCOUNT_ID`, not a secret) | `... -- python probe/provider_probe.py cloudflare` |
+| Mistral, Hugging Face | `MISTRAL_API_TOKEN`, `HUGGINGFACE_API_TOKEN` | no probe script; used by `ProviderClient("mistral")` / `("huggingface")` |
+
+`probe/compliance_api.py <groq|google|openrouter> [rule ...]` needs the same one secret for its provider.
+A missing token is never skipped quietly: it exits 2 (or raises `SecretNotSet`) with
+`NAME not set: run via with-secret NAME --reason "..." -- <command>`. A library caller that wants a
+failover across several providers (`RoutedClient`) needs several tokens in ONE process, which a single
+`with-secret` call does not give it: the providers without a token are skipped by name. Nested
+`with-secret A ... -- with-secret B ... -- <cmd>` is not measured (two approvals); do not rely on it.
+
 ## What is built
 
 - **`src/overmind/lanework.py`** — the runner. `python -m overmind.lanework task.json [--publish]`

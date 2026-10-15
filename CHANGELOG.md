@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.14.2 (docs only)
+
+- `docs/SOAK-RESTARTTEST-END-REPORT.md` and the ROADMAP rows: the restarttest soak (board 175) ended 2026-10-15T18:52Z. 435 sent, 435 seen, 0 tool_use, 0 compactions, daemon unchanged. Not a clean soak: one `auth_failure` line (the synapse lane's own curl, their statement), the compaction bound is untested and the weekly-limit delta is unmeasured.
+
 ## 0.14.1 (docs only)
 
 - `docs/LANE-LAUNCH-POLICY.md`: OverMind's policy for lane launch on message (Synapse signals, OverMind decides, AgentLife's service implements): decision order, dedupe key `(signal_id, attempt)`, model pin, rate caps, named refusals, durable outcome store, the tests the service must pass, and what is not decided (consent for an unattended launch; `launch_wait` unmeasured). Spec only; nothing was run.

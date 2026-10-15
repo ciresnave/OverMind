@@ -1,6 +1,6 @@
 # restarttest soak, end report (board 175)
 
-Window: 2026-10-12T18:25Z to 2026-10-15T18:52Z (72.5 h). One message every 10 minutes from role
+Window: session start 2026-10-12T18:25Z to 2026-10-15T18:52Z (72.5 h, the session span). The first message was sent 18:31Z and the last (soak-0435) 18:52Z. One message every 10 minutes from role
 `soak-probe` to role `restarttest` (a Sonnet session under `lane-restart host`), against synapsed
 6.0.0-rc.33 at 127.0.0.1:7931. CireSnave 2026-10-12: "1) Yes. 2) 1 message every 10 minutes.  3) Restart it."
 
@@ -9,11 +9,11 @@ Window: 2026-10-12T18:25Z to 2026-10-15T18:52Z (72.5 h). One message every 10 mi
 | Measure | Reading |
 |---|---|
 | Sent / unique / seen in the transcript | 435 / 435 / 435; none missing, none seen but unsent (`sent.log` against the session transcript) |
-| Show bound | max shows of any one id was 3 (the watcher's count) |
+| Show bound | max shows of any one id was 3 (the watcher's count, readings to 18:49Z, ids 1-434; soak-0435 was sent 18:52Z and has no watcher reading) |
 | Model actions | 0 `tool_use` blocks in the transcript |
 | Compactions | 0 |
-| Daemon | pid 28280, `started_at` 2026-10-12T18:18:41Z unchanged through the window |
-| Session | claude pid 46932 alive to the end; no stuck dialog seen |
+| Daemon | pid 28280, `started_at` 2026-10-12T18:18:41Z unchanged in all 73 hourly monitor readings (last 18:19Z); pid 28280 still present at stop time (tasklist) |
+| Session | claude pid 46932 present at stop time (tasklist, just before it was stopped); the watcher saw no stuck dialog through 18:49Z |
 | Usage to 18:49Z | cache_read 170.6M (about 2.35M per hour), cache_create 197k, output 54.3k (about 750 per hour), 1303 turns |
 
 ## Caveats, as stated to the PM

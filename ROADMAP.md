@@ -10,7 +10,7 @@ list is `PORTFOLIO-ROADMAP.md` in `C:\Projects`.
 | item | state | ruled? | source |
 |---|---|---|---|
 | **restarttest soak (board 175)**: one message every 10 minutes into the restarttest session, 3 days | DONE 2026-10-15T18:52Z, 72.5 h: 435 sent / 435 seen, max shows 3 (watcher, ids 1-434), 0 tool_use, 0 compactions, daemon unchanged. NOT clean: 1 `auth_failure` line (the synapse lane's own curl, their statement); compaction bound untested; weekly-limit delta unmeasured. Report: `docs/SOAK-RESTARTTEST-END-REPORT.md` | RULED, CireSnave 2026-10-12: "1) Yes. 2) 1 message every 10 minutes.  3) Restart it." | docs; synapse lane owns the daemon |
-| Follow-ups after the soak | token rate reported; weekly-limit delta and behaviour across a compaction (3x show bound, id dedupe) still unmeasured | OPEN (needs a banner reading and a run that compacts) | docs |
+| Follow-ups after the soak | token rate reported; weekly-limit delta and behaviour across a compaction (3x show bound, id dedupe) still unmeasured | RULED (PM ask); still open: needs a banner reading and a run that compacts | docs |
 | restarttest step 6 | waits on CireSnave's go | UNRULED (his) | HANDOFF |
 
 ## 2. Fleet gate coverage (the `spdx_gate.py` copies)

@@ -26,6 +26,8 @@ Hello approval on CireSnave's desktop, so run one provider per command:
 | Mistral, Hugging Face | `MISTRAL_API_TOKEN`, `HUGGINGFACE_API_TOKEN` | no probe script; used by `ProviderClient("mistral")` / `("huggingface")` |
 
 `probe/compliance_api.py <groq|google|openrouter> [rule ...]` needs the same one secret for its provider.
+`ProviderClient("cloudflare")` (library) needs `CLOUDFLARE_ACCOUNT_ID` in the environment (it is not in the vault list;
+the probe discovers it through the API when absent) and raises a named error without it.
 A missing token is never skipped quietly: it exits 2 (or raises `SecretNotSet`) with
 `NAME not set: run via with-secret NAME --reason "..." -- <command>`. A library caller that wants a
 failover across several providers (`RoutedClient`) needs several tokens in ONE process, which a single

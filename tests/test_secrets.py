@@ -101,6 +101,33 @@ class ClientWithoutItsToken(unittest.TestCase):
                 client._request("/models")
         self.assertEqual(sent, [], "no request may leave without a real token")
 
+    def test_chat_names_the_missing_secret_not_http_none(self):
+        # review finding: the named error was swallowed by the per-model
+        # handler and surfaced as "no usable model ... HTTP None"
+        sent = []
+        client = ProviderClient("groq", opener=lambda *a: sent.append(a) or (200, {}),
+                              model="llama-3.3-70b-versatile")
+        with mock.patch.dict(os.environ, clean_env(), clear=True):
+            with self.assertRaises(SecretNotSet) as cm:
+                client.chat([{"role": "user", "content": "hi"}])
+        self.assertIn("GROQ_CLOUD_API_TOKEN", str(cm.exception))
+        self.assertEqual(sent, [])
+        self.assertEqual(client._known_bad, set())
+
+    def test_roster_does_not_hide_the_missing_secret(self):
+        client = ProviderClient("openrouter", opener=lambda *a: (200, {}))
+        with mock.patch.dict(os.environ, clean_env(), clear=True):
+            with self.assertRaises(SecretNotSet):
+                client.roster()
+
+    def test_a_routed_client_reports_the_missing_secret_by_name(self):
+        from overmind.providers import RoutedClient, NoUsableModel
+        rc = RoutedClient([ProviderClient("groq", opener=lambda *a: (200, {}))])
+        with mock.patch.dict(os.environ, clean_env(), clear=True):
+            with self.assertRaises(NoUsableModel) as cm:
+                rc.chat([{"role": "user", "content": "hi"}])
+        self.assertIn("GROQ_CLOUD_API_TOKEN not set", str(cm.exception.attempts))
+
     def test_the_local_provider_needs_no_token(self):
         client = ProviderClient("ollama")
         with mock.patch.dict(os.environ, clean_env(), clear=True):

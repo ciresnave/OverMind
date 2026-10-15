@@ -115,7 +115,7 @@ def score_tool(msg):
 def probe(label, base, token, model_hint=None, require_free=False, extra=None):
     print("\n===== %s =====" % label, flush=True)
     if not token:
-        print("  KEY: ABSENT"); return
+        print("  KEY: ABSENT"); return   # unreachable via main(): kept as a guard
     print("  KEY: present (len %d)" % len(token))
     # 1. reachability + roster (one GET)
     st, body, hdrs = http(base.rstrip("/") + "/models", token, extra=extra)
@@ -225,7 +225,7 @@ def main(argv):
         if not acct:
             print("  !! NO ACCOUNT ID and none in the environment; /accounts said: %s" % note)
             print("  -> Workers AI's OpenAI-compatible path needs the account id. BLOCKED.")
-            return 0
+            return 1
         print("  account discovered: %s (%s)" % (acct, note))
         probe("CLOUDFLARE WORKERS AI",
               "https://api.cloudflare.com/client/v4/accounts/%s/ai/v1" % acct, tok)

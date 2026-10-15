@@ -64,7 +64,8 @@ from .quota import QuotaBook, daily_limit_in, monthly_limit_in
 
 __all__ = [
     "Provider", "PROVIDERS", "ProviderClient", "ChatResult", "Usage", "ProviderError",
-    "RateLimited", "NoUsableModel", "read_secret", "normalise_for_echo",
+    "RateLimited", "NoUsableModel", "read_secret", "require_secret", "SecretNotSet",
+    "normalise_for_echo",
     "select_models", "RoutedClient", "resolve_max_tokens", "resolve_timeout",
 ]
 
@@ -527,13 +528,15 @@ class ProviderClient:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return resp.status, json.loads(resp.read() or b"{}")
 
-    def _headers(self) -> dict[str, str]:
+    def _token(self) -> str:
+        """This provider's bearer token; `SecretNotSet` when a hosted one is absent."""
         if self.provider.key == "ollama":
             # a local server that ignores the header; no secret is involved
-            token = read_secret(self.provider.secret_name) or "unused"
-        else:
-            token = require_secret(self.provider.secret_name,
-                                   provider=self.provider.key)
+            return read_secret(self.provider.secret_name) or "unused"
+        return require_secret(self.provider.secret_name, provider=self.provider.key)
+
+    def _headers(self) -> dict[str, str]:
+        token = self._token()
         return {
             "Content-Type": "application/json",
             "Accept": "application/json",
@@ -587,6 +590,8 @@ class ProviderClient:
             data = body.get("data") or body.get("models") or []
             ids = [d.get("id") or d.get("name") for d in data if isinstance(d, dict)]
             self._roster = [canonical_model(i) for i in ids if i] or list(self.provider.fallback_models)
+        except SecretNotSet:
+            raise
         except ProviderError:
             self._roster = list(self.provider.fallback_models)
         return self._roster
@@ -627,6 +632,11 @@ class ProviderClient:
         # every instrument failure in MEASUREMENTS.md §14: the honest answer
         # replaced by a comfortable one.
         self.provider.resolved_base()
+        # Same reason for the TOKEN: with none, every candidate would fail
+        # identically and surface as "no usable model ... HTTP None", with the
+        # name of the missing secret nowhere in it (and each attempt booked
+        # against the quota). Raise the named error once, before the loop.
+        self._token()
 
         payload_messages = [normalise_for_echo(m) if m.get("role") == "assistant" else dict(m)
                             for m in messages]

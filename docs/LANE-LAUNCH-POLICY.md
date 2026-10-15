@@ -32,12 +32,13 @@ the signal. Until it exists, section 4's time window is what separates a replay 
 | 2 | `role` matches `[A-Za-z0-9_-]{1,64}` | else `refused: invalid-role` |
 | 3 | `role` is a known lane: it has existed in AgentLife's registry or plan under the same name | else `refused: unknown-role` (a sender-chosen string is never a launch) |
 | 4 | **Replay check**: a stored row WHOSE MECHANISM CALL WAS MADE with the same `(signal_id, attempt, epoch)`, younger than the replay window (section 4) | answer the recorded result; do nothing else; count nothing. A stored *refusal* is never replayed: it is re-evaluated (it is deterministic, and replaying it would re-impose a refusal the service itself just cleared) |
-| 5 | No more than 3 consecutive spawns (`started`, `awaiting-dialog`) for this role without the role coming online | else `refused: no-claim` (cleared when the role is seen online, section 4 rule 3) |
+| 5 | No more than 3 consecutive spawns (`started`, `awaiting-dialog`) for this role without the role having been seen online since (section 4 rule 7 keeps that observation) | else `refused: no-claim` (cleared when the role is seen online, section 4 rule 3) |
 | 6 | Rate caps: **spawns** in the last hour (rows with result `started` or reason `spawn-failed`), per role (3) and overall (12), counted from the store | else `refused: rate` |
 | 7 | Consent: an unattended launch needs a standing grant covering "start `<role>`" (section 6) | else `refused: no-grant` |
 | 8 | Call the mechanism once, passing the role and `--model sonnet` | map as in section 3 |
 
-Rows are written for every result including refusals at 2, 3, 5, 6, 7, so a repeat answers the same way.
+Rows are written for every result including refusals at 2, 3, 5, 6, 7 (for the ledger and the `transient`
+re-check); a stored refusal is re-evaluated on a repeat, never replayed (rule 4).
 **Counting:** only a row where the mechanism actually tried to spawn counts toward rules 5 and 6 (`started`,
 `awaiting-dialog`, `spawn-failed`). `already-running`, `held-for-memory`, `lock-held`, refusals and replays
 never consume budget: the cap bounds lanes started, which is the thing to bound. Consequence, intended: a
@@ -61,8 +62,10 @@ The model pin is **enforced by the mechanism**, which refuses Opus or an unknown
 spawns; the service's part is to pass `sonnet` and never a value from a signal. `model-not-pinned` is a
 defensive row: with `sonnet` always passed it is reachable only if the mechanism's own configuration
 disagrees, which is exactly the case it exists to make loud. If the mechanism reports Haiku it is accepted.
-A late result after `mechanism-timeout` is still recorded; the next attempt then finds the lane running and
-answers `already-running`.
+A late result after `mechanism-timeout` is recorded by updating that row (so a spawn that finished late is
+counted in rules 5 and 6 and no longer a bare `failed`); the next attempt then finds the lane running and
+answers `already-running`. If no late result ever arrives the row stays `failed: mechanism-timeout`,
+uncounted: the budget can be undercounted by exactly those rows, which the 24 h prune bounds.
 
 ## 4. Rules (the numbers they name are proposals, section 6)
 
@@ -78,15 +81,24 @@ answers `already-running`.
    therefore re-checked by the service itself, once per poll cycle (at most 30 s), from its store's
    `transient` rows, with these inputs: `refused: rate`: a slot has freed in the store's own ledger;
    `refused: no-grant`: AgentLife's grant store shows a covering grant (an input AgentLife must expose;
-   section 6); `refused: no-claim`: `GET /v1/list` shows the role `online` (the claim signal; needs the same
-   bearer session to read it). When the condition ends the service **deletes the transient row and then**
-   calls `POST /v1/launch-clear`, so the re-signalled request is re-evaluated, not answered from the old
-   row. `invalid-role`, `unknown-role` and `invalid-argument` are permanent for that signal.
+   section 6); `refused: no-claim`: `GET /v1/list` shows the role `online` (the claim signal). When the condition ends the service marks the row `clearing`, calls
+   `POST /v1/launch-clear`, and **deletes the row only after that call succeeded**; a failed call (daemon
+   down, 5xx, a crash between the steps) leaves the row `clearing` and it is retried every poll cycle, so a
+   role is never stranded refused with no row to re-check. Refusals are re-evaluated on a repeat (section 2
+   rule 4), so the old row cannot re-impose itself. `invalid-role`, `unknown-role` and `invalid-argument` are
+   permanent for that signal.
 4. The service never launches Opus, never passes `--resume`, never uses `gh auth switch` or acts as
    `ciresnave`, and never reads or logs a secret or a bearer token.
 5. **An authentication failure is a stop, not a loop:** 401/403 from the daemon ends polling with one named
    log line and an alert; a daemon that is down is retried with capped backoff (2 s doubling to 60 s).
 6. A compromised sender can at worst cause rate-capped launches of lanes that already exist.
+
+7. **Online observation and the alarm.** Every poll cycle the service reads `GET /v1/list` for each role
+   that has a spawn row in the last 24 h. A role seen `online` resets its consecutive-spawn counter (so a
+   legitimate launch, claim, exit, launch cycle never trips rule 5). A role with a spawn and an
+   `already-running` streak of 5 answers, or a `started` older than 2 x `launch_wait`, with the role never
+   seen online, raises one named alarm, `launch-stalled: <role> <reason>` (log line and the alert path),
+   once per streak: a lane alive and sitting at the dialog is a person's job, not a retry.
 
 **State.** A small durable file, written atomically: one row per `(signal_id, attempt, epoch)` with result,
 reason, time, whether the mechanism was called, whether it spawned, and whether the refusal is `transient`. It is the replay
@@ -101,7 +113,7 @@ creates a fresh store only on an explicit operator action, not on its own.
 Each as a test with a stand-in daemon and a stand-in mechanism, each seen red first:
 (a) the same signal twice inside the window launches once; (b) the same key after the window, and `attempt`
 reset by a clear, re-evaluates and launches; (c) `attempt+1` of a `failed` signal launches again;
-(d) an unknown role never reaches the mechanism; (e) the 4th mechanism call for one role in an hour is
+(d) an unknown role never reaches the mechanism; (e) the 4th spawn for one role in an hour is
 `refused: rate`, and the 13th overall likewise, while refusals and replays do not consume budget;
 (f) after the window frees a slot, the service sends `launch-clear` for that role; (g) a signal carrying a
 `model` field launches with `sonnet`; (g2) a stored refusal is re-evaluated, not replayed, and a clear issued
@@ -109,10 +121,13 @@ by the service inside the replay window leads to a launch, not the old refusal; 
 refusal stays refused after repeated signals; (h) a restart between two polls does not relaunch inside the window;
 (i) a mechanism error becomes a `failed` result, never a missing one, and each mapping row of section 3 is
 exercised; (j) a 403 stops polling; (k) no output contains a bearer token; (l) an unreadable store answers
-`failed: store-unavailable` and calls nothing; (m) three `started` with no claim becomes `refused: no-claim`
+`failed: store-unavailable` and calls nothing; (m) three spawns (`started` or `awaiting-dialog`) with no online observation become `refused: no-claim`
 and the role being seen online clears it and resets the counter; (n) records older than 24 h are pruned;
 (o) a late mechanism result after `mechanism-timeout` is recorded and the next attempt answers
-`already-running`; (p) `already-running` and `held-for-memory` never consume the spawn budget.
+`already-running`; (p) `already-running` and `held-for-memory` never consume the spawn budget; (q) a failed `launch-clear` leaves
+the row `clearing` and is retried, and the role is cleared once the daemon is back; (r) a role that launched,
+was seen online and exited three times in a day is launched a fourth time; (s) an `already-running` streak
+with no online observation raises exactly one `launch-stalled` alarm.
 
 ## 6. Not decided, not measured
 
@@ -124,7 +139,8 @@ and the role being seen online clears it and resets the counter; (n) records old
 - The rate caps (3 per role, 12 overall, per hour), the no-claim bound (3) and the replay window (5 min) are
   proposals, not measurements.
 - Inputs this spec needs and nobody has built: a grant-store read from AgentLife (for `no-grant` clearing),
-  the `epoch` field from Synapse, and a role's `launcher_roles` session being allowed `GET /v1/list`.
+  and the `epoch` field from Synapse. (`GET /v1/list` takes any bearer session; Synapse's C3 restricts only
+  `/v1/waiting`, `/v1/launch-result` and `/v1/launch-clear`.)
 - Whether a launched lane that finds no HANDOFF claims its role at all (the launcher starts it with "there is
   no HANDOFF for `<role>`, so say so and wait for instructions"): not checked.
 - Whether Synapse role names and AgentLife role names are the same strings: assumed by rule 3, unverified.

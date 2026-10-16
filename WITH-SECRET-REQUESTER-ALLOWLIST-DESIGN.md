@@ -38,10 +38,11 @@ code but not executed, the text says so.
 3. A `claude` with no such file is role `unmanaged-claude`; no `claude` ancestor is `outside-claude`. Both are
    `managed: false`, and the prompt then says "NOT a registered lane" (`channel.rs:97`).
 
-How a state file gets its `role` (`lane_state_writer.rs:28` `resolve_role`, `:95` `hook_role`): the
-`LANE_ROLE` environment variable of the hook process if set, else the file already recording this session, else
-the **lower-cased leaf of the working directory**. The PM's own lane needs `LANE_ROLE=pm`, because its cwd
-leaf is `Projects`.
+How a state file gets its `role` (`lane_state_writer.rs:95-124` `hook_role`, using `:28` `resolve_role`), in
+order: the `LANE_ROLE` environment variable of the hook process, returned **verbatim**; else the file that
+already records this session id **and** this claude pid; else the nearest cwd ancestor whose project-directory
+encoding matches the transcript path; else the **lower-cased leaf of the working directory**. The PM's own
+lane needs `LANE_ROLE=pm`, because its cwd leaf is `Projects`.
 
 **Can a lane forge another's name? Yes, by three routes, none of which needs more than the lane's own Windows
 user.** I read each in code; I did **not** run any of them, because two would overwrite a real lane's state
@@ -51,19 +52,35 @@ file.
 |---|---|---|
 | Start a nested `claude` with `LANE_ROLE=<other>` | The nested `claude`'s hooks write a state file with that role, and `with-secret` called from inside it resolves to that role. | `lane_state_writer.rs:95-100` |
 | Write a state file by hand | `C:/Projects/.lane-state` grants **`Authenticated Users: Modify`** (`icacls`, 2026-10-16, inherited from `C:/Projects`). `resolve` trusts the file's `pid` and `role` fields; nothing signs them. | `identity.rs:41-47`, `icacls` |
-| Start `claude` in a directory named like the role, with `LANE_ROLE` unset | Role falls back to the cwd leaf. | `lane_state_writer.rs:28-37` |
+| Start `claude` in a directory named like the role, with `LANE_ROLE` unset | Role falls back to the cwd leaf. | `lane_state_writer.rs:95-124` |
 
 So the identity is good against **accident** (a lane cannot name itself into another lane's approval from the
 command line, which is what `identity.rs:1-5` claims) and bad against **intent**. The same limit is already
 accepted for the Hello prompt: `identity.rs:4` says so, and `WITH-SECRET-DESIGN.md` §3 states it.
 
-Also observed: the role names in use are the state-file names under `C:/Projects/.lane-state`: `agentlife`,
-`auth-framework`, `baracuda`, `coderipper`, `fuel`, `humboldt`, `humboldtunifiedkidtracker`, `kiss`,
-`lightbulb`, `mlmf`, `overmind`, `persistant`, `pm`, `restarttest`, `safeimage`, `synapse`,
-`thinkersfoundation`, `thinkersjournal-community`, `unisql`, `unpopped`, plus strays that are only a worktree's
-directory name (`api`, `backend`, `docs`, `frontend`, `web`, `worker`, `shared`, …). The cwd-leaf fallback
-therefore mints accidental roles, and an allowlist must use these exact strings (`community` in the PM's example
-is not a role; `thinkersjournal-community` is).
+Also observed (listing `C:/Projects/.lane-state`, 2026-10-16): the role names are the state-file names, e.g.
+`agentlife`, `auth-framework`, `baracuda`, `coderipper`, `fuel`, `humboldt`, `humboldtunifiedkidtracker`, `kiss`,
+`lightbulb`, `mlmf`, `overmind`, `persistant`, `pm`, `safeimage`, `synapse`, `thinkersfoundation`,
+`thinkersjournal-community`, `unisql`, `unpopped`. Some lanes have only a `<role>.launch.json` right now
+(`restarttest`), and the directory also holds leftovers that are just a worktree's directory name (`api`, `web`,
+`worker`, `shared`, `frontend`, `routes`, `hf-config`, `version-0.5.5`, `mlmf-gguf`, `model-policy`,
+`synapse-restarttest-lane`). The cwd-leaf fallback mints such accidental roles. An allowlist must use the
+exact strings, and a list may name a lane that is not running (hence a warning, not an error, in §4). The
+PM's example `community` is not a role; `thinkersjournal-community` is.
+
+**A hazard that exists today: several state files carry the same pid.** Measured (parsing every `*.json`
+there, 2026-10-16): pid 18736 is recorded by both `overmind` (updated today) and `synapse-restarttest-lane`
+(updated 2026-10-09); pid 4216 by `api`, `shared`, `web`; pid 41632 by `frontend`,
+`humboldtunifiedkidtracker`, `routes`, `worker`; pid 57564 by `hf-config`, `version-0.5.5`. In every case the
+`role` field equals the file stem. `identity.rs:41` takes the **first** match of `states.iter().find(...)`,
+in `read_dir` order (I assumed alphabetical on NTFS; not tested). For pid 18736 that happens to give
+`overmind`; a lane whose stale twin sorted earlier would resolve to the wrong role, and an allowlist would then
+deny a legitimate lane or allow it under a stray name. `lane_state_writer.rs` copes with twins only partly:
+`assert-idle` takes the most recently updated file (`:146`, `max_by_key(updated_at)`), but `hook_role` step 2
+takes the shortest recorded cwd, then the alphabetically first role (`:107`), so it too could pick a stale
+twin. **The design therefore requires** that `resolve`
+choose, among files with the claude pid, the one with the newest `updated_at` (ties: the stem equal to
+`role`), and that a pid shared by two files is logged. This is a change to `identity.rs` and should land first.
 
 ## 3. Storage: what the OS actually separates
 
@@ -94,14 +111,17 @@ is not a role; `thinkersjournal-community` is).
   documented DPAPI behaviour; I did not test it, because there is no second account to test with.
 - `RUNNER-SETUP.md` already requires "a restricted Windows account, not CireSnave's" (`:10`) and "no secrets
   reachable by the account" (`:43`). Two gaps:
-  1. §5's fallback, "an interactive runner (`run.cmd`) in a logged-on session of the runner account"
-     (`RUNNER-SETUP.md:76-79`), is still `gh-runner`, but §5 also records a measurement taken "as CireSnave's
-     account". **Add a rule: a runner never runs as `cires`.** A runner under the owner's account reaches the
-     vault by DPAPI with no prompt (`WITH-SECRET-DESIGN.md` §3).
+  1. `RUNNER-SETUP.md` already says "not CireSnave's" account (`:10`), and its §5 fallback (`:76-79`) is still
+     `gh-runner`; the "as CireSnave's account" in §5 is a driver check (`nvidia-smi`, `vulkaninfo`), not a runner
+     setup. So this is not a gap in the text, but the rule is worth stating where it cannot be misread: **a
+     runner never runs as `cires`**, because a process under the owner's account reaches the vault by DPAPI
+     with no prompt (`WITH-SECRET-DESIGN.md` §3).
   2. **Everything under `C:/Projects` is writable by every local account.** `icacls` (2026-10-16): `C:/Projects`,
      `C:/Projects/.lane-state`, `C:/Projects/.claude-hooks` and `C:/Projects/.claude-hooks/with-secret.exe` each
-     carry `NT AUTHORITY\Authenticated Users:(M)` (Modify), inherited from the drive root. Two consequences
-     for a job running as `gh-runner`:
+     carry `NT AUTHORITY\Authenticated Users:(M)` (Modify), inherited from the drive root, and `BUILTIN\Users:(RX)`.
+     `net localgroup Administrators` lists only `Administrator` and `cires`, so `james`, `kims2` and `waemi` are
+     standard users who **already hold this Modify right today**; it is not only a future `gh-runner` risk.
+     Two consequences for any such account:
      - **It can replace `with-secret.exe`** (and `lane-restart.exe`, `user-request.exe`) in `.claude-hooks`.
        The next lane that runs it runs the job's code as `cires`, with DPAPI access to the vault. This
        bypasses the whole separation in §3.2, and it is the most important finding of this document. It
@@ -109,7 +129,7 @@ is not a role; `thinkersjournal-community` is).
      - It can write state files in `.lane-state`, and `identity.rs:41` would then mislabel whatever `claude`
        has the pid it names (approvals, `lane-restart`).
 
-     **Recommend: an ACL of SYSTEM, Administrators and `cires` only (Modify for `cires`, read for none else)
+     **Recommend: an ACL of SYSTEM, Administrators and `cires` only (Modify for `cires`; remove `Users:(RX)` and `Authenticated Users:(M)`)
      on `C:/Projects/.claude-hooks` and `C:/Projects/.lane-state`, applied before the runner account exists.**
      `C:/Projects` itself holds the repos the runner is meant to check out; its ACL is the PM's call. This
      needs an elevated shell, so it is a PM/CireSnave action. (`C:/Projects/.agentlife` does not exist on
@@ -154,23 +174,41 @@ interactive session and a Hello prompt per account, plus the lanes' tools and cr
 **Design, concretely**
 
 - **Data:** `Secret.lanes: Vec<String>` with `#[serde(default)]` (`vault.rs:51`). Stored inside the same DPAPI
-  blob, so a list change is one atomic `vault.bin` write. Role strings are matched exactly, case-sensitively
-  against the lower-case role. `unmanaged-claude` and `outside-claude` are **never** matched by default; a list
+  blob, so a list change is one atomic `vault.bin` write. Role strings are matched exactly and case-sensitively: only the cwd-leaf fallback is lower-cased, a `LANE_ROLE` value is kept as written (`lane_state_writer.rs:29-31`), so `vault allow` warns about a role that is not lower-case. `unmanaged-claude` and `outside-claude` are **never** matched by default; a list
   may name them explicitly, and `vault list` prints them in a warning colour.
 - **Check:** in `authorize`, after the vault lookup: not on the list → log `not-allowed` (role, secret, claude
   pid) and return a message naming the entry and "ask the PM to add the lane". No store access, so no
   prompt and no gate slot spent.
-- **Default deny** for new entries: `vault set` without `--lanes` is refused; `--lanes none` makes an
-  entry nobody can request (parked). Absent `lanes` in a **legacy** entry means "none" after cutover (§5).
+- **Default deny** for new entries: `vault set` of a **new** name without `--lanes` is refused; `--lanes none`
+  makes an entry nobody can request (parked). `vault set` replaces the whole `Secret` (`main.rs:272-281`) and
+  is also the rotation path, so for an **existing** name it must **keep the stored list** unless `--lanes` is
+  given; otherwise every rotation would restate (or silently lose) the list. Absent `lanes` in a legacy entry
+  means "none" after cutover (§5). Every `Secret { .. }` literal needs the new field (`main.rs:274`,
+  `run.rs:332`, `vault.rs:268`, `tests/masks_at_rest.rs:33`).
 - **CLI:** `vault set NAME --env VAR --access read|write --lanes a,b,c`; **and** `vault allow NAME --lanes a,b,c`
   (replace) / `--add` / `--remove`, because changing the list through `vault set` means re-entering the
-  secret (`main.rs:268`, `read_value_from_console`) and renews the mask salts. `vault allow` touches neither.
-  Both are Hello-gated like `vault set` (`main.rs:184`, `require_hello`, text from `consent.rs`), so a lane
-  cannot widen its own list through the CLI. A role that matches no state file under `.lane-state` is a
-  warning ("typo? currently no such lane"), not an error: a lane may not have started yet.
-- **Prompt:** one added line, `Allowed lanes: a, b, c` after `Wants`, in `channel.rs:91`. The test at
-  `run.rs:553` pins the prompt at five lines and changes to six; Who, Wants and Duration stay unclipped
-  (`channel.rs:88-90`).
+  secret (`main.rs:268`, `read_value_from_console`) and renews the mask salts. A role that matches no state
+  file under `.lane-state` is a warning ("typo? currently no such lane"), not an error.
+  `vault allow` is **not** free with today's code, and needs four things:
+  1. **A vault-only save.** `VaultStore::save` always writes `vault.bin` **and** `masks.bin` and rebuilds the
+     masks from the vault (`vault.rs:149-157`; callers pass `masks_json(&vault)`: `main.rs:282,294`). Reusing it
+     would renew the mask salts, which `vault allow` is meant to avoid.
+  2. **Its own Hello text.** `require_hello` builds `"with-secret: {action} secret {name} in the vault?"` and
+     fails with `"not {action}d"` (`consent.rs:16-18`, `main.rs:184-194`), which reads "not allowd" and does
+     not show the list. The prompt must show the entry and the **new list**; a batch must show every name and
+     list (clipped, with a count). Approving a list the approver cannot see would defeat the point.
+  3. **A binding for several secrets.** `require_hello` binds one (action, name); a `--file` call needs a binding
+     over the whole set.
+  4. **A TTY and a rate limit.** `vault set` is out of a lane's reach only because it reads the value from the
+     console. `vault allow` has no such need, and `require_hello` has no gate or cooldown, so a lane could spam
+     Hello prompts. Require an interactive console for `vault allow` and refuse it for a managed lane
+     (`Requester.managed`).
+- **Prompt:** one added line, `Allowed lanes: a, b, c`, **after Duration and before the reason**, because
+  `channel.rs:86-90` puts Duration before the reason so that a dialog that cuts the tail cuts the reason first.
+  This is more than a line in `channel.rs:91`: `prompt_text` is shared by every request kind in the
+  `user-request` crate and `Request` (`run.rs:208-214`) has no lanes field, so the change adds an optional
+  field to `Request` that only secrets fill. The test at `run.rs:553` pins five lines and becomes six.
+  Who and Duration are never clipped; Wants is (`channel.rs:113`, 200 chars, harmless for a 64-char name).
 - **Audit:** `Event` already records requester and entry (`audit.rs:12`). Add the kind `not-allowed` to the
   existing set (`granted | used | denied | timed-out | unavailable | refused | gate-refused`).
 - **Version skew:** `Secret` has no `deny_unknown_fields`, so an older `with-secret.exe` that rewrites the vault
@@ -214,7 +252,7 @@ Notes for the PM:
 - A pair such as `R2_ACCESS_KEY_ID`/`R2_SECRET_ACCESS_KEY` should have the same list; `vault allow` takes several
   names in one call (`vault allow --file lanes.json`) so they cannot drift.
 - **Cutover, one prompt:** build the new `with-secret.exe`; keep the old binary at `*.prev`; run one
-  `vault allow --file` (a single Hello prompt: "set the lane lists of 17 secrets?") with the table the PM
+  `vault allow --file` (a single Hello prompt that shows the 17 names and lists, per §4) with the table the PM
   decided; then `vault list` shows each list. Between install and that call, every request is refused with a
   message that says why (fail-closed). With the log showing 34 events in 15 days, the gap costs little. The
   alternative (a transition release where an absent list means "any lane" and `vault list` warns) is
@@ -234,6 +272,7 @@ Notes for the PM:
 
 - Any behaviour as `gh-runner` (no such account).
 - The three forgery routes (read, not executed).
-- Whether an Administrator on this box (`james`, `kims2`, `waemi` were not checked for group membership) can
-  recover `cires`'s DPAPI key; Microsoft's documented behaviour is that they cannot without the credentials,
-  and I did not test it.
+- Whether an Administrator on this box can recover `cires`'s DPAPI key. Administrators is only `Administrator`
+  and `cires` (`net localgroup Administrators`, 2026-10-16), so `james`, `kims2` and `waemi` are standard users.
+  Microsoft's documented behaviour is that an administrator cannot without the credentials; I did not test it.
+- NTFS `read_dir` ordering (§2, the shared-pid hazard).

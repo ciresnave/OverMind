@@ -54,7 +54,7 @@ role whose three spawns in an hour all fail is then `refused: rate` until a slot
 | held for memory | `failed` | `held-for-memory` |
 | `restore.lock` held by another run | `failed` | `lock-held` |
 | process ended, never appeared, or spawn error | `failed` | `spawn-failed` |
-| model not Sonnet/Haiku (`ModelNotPinned`) | `refused` | `model-not-pinned` (a configuration bug; `refused` is terminal because retrying cannot help. No rule here raises an alarm for it: it shows only as a stored `refused: model-not-pinned` row, so naming an alarm sink is open. AgentLife answers `refused`, agentlife `1df1b98` start.rs `StartRefusal::outcome`) |
+| model not Sonnet/Haiku (`ModelNotPinned`) | `refused` | `model-not-pinned` (a configuration bug; `refused` is terminal because retrying cannot help. No rule here raises an alarm for it: it shows only as a stored `refused: model-not-pinned` row (open gap in section 6, owner AgentLife service). AgentLife answers `refused`, agentlife `1df1b98` start.rs `StartRefusal::outcome`) |
 | `;` / control character / invalid argument | `refused` | `invalid-argument` (deterministic; retrying cannot help) |
 | no answer within `launch_wait` minus 10 s | `failed` | `mechanism-timeout` |
 
@@ -191,6 +191,7 @@ alarm re-arms and a new streak raises a new one.
 - Inputs this spec needs and nobody has built: the role's last-stop class (soft, hard, hold, unclassified),
   from the mechanism or Synapse, and the `epoch` field from Synapse. (`GET /v1/list` takes any bearer session; Synapse's C3 restricts only
   `/v1/waiting`, `/v1/launch-result` and `/v1/launch-clear`.)
+- **Open gap, owner AgentLife service: no sink for a `refused: model-not-pinned` answer.** It is terminal (section 3), so Synapse never retries, and nothing in this policy raises an alarm for it; it shows only as a stored ledger row. The service should surface it (for example as a `launch-stalled`-style alarm) the first time it occurs, since it means the mechanism's own configuration disagrees with the `sonnet` pin.
 - Whether a launched lane that finds no HANDOFF claims its role at all (the launcher starts it with "there is
   no HANDOFF for `<role>`, so say so and wait for instructions"): not checked.
 - Whether Synapse role names and AgentLife role names are the same strings: assumed by rule 3, unverified.

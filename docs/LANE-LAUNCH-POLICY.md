@@ -54,18 +54,45 @@ role whose three spawns in an hour all fail is then `refused: rate` until a slot
 | held for memory | `failed` | `held-for-memory` |
 | `restore.lock` held by another run | `failed` | `lock-held` |
 | process ended, never appeared, or spawn error | `failed` | `spawn-failed` |
-| model not Sonnet/Haiku (`ModelNotPinned`) | `failed` | `model-not-pinned` (a configuration bug: three attempts then `unreachable`, which is the right alarm) |
+| model not Sonnet/Haiku (`ModelNotPinned`) | `refused` | `model-not-pinned` (a configuration bug; `refused` is terminal because retrying cannot help. No rule here raises an alarm for it: it shows only as a stored `refused: model-not-pinned` row (open gap in section 6, owner AgentLife service). AgentLife answers `refused`, agentlife `1df1b98` start.rs `StartRefusal::outcome`) |
 | `;` / control character / invalid argument | `refused` | `invalid-argument` (deterministic; retrying cannot help) |
 | no answer within `launch_wait` minus 10 s | `failed` | `mechanism-timeout` |
 
 The model pin is **enforced by the mechanism**, which refuses Opus or an unknown model before anything
 spawns; the service's part is to pass `sonnet` and never a value from a signal. `model-not-pinned` is a
 defensive row: with `sonnet` always passed it is reachable only if the mechanism's own configuration
-disagrees, which is exactly the case it exists to make loud. If the mechanism reports Haiku it is accepted.
+disagrees, in which case the stored `refused` row is the only trace. If the mechanism reports Haiku it is accepted.
 A late result after `mechanism-timeout` is recorded by updating that row (so a spawn that finished late is
 counted in rules 5 and 6 and no longer a bare `failed`); the next attempt then finds the lane running and
 answers `already-running`. If no late result ever arrives the row stays `failed: mechanism-timeout`,
 uncounted: the budget can be undercounted by exactly those rows, which the 24 h prune bounds.
+
+### 3a. What AgentLife's `lane-restart start --json` actually answers
+
+Read from agentlife `origin/main` `1df1b98`: `crates/lane-restart/src/start.rs` (`StartRefusal::outcome`) and `main.rs` (the dry-run and success paths). Vocabulary: `started|already-running|refused|failed|dry-run`; `refused` is terminal, `failed` may succeed later, `already-running` is the no-op. Reasons are short codes.
+
+| AgentLife `(outcome, reason)` | Policy section 3 row | Ref (agentlife `1df1b98`) |
+|---|---|---|
+| `started`, `started` | new session Working or Started: `started` | main.rs success path, `RelaunchOutcome::Relaunched` |
+| `started`, `awaiting-dialog` | AwaitingDialog: `started` / `awaiting-dialog` (exit code 2; main.rs also prints a status JSON line `awaiting_confirmation` on that path, distinguish it by its `event` key, not by the presence of `outcome`) | main.rs, `AwaitingConfirmation` |
+| `already-running`, `already-running` | role already running | start.rs `StartRefusal::AlreadyRunning` |
+| `already-running`, `start-lock-held` | no policy row: another start holds the per-role start lock (that start may still fail afterwards); AgentLife answers `already-running`, exit code as for `already-running` | start.rs `StartLockHeld` |
+| `failed`, `spawn-failed` | process ended, never appeared, or spawn error | main.rs `Err(e)` arm; start.rs `Launch` |
+| `failed`, `disk-floor` | no policy row: free-disk floor not met; retryable. Emitted directly in `run_start_cmd`, not by `StartRefusal::outcome`, for PM and launcher callers alike | main.rs `disk_gate("start")` |
+| `failed`, `held-for-memory` | held for memory | start.rs `HeldForMemory` |
+| `failed`, `lock-held` | `restore.lock` held by another run | start.rs `RestoreLockHeld` |
+| `failed`, `duplicate-risk` | no policy row: a live or stuck session exists but is not a confirmed lane | start.rs `DuplicateRisk(Live)` |
+| `failed`, `process-table-unreadable` | no policy row | start.rs `DuplicateRisk(Unreadable)` |
+| `failed`, `start-lock-unavailable` | no policy row | start.rs `StartLockUnavailable` |
+| `failed`, `restore-lock-unavailable` / `store-unavailable` / `config-unreadable` | no policy row: the launcher's own gates could not be read | launcher_gate.rs `GateUnavailable` |
+| `refused`, `model-not-pinned` | model not Sonnet/Haiku (now `refused`) | start.rs `Model` |
+| `refused`, `not-pm` / `pm-role` / `no-signal` / `invalid-role` / `reason` | no policy row: AgentLife-side caller and argument checks (`invalid-argument` above is the nearest) | start.rs `NotPm`, `PmRole`, `NoSignal`, `InvalidRole`, `Reason` |
+| `refused`, `no-spec` / `spec-unusable` | no policy row: no usable launch spec for the role | start.rs `NoSpec`, `SpecUnusable` |
+| `refused`, `stop-hard` / `stop-unclassified` | consent (rule 7): not a soft stop, `no-grant` | start.rs `launcher_may_start` |
+| `refused`, `rate` / `rate-daily` | rate caps (rule 6); `rate-daily` has no policy row | launcher_gate.rs `CapHit::reason` |
+| `dry-run`, `dry-run` | none: AgentLife-only. It does not consume budget (`spawned=false`; `is_launcher_spawn` requires `spawned == Some(true)`) and writes a ledger line with `acted=false`. It does run `plan_start` and the disk gate first, so it can also answer `already-running`, `disk-floor`, `stop-hard`, `no-spec` and the other plan refusals. It returns before the start lock and the launcher gates, so it cannot predict `start-lock-held`, `start-lock-unavailable`, `rate`, `rate-daily`, `held-for-memory`, `lock-held`, `restore-lock-unavailable`, `store-unavailable` or `config-unreadable`. Whether the service forwards it to Synapse is the service's decision: it must not | main.rs dry-run path |
+
+Differences from section 3, to be reconciled by the service: the extra `failed`/`refused` reasons above have no policy row (the service should pass the code through verbatim and not invent one); AgentLife enforces its own caps, memory floor, `restore.lock` and stop-class check inside the mechanism only for a launcher caller (main.rs `is_launcher`; start.rs `if launcher { launcher_may_start }`): `stop-hard`, `stop-unclassified`, `rate`, `rate-daily`, `held-for-memory`, `lock-held`, `restore-lock-unavailable`, `store-unavailable` and `config-unreadable` never occur for the PM's own start (`start-lock-unavailable` can: it is not launcher-only). For the launcher, a service-side rule 6 or 7 refusal and an AgentLife one can both occur. Section 3 names `mechanism-timeout` and `invalid-argument`, which AgentLife does not emit (the first is the service's own, the second is its `invalid-role`/`reason` family).
 
 ## 4. Rules (the numbers they name are proposals, section 6)
 
@@ -164,6 +191,7 @@ alarm re-arms and a new streak raises a new one.
 - Inputs this spec needs and nobody has built: the role's last-stop class (soft, hard, hold, unclassified),
   from the mechanism or Synapse, and the `epoch` field from Synapse. (`GET /v1/list` takes any bearer session; Synapse's C3 restricts only
   `/v1/waiting`, `/v1/launch-result` and `/v1/launch-clear`.)
+- **Open gap, owner AgentLife service: no sink for a `refused: model-not-pinned` answer.** It is terminal (section 3), so Synapse never retries, and nothing in this policy raises an alarm for it; it shows only as a stored ledger row. The service should surface it (for example as a `launch-stalled`-style alarm) the first time it occurs, since it means the mechanism's own configuration disagrees with the `sonnet` pin.
 - Whether a launched lane that finds no HANDOFF claims its role at all (the launcher starts it with "there is
   no HANDOFF for `<role>`, so say so and wait for instructions"): not checked.
 - Whether Synapse role names and AgentLife role names are the same strings: assumed by rule 3, unverified.

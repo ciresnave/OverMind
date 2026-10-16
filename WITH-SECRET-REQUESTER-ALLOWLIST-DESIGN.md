@@ -1,6 +1,6 @@
 # `with-secret`: should the vault be divided by who requests? Design (NOT implementation)
 
-**Status: draft for the PM. No code written.** The PM's view to test: not two vaults, but ONE store with a
+**Status: draft for the PM, decisions of 2026-10-16 recorded in §5-§6. No code written.** The PM's view to test: not two vaults, but ONE store with a
 per-entry requester allowlist. This document tests it against the code as it is, and answers the PM's
 three questions: how a lane's identity is established today, what an allowlist adds on top of the
 per-approval prompt, and how the 17 existing entries migrate.
@@ -220,53 +220,64 @@ interactive session and a Hello prompt per account, plus the lanes' tools and cr
 `with-secret vault list` (2026-10-16; names and metadata only) shows 17 entries, all created 2026-10-15,
 none with `rotate_by`, 16 `Write` and one `Read`. `access.log` has 34 rows between 2026-10-01 and 2026-10-16
 and only three roles in it (`overmind`, `pm`, `outside-claude`), so **13 of the 17 entries have no logged use at
-all**. The "proposed lanes" column is therefore mostly a proposal from the name, which the PM must confirm;
-"basis" says what is evidence and what is a guess.
+all**.
 
-| entry | access | proposed lanes | basis |
+**PM ruling (2026-10-16, on #149):** an entry with no logged use starts **`pm`-only**, not with a guessed lane. A
+lane is added later by one Hello-approved `vault allow` change when it actually asks (its refusal is in the log
+as `not-allowed`, which is the trigger). An entry with logged use keeps the roles in the log.
+
+| entry | access | starting lanes | basis |
 |---|---|---|---|
 | `GROQ_CLOUD_API_TOKEN` | write | `overmind` | log: overmind granted+used |
 | `LLAMA_DESKTOP_API_KEY` | write | `overmind`, `pm` | log: both granted+used |
-| `GOOGLE_AI_STUDIO_API_TOKEN` | write | `overmind` | name: free-tier provider probes (`probe/provider_probe.py`); no use logged |
-| `MISTRAL_API_TOKEN` | write | `overmind` | same |
-| `NVIDIA_NIM_API_TOKEN` | write | `overmind` | same |
-| `OPENROUTER_API_TOKEN` | write | `overmind` | same |
-| `HUGGINGFACE_API_TOKEN` | write | `overmind` | name; **ask** whether `mlmf` or `llm-bench` need it |
-| `CLOUDFLARE_WORKERS_AI_API_TOKEN` | write | `overmind` | name |
-| `CIVITAI_API_TOKEN` | write | `overmind` | name; **ask** who generates images (`safeimage`?) |
 | `TJ_PROD_DATABASE_URL` | write | `pm` | log: pm granted+used (12 uses); `outside-claude` also granted+used (see below) |
-| `TJ_PROD_DATABASE_URL_RO` | **read** | `pm`, `thinkersjournal-community`, `thinkersfoundation` | log: pm; the other two are a guess from the project, and the read-only entry is the safe one to share |
-| `CLOUDFLARE_BUILDS_API_TOKEN` | write | `thinkersfoundation`, `pm` | name; `thinkersfoundation` is waiting on "token, zones, Pages" per its status |
-| `CACHE_PURGE_TOKEN` | write | `thinkersfoundation`, `thinkersjournal-community` | name |
-| `R2_ACCESS_KEY_ID` | write | `thinkersjournal-community` | name; **ask** |
-| `R2_SECRET_ACCESS_KEY` | write | `thinkersjournal-community` | name; must always equal the line above |
-| `CODECOV_TOKEN` | write | `pm` | name; CI normally uses a repo secret, so **ask** whether a lane needs it at all |
-| `FLY_API_TOKEN` | write | `pm` | name; **ask** which lane deploys to Fly |
+| `TJ_PROD_DATABASE_URL_RO` | **read** | `pm` | log: pm only |
+| `GOOGLE_AI_STUDIO_API_TOKEN` | write | `pm` | no use logged |
+| `MISTRAL_API_TOKEN` | write | `pm` | no use logged |
+| `NVIDIA_NIM_API_TOKEN` | write | `pm` | no use logged |
+| `OPENROUTER_API_TOKEN` | write | `pm` | no use logged |
+| `HUGGINGFACE_API_TOKEN` | write | `pm` | no use logged |
+| `CLOUDFLARE_WORKERS_AI_API_TOKEN` | write | `pm` | no use logged |
+| `CIVITAI_API_TOKEN` | write | `pm` | no use logged |
+| `CLOUDFLARE_BUILDS_API_TOKEN` | write | `pm` | no use logged |
+| `CACHE_PURGE_TOKEN` | write | `pm` | no use logged |
+| `R2_ACCESS_KEY_ID` | write | `pm` | no use logged |
+| `R2_SECRET_ACCESS_KEY` | write | `pm` | no use logged; must always have the same list as the line above |
+| `CODECOV_TOKEN` | write | `pm` | no use logged |
+| `FLY_API_TOKEN` | write | `pm` | no use logged |
 
-Notes for the PM:
+Notes:
 
+- **Expect `overmind` to be refused for the provider tokens** (`GOOGLE_AI_STUDIO_API_TOKEN`, `MISTRAL_API_TOKEN`,
+  `NVIDIA_NIM_API_TOKEN`, `OPENROUTER_API_TOKEN`, `HUGGINGFACE_API_TOKEN`, `CLOUDFLARE_WORKERS_AI_API_TOKEN`,
+  `CIVITAI_API_TOKEN`) the first time it runs `probe/provider_probe.py`, because the log has no use of them. That
+  is the intended trigger for the first `vault allow`, not a fault; the refusal message names the entry and says
+  to ask the PM.
 - **`outside-claude` used `TJ_PROD_DATABASE_URL` twice** (and `TEST_THROWAWAY`, since removed from the vault).
-  Under the new rule that role is denied unless an entry names it. Decide whether CireSnave's own shell keeps
-  access (then list `outside-claude` on that entry and accept that any non-`claude` process of his user
-  qualifies) or he uses a lane.
+  Under the new rule that role is denied unless an entry names it. PM ruling: the question goes to CireSnave
+  (board 225), the PM recommends deny. Until he answers, the entry's starting list is `pm` only.
 - A pair such as `R2_ACCESS_KEY_ID`/`R2_SECRET_ACCESS_KEY` should have the same list; `vault allow` takes several
   names in one call (`vault allow --file lanes.json`) so they cannot drift.
 - **Cutover, one prompt:** build the new `with-secret.exe`; keep the old binary at `*.prev`; run one
-  `vault allow --file` (a single Hello prompt that shows the 17 names and lists, per §4) with the table the PM
-  decided; then `vault list` shows each list. Between install and that call, every request is refused with a
-  message that says why (fail-closed). With the log showing 34 events in 15 days, the gap costs little. The
-  alternative (a transition release where an absent list means "any lane" and `vault list` warns) is
-  fail-open while it lasts and I do not recommend it.
-- Owners are the PM's decision, as asked; this is a proposal and the guesses are marked.
+  `vault allow --file` (a single Hello prompt that shows the 17 names and lists, per §4) with the table above;
+  then `vault list` shows each list. Between install and that call, every request is refused with a message
+  that says why (fail-closed). With the log showing 34 events in 15 days, the gap costs little. The alternative
+  (a transition release where an absent list means "any lane" and `vault list` warns) is fail-open while it
+  lasts and I do not recommend it.
 
-## 6. Open points for the PM
+## 6. Decisions and open points
 
-1. Approve the "filter, not boundary" wording of §1 for the user-facing docs.
-2. Who decides the table in §5, and the `outside-claude` question.
-3. The two OS actions in §3.2: "a runner never runs as `cires`" in `RUNNER-SETUP.md`, and the ACL on
-   `.claude-hooks` and `.lane-state` (**before** `gh-runner` is created; elevated shell).
-4. Where the implementation goes: `with-secret` and `user-request` are in the `consent` repo, so the code PR is
-   that lane's. This document lives in OverMind only because the design task came to this lane.
+PM decisions on #149 (2026-10-16):
+
+1. The wording "a filter before the prompt, not a boundary" is approved for the user-facing docs.
+2. The table in §5 is accepted, with the change that entries with no logged use start `pm`-only.
+3. The ACL on `.claude-hooks` and `.lane-state` is board 224, and "a runner never runs as `cires`" (except the
+   Humboldt exception, board 223) is board 223: both are CireSnave's decisions. The `outside-claude` question is
+   board 225.
+4. The implementation goes in the `consent` repo (`with-secret`, `user-request`), design-first.
+
+Open: the order of the implementation PRs. This document suggests the `identity.rs` tie-break (§2) first, then
+the `lanes` field and the check in `authorize`, then `vault allow`, then the prompt line.
 
 ## 7. Not measured
 

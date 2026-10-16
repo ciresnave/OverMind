@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased (docs only; PM allocates the number at gate)
+
+- `docs/LANE-LAUNCH-POLICY.md` section 3: `model-not-pinned` is `refused`, not `failed` (PM ruling 2026-10-16: terminal, retrying cannot help; AgentLife already answers `refused`). New section 3a maps every outcome of AgentLife's `lane-restart start --json` (`started|already-running|refused|failed|dry-run`) to section 3, each row with its agentlife ref (`1df1b98`); rows AgentLife emits that the policy does not name are marked. Spec only; nothing was run.
+
 ## 0.14.3 (docs only)
 
 - `docs/LANE-LAUNCH-POLICY.md` section 6 and rule 7: board 216 is ruled. CireSnave, verbatim: "216: yes"; the breakdown below is the PM's record of that ruling. Soft-stopped roles (idle/waiting shutdown, task-boundary restart, crash) are launchable on mail; hard stop, hold and unclassified are `refused: no-grant`; conditions unchanged (spec only, sonnet, allowlisted signed senders, caps, ledger). The last-stop classification input is not built, so the service still refuses every role until it exists. Spec only; nothing was run.

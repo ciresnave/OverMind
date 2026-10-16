@@ -54,14 +54,14 @@ role whose three spawns in an hour all fail is then `refused: rate` until a slot
 | held for memory | `failed` | `held-for-memory` |
 | `restore.lock` held by another run | `failed` | `lock-held` |
 | process ended, never appeared, or spawn error | `failed` | `spawn-failed` |
-| model not Sonnet/Haiku (`ModelNotPinned`) | `refused` | `model-not-pinned` (a configuration bug; `refused` is terminal because retrying cannot help, so the ledger row is the alarm. AgentLife answers `refused`, agentlife `1df1b98` start.rs `StartRefusal::outcome`; this row said `failed` until this change) |
+| model not Sonnet/Haiku (`ModelNotPinned`) | `refused` | `model-not-pinned` (a configuration bug; `refused` is terminal because retrying cannot help. No rule here raises an alarm for it: it shows only as a stored `refused: model-not-pinned` row, so naming an alarm sink is open. AgentLife answers `refused`, agentlife `1df1b98` start.rs `StartRefusal::outcome`; this row said `failed` until this change) |
 | `;` / control character / invalid argument | `refused` | `invalid-argument` (deterministic; retrying cannot help) |
 | no answer within `launch_wait` minus 10 s | `failed` | `mechanism-timeout` |
 
 The model pin is **enforced by the mechanism**, which refuses Opus or an unknown model before anything
 spawns; the service's part is to pass `sonnet` and never a value from a signal. `model-not-pinned` is a
 defensive row: with `sonnet` always passed it is reachable only if the mechanism's own configuration
-disagrees, which is exactly the case it exists to make loud. If the mechanism reports Haiku it is accepted.
+disagrees, in which case the stored `refused` row is the only trace. If the mechanism reports Haiku it is accepted.
 A late result after `mechanism-timeout` is recorded by updating that row (so a spawn that finished late is
 counted in rules 5 and 6 and no longer a bare `failed`); the next attempt then finds the lane running and
 answers `already-running`. If no late result ever arrives the row stays `failed: mechanism-timeout`,
@@ -74,10 +74,11 @@ Read from agentlife `origin/main` `1df1b98`: `crates/lane-restart/src/start.rs` 
 | AgentLife `(outcome, reason)` | Policy section 3 row | Ref (agentlife `1df1b98`) |
 |---|---|---|
 | `started`, `started` | new session Working or Started: `started` | main.rs success path, `RelaunchOutcome::Relaunched` |
-| `started`, `awaiting-dialog` | AwaitingDialog: `started` / `awaiting-dialog` (exit code 2) | main.rs, `AwaitingConfirmation` |
+| `started`, `awaiting-dialog` | AwaitingDialog: `started` / `awaiting-dialog` (exit code 2; main.rs also prints a status JSON line `awaiting_confirmation` on that path, which is not the outcome line) | main.rs, `AwaitingConfirmation` |
 | `already-running`, `already-running` | role already running | start.rs `StartRefusal::AlreadyRunning` |
-| `already-running`, `start-lock-held` | no policy row: another start holds the per-role start lock, so a lane is being started; treat as `already-running` | start.rs `StartLockHeld` |
+| `already-running`, `start-lock-held` | no policy row: another start holds the per-role start lock (that start may still fail afterwards); AgentLife answers `already-running`, exit code as for `already-running` | start.rs `StartLockHeld` |
 | `failed`, `spawn-failed` | process ended, never appeared, or spawn error | main.rs `Err(e)` arm; start.rs `Launch` |
+| `failed`, `disk-floor` | no policy row: free-disk floor not met; retryable. Emitted directly in `run_start_cmd`, not by `StartRefusal::outcome`, for PM and launcher callers alike | main.rs `disk_gate("start")` |
 | `failed`, `held-for-memory` | held for memory | start.rs `HeldForMemory` |
 | `failed`, `lock-held` | `restore.lock` held by another run | start.rs `RestoreLockHeld` |
 | `failed`, `duplicate-risk` | no policy row: a live or stuck session exists but is not a confirmed lane | start.rs `DuplicateRisk(Live)` |
@@ -89,9 +90,9 @@ Read from agentlife `origin/main` `1df1b98`: `crates/lane-restart/src/start.rs` 
 | `refused`, `no-spec` / `spec-unusable` | no policy row: no usable launch spec for the role | start.rs `NoSpec`, `SpecUnusable` |
 | `refused`, `stop-hard` / `stop-unclassified` | consent (rule 7): not a soft stop, `no-grant` | start.rs `launcher_may_start` |
 | `refused`, `rate` / `rate-daily` | rate caps (rule 6); `rate-daily` has no policy row | launcher_gate.rs `CapHit::reason` |
-| `dry-run`, `dry-run` | none: AgentLife-only, never sent to Synapse and never consumes budget | main.rs dry-run path |
+| `dry-run`, `dry-run` | none: AgentLife-only. It does not consume budget (`spawned=false`; `is_launcher_spawn` requires `spawned == Some(true)`) and writes a ledger line with `acted=false`. It returns before the start lock and the launcher gates, so it cannot predict `start-lock-held`, `rate`, `held-for-memory`, `lock-held` or the `*-unavailable` reasons. Whether the service forwards it to Synapse is the service's decision: it must not | main.rs dry-run path |
 
-Differences from section 3, to be reconciled by the service: the extra `failed`/`refused` reasons above have no policy row (the service should pass the code through verbatim and not invent one); AgentLife enforces its own caps and stop-class check inside the mechanism, so a service-side rule 6 or 7 refusal and an AgentLife one can both occur. Section 3 names `mechanism-timeout` and `invalid-argument`, which AgentLife does not emit (the first is the service's own, the second is its `invalid-role`/`reason` family).
+Differences from section 3, to be reconciled by the service: the extra `failed`/`refused` reasons above have no policy row (the service should pass the code through verbatim and not invent one); AgentLife enforces its own caps, memory floor, `restore.lock` and stop-class check inside the mechanism only for a launcher caller (main.rs `is_launcher`; start.rs `if launcher { launcher_may_start }`): `stop-hard`, `stop-unclassified`, `rate`, `rate-daily`, `held-for-memory`, `lock-held` and the three `*-unavailable` reasons never occur for the PM's own start. For the launcher, a service-side rule 6 or 7 refusal and an AgentLife one can both occur. Section 3 names `mechanism-timeout` and `invalid-argument`, which AgentLife does not emit (the first is the service's own, the second is its `invalid-role`/`reason` family).
 
 ## 4. Rules (the numbers they name are proposals, section 6)
 

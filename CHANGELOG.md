@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased (PM allocates the number)
+
+- `rig` provider (local, address from `OVERMIND_RIG_BASE_URL`, off until set) and `Provider.local` replacing the `key == "ollama"` checks; `probe/rig_probe.py` (context ladder with clip detection, tool-call verdict, decode rate) for the multi-GPU box. Measured: Ollama 0.40.4 silently clips an over-context prompt and reports the clipped count (`LOCAL-MODEL-DISPATCH-DESIGN.md` 5a). `probe/daily_limits.py` and `probe/p1_bench.py` use `.local` instead of the `ollama` name (a `rig` task gets the local timeout and token budget). No behaviour change for existing providers.
+
 ## 0.14.5 (docs only)
 
 - `docs/PILOT-OVERMIND-LANE-CONFIG.md`: the exact `overmind.mcp.json` and `overmind.launch.json` `launch_args` for the Synapse pilot (from `synapse@519bd52` runbook section 3), plus a code read of `lane-restart` (`agentlife@e609da5`) answering the runbook's open question: `--mcp-config` and the channels flag are on the carry-over allowlist, but a restart rebuilds the spec from the state file, so a spec-only edit is lost and a hand launch (whose `SessionStart` re-records `launch_args`) is required; the runbook's rollback has the same gap. Also flags `RESTART-TOOL-DESIGN.md` line 241 as stale. Proposal only; nothing was run or written to `.lane-state`.

@@ -39,7 +39,7 @@ def setUpModule():
     global _TOKEN_PATCH
     from unittest import mock
     from overmind.providers import PROVIDERS as _P
-    names = {p.secret_name for k, p in _P.items() if k != "ollama"} | {"NOPE"}
+    names = {p.secret_name for k, p in _P.items() if not p.local} | {"NOPE"}
     _TOKEN_PATCH = mock.patch.dict(os.environ, {n: "dummy-not-a-secret" for n in names})
     _TOKEN_PATCH.start()
 

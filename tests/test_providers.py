@@ -583,5 +583,61 @@ class TestTruncationIsDistinguishable(unittest.TestCase):
         self.assertFalse(self.result_with(None).truncated)
 
 
+class LocalRigProvider(unittest.TestCase):
+    """The multi-GPU box CireSnave is building is one more local OpenAI-compatible
+    server (LOCAL-MODEL-DISPATCH-DESIGN.md section 1-2). Its address is not known
+    yet, so it is OFF until OVERMIND_RIG_BASE_URL is set: a provider that is
+    always 'available' would be tried first and fail with a transport error on
+    every dispatch while the box does not exist."""
+
+    def avail(self, **env):
+        from unittest import mock
+        from overmind.providers import available_providers
+        keep = {k: v for k, v in os.environ.items() if k != "OVERMIND_RIG_BASE_URL"}
+        keep.update(env)
+        with mock.patch.dict(os.environ, keep, clear=True):
+            return available_providers()
+
+    def test_only_the_two_local_servers_are_marked_local(self):
+        self.assertEqual({k for k, p in PROVIDERS.items() if p.local}, {"ollama", "rig"})
+
+    def test_rig_is_not_available_without_an_address(self):
+        self.assertNotIn("rig", self.avail())
+
+    def test_rig_is_available_once_an_address_is_set(self):
+        self.assertIn("rig", self.avail(OVERMIND_RIG_BASE_URL="http://10.0.0.5:8000/v1"))
+
+    def test_an_empty_address_counts_as_unset(self):
+        self.assertNotIn("rig", self.avail(OVERMIND_RIG_BASE_URL=""))
+
+    def test_ollama_stays_available_with_no_address_at_all(self):
+        """Control: the existing local provider must not have been switched off."""
+        self.assertIn("ollama", self.avail())
+
+    def test_the_address_comes_from_the_environment_without_a_trailing_slash(self):
+        from unittest import mock
+        with mock.patch.dict(os.environ, {"OVERMIND_RIG_BASE_URL": "http://10.0.0.5:8000/v1/"}):
+            self.assertEqual(PROVIDERS["rig"].resolved_base(), "http://10.0.0.5:8000/v1")
+
+    def test_an_unset_address_is_a_named_error_not_a_guessed_url(self):
+        from unittest import mock
+        from overmind.providers import ProviderError
+        env = {k: v for k, v in os.environ.items() if k != "OVERMIND_RIG_BASE_URL"}
+        with mock.patch.dict(os.environ, env, clear=True):
+            with self.assertRaises(ProviderError) as cm:
+                PROVIDERS["rig"].resolved_base()
+        self.assertIn("OVERMIND_RIG_BASE_URL", str(cm.exception))
+
+    def test_rig_needs_no_token(self):
+        from unittest import mock
+        env = {k: v for k, v in os.environ.items() if k != "OVERMIND_RIG_API_KEY"}
+        with mock.patch.dict(os.environ, env, clear=True):
+            self.assertEqual(ProviderClient("rig")._headers()["Authorization"], "Bearer unused")
+
+    def test_a_hosted_provider_is_still_not_local(self):
+        """Control: `local` must not have leaked onto a provider that needs a key."""
+        self.assertFalse(PROVIDERS["groq"].local)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

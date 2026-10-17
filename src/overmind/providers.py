@@ -214,9 +214,22 @@ class Provider:
     #: `DEFAULT_TIMEOUT_S` (180s, today's flat value - unchanged for every
     #: existing provider) unless a provider is measured to need otherwise.
     default_timeout_s: float = DEFAULT_TIMEOUT_S
+    #: A server on our own hardware: it ignores the bearer token, so none is
+    #: required (the header carries a placeholder).
+    local: bool = False
+    #: Environment variable that holds this provider's address when it is not
+    #: known ahead of time. Unset or empty means the provider is not
+    #: available (`available_providers`) and `resolved_base` names the variable.
+    base_url_env: str | None = None
 
     def resolved_base(self) -> str:
         base = self.base_url
+        if self.base_url_env:
+            base = os.environ.get(self.base_url_env) or ""
+            if not base:
+                raise ProviderError(self.key, None,
+                                    f"{self.base_url_env} is not set; {self.key} "
+                                    f"has no address to talk to")
         if self.account_secret_name:
             account = read_secret(self.account_secret_name)
             if not account:
@@ -282,6 +295,19 @@ PROVIDERS: dict[str, Provider] = {
         secret_name="OLLAMA_API_KEY",   # ignored by Ollama; kept for shape
         prefer=("qwen3", "llama3.2"),
         fallback_models=("qwen3:8b", "llama3.2:3b"),
+        local=True,
+    ),
+    # The multi-GPU desktop (LOCAL-MODEL-DISPATCH-DESIGN.md). Its address, served
+    # model tags, context window and timeout are NOT measured yet: the address
+    # comes from OVERMIND_RIG_BASE_URL, models from the server's own /models, and
+    # `default_timeout_s` / `default_max_tokens` stay at the cloud defaults until
+    # `probe/rig_probe.py` has numbers from the real box.
+    "rig": Provider(
+        key="rig",
+        base_url="",
+        secret_name="OVERMIND_RIG_API_KEY",   # ignored by the server; kept for shape
+        local=True,
+        base_url_env="OVERMIND_RIG_BASE_URL",
     ),
     "mistral": Provider(
         key="mistral",
@@ -530,7 +556,7 @@ class ProviderClient:
 
     def _token(self) -> str:
         """This provider's bearer token; `SecretNotSet` when a hosted one is absent."""
-        if self.provider.key == "ollama":
+        if self.provider.local:
             # a local server that ignores the header; no secret is involved
             return read_secret(self.provider.secret_name) or "unused"
         return require_secret(self.provider.secret_name, provider=self.provider.key)
@@ -776,7 +802,11 @@ def available_providers() -> list[str]:
     """Providers whose secret is actually readable right now."""
     out = []
     for name, prov in PROVIDERS.items():
-        if name == "ollama" or read_secret(prov.secret_name):
+        if prov.base_url_env:
+            if os.environ.get(prov.base_url_env):
+                out.append(name)
+            continue
+        if prov.local or read_secret(prov.secret_name):
             if prov.account_secret_name and not read_secret(prov.account_secret_name):
                 continue
             out.append(name)

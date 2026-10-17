@@ -34,7 +34,7 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
 from overmind import lanework as lw                                      # noqa: E402
-from overmind.providers import ChatResult, ProviderClient, Usage         # noqa: E402
+from overmind.providers import ChatResult, PROVIDERS, ProviderClient, Usage         # noqa: E402
 from overmind.quota import QuotaBook, default_path                        # noqa: E402
 
 try:
@@ -110,7 +110,7 @@ def client_for(task: lw.Task) -> ProviderClient:
     # the runner's 180 s default would score a cold start as a failure.
     # ⚠️ And a thinking model spends its output budget before it answers:
     # NVIDIA's gpt-oss-20b was cut off at 4,096 in §27.
-    local = task.provider == "ollama"
+    local = PROVIDERS[task.provider].local
     return ProviderClient(task.provider, timeout=900.0 if local else 180.0,
                           max_tokens=8192 if local else 4096, model=task.model,
                           quota=None if local else QuotaBook(path=default_path()))

@@ -26,7 +26,7 @@ from overmind.providers import (  # noqa: E402
     PROVIDERS, ProviderClient, ProviderError, SecretNotSet, read_secret, require_secret,
 )
 
-HOSTED_TOKENS = sorted({p.secret_name for k, p in PROVIDERS.items() if k != "ollama"})
+HOSTED_TOKENS = sorted({p.secret_name for k, p in PROVIDERS.items() if not p.local})
 
 
 def clean_env(**extra: str) -> dict[str, str]:
@@ -135,7 +135,7 @@ class ClientWithoutItsToken(unittest.TestCase):
 
     def test_every_hosted_provider_names_its_own_token(self):
         for key, prov in PROVIDERS.items():
-            if key == "ollama":
+            if prov.local:
                 continue
             with mock.patch.dict(os.environ, clean_env(), clear=True):
                 with self.assertRaises(SecretNotSet, msg=key) as cm:

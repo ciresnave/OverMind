@@ -189,6 +189,23 @@ research:
 
 ---
 
+## 5a. Update 2026-10-16: the `rig` provider and `probe/rig_probe.py` exist (PM ruling: prepare now, measure on the box)
+
+- `PROVIDERS["rig"]`: `local=True`, address from `OVERMIND_RIG_BASE_URL`. Unset or empty means it is **not in
+  `available_providers()`** and `resolved_base()` names the variable, so a box that does not exist yet is never
+  tried first. Its `default_timeout_s` and `default_max_tokens` are still the cloud defaults: section 5 stands, they
+  are set from `rig_probe.py` output, not guessed. `Provider.local` replaces the old `key == "ollama"` checks.
+- `probe/rig_probe.py` measures, against any OpenAI-compatible server: the largest prompt taken without clipping
+  (a ladder), whether a real `tool_calls` entry comes back, and decode tokens/s (one sample, includes prefill, labelled
+  so). A down server, timeout or HTTP error is a `transport_error` / step `kind`, never a capability verdict.
+- **MEASURED 2026-10-16 (UTC 2026-10-17 00:09-00:13), Ollama 0.40.4 on the RTX 4070 Laptop (8 GB), tag `overmind-qwen3-8b-ctx16k`
+  (num_ctx 16384): Ollama does not reject a prompt over its context.** It answers HTTP 200 and reports the
+  clipped size: a request with target 40,000 came back as `prompt_tokens: 8194`, fewer than the 13,347 of a
+  smaller 20,000-target request. `probe/rig_probe.py`, run against this server, flagged that step `clipped` (asked ~27,200 by its own calibration, counted 8194) and did not credit it. A server that
+  silently clips would make `checker.py`'s prompt look accepted while the model never saw most of it, which is
+  the failure section 3 warns about. Same run: tool call PASS, decode 12.1 tokens/s (not comparable to the rig).
+  Single run per number; not the rig.
+
 ## `claims/piece2-parked` — does this change its status?
 
 **Not changed by this document, per explicit instruction.** But recorded, since the park was dated

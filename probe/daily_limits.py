@@ -129,7 +129,7 @@ def probe(key: str) -> dict:
 
 
 def main() -> int:
-    wanted = sys.argv[1:] or [k for k in PROVIDERS if k != "ollama"]
+    wanted = sys.argv[1:] or [k for k, v in PROVIDERS.items() if not v.local]
     results = [probe(k) for k in wanted]
 
     for r in results:

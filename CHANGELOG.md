@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.14.8
+
+- `docs/LAUNCH-ON-MESSAGE-DESIGN.md` (design only, nothing run): OverMind's part in replacing claude-peers with Synapse. Finding: OverMind runs no subscriber (the AgentLife `agentlife-launcher` service polls and applies the policy). Message shapes, needs from Synapse/AgentLife/CireSnave, 12 failure modes (F4: a launched lane can lose its first pushes), 5 options with a recommendation, 8 pilot measures. `LANE-LAUNCH-POLICY.md` section 1 corrected: the bearer role is `agentlife-launcher`, and Synapse's `epoch` is built.
+
 ## 0.14.7
 
 - `probe/package-lock.json` committed (npm) and no longer ignored, so `probe/`'s one dependency (`@modelcontextprotocol/sdk` 1.31.0) resolves reproducibly (CodeRipper SUP-001). No code change.

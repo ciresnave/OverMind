@@ -15,14 +15,15 @@ approval. Everything below that says "the mechanism" means that entry point.
 
 ## 1. Inputs
 
-From Synapse `GET /v1/waiting?wait=30` (bearer session for role `overmind`, which must be in the daemon's
-`launcher_roles`): per role `{role, signal_id = "<role>:<oldest queued global id>", count,
+From Synapse `GET /v1/waiting?wait=30` (bearer session for role `agentlife-launcher`, which must be in the daemon's
+`launcher_roles`; never `overmind`): per role `{role, signal_id = "<role>:<oldest queued enqueue time, RFC 3339 micros>", count,
 oldest_enqueued_at, attempt}`. Nothing else is trusted: no model, no body, no token (the service must not
 read one if it ever appears). Per Synapse's design (spec C4a and 7.2, not yet built) `attempt` resets on a
 `launch-clear` and on a daemon restart, and the
 `signal_id` stays the same while the oldest message stays queued, so the same `(signal_id, attempt)` can be a
-genuinely new request. **Requested of Synapse:** an `epoch` field (a counter bumped by a clear or restart) in
-the signal. Until it exists, section 4's time window is what separates a replay from a new request.
+genuinely new request. Synapse has since built `epoch` (daemon start plus a counter bumped by a clear) in the signal and in
+`POST /v1/launch-result`; the dedupe key is `(signal_id, epoch, attempt)` (`synapsed` `launch.rs`, grepped at
+`6b8ad2e`, not run). Section 4's time window still bounds a replay. End to end: `LAUNCH-ON-MESSAGE-DESIGN.md`.
 
 ## 2. Decision, in this order (first refusal wins; every refusal has a named reason)
 
@@ -189,7 +190,7 @@ alarm re-arms and a new streak raises a new one.
 - The rate caps (3 per role, 12 overall, per hour), the no-claim bound (3) and the replay window (5 min) are
   proposals, not measurements.
 - Inputs this spec needs and nobody has built: the role's last-stop class (soft, hard, hold, unclassified),
-  from the mechanism or Synapse, and the `epoch` field from Synapse. (`GET /v1/list` takes any bearer session; Synapse's C3 restricts only
+  from the mechanism or Synapse. (`GET /v1/list` takes any bearer session; Synapse's C3 restricts only
   `/v1/waiting`, `/v1/launch-result` and `/v1/launch-clear`.)
 - **Open gap, owner AgentLife service: no sink for a `refused: model-not-pinned` answer.** It is terminal (section 3), so Synapse never retries, and nothing in this policy raises an alarm for it; it shows only as a stored ledger row. The service should surface it (for example as a `launch-stalled`-style alarm) the first time it occurs, since it means the mechanism's own configuration disagrees with the `sonnet` pin.
 - Whether a launched lane that finds no HANDOFF claims its role at all (the launcher starts it with "there is

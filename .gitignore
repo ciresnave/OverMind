@@ -5,7 +5,6 @@ probe/*.log
 probe/*.raw
 probe/*.txt
 probe/*.jsonl
-probe/package-lock.json
 supertool
 *.egg-info/
 build/

@@ -43,6 +43,8 @@ list is `PORTFOLIO-ROADMAP.md` in `C:\Projects`.
 | Dispatch infrastructure: `check_profile`, model pinning, per-model `max_tokens`, per-model timeouts, tool_calls consumption proof | landed (PRs #83, #84, #90, #92) | RULED, merged |
 | Local-model dispatch design and the Lightbulb OpenAI-compat checklist (#91) | design docs merged; no implementation scheduled here | UNRULED (needs the PM to schedule) |
 | Claims checker, paid-provider cost-vs-quality comparison, Synapse sender-proof signing field | parked or pending in the lane's notes; **not re-verified at this ref** | UNRULED |
+| Launch-on-message design (`docs/LAUNCH-ON-MESSAGE-DESIGN.md`, #153) | design only; OverMind runs no subscriber, the AgentLife launcher service executes `LANE-LAUNCH-POLICY.md`. Decisions D1a, D2a (notifier first), D3 = separate phase 2 after the 24h pilot passes, D4 (lane fetch-on-start, no readiness gate yet) | RULED (PM ASK-ANSWER 2026-10-17, relayed; D3 clarified by content) |
+| **M8, owner agentlife:** `lane-restart` `notify.rs` and the launcher's PM-notify path move from the claude-peers broker to role `lane-restart@<account>` on the Synapse daemon API | not started; depends on the Synapse daemon API (on `main`); **must land before the claude-peers broker is stopped**, or the notifier-only launcher goes silent at cutover | RULED (PM 2026-10-17: owner agentlife; PM adds the portfolio row) |
 
 ## 5. Ties to `PORTFOLIO-ROADMAP.md`
 

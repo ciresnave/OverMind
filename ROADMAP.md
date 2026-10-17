@@ -39,7 +39,7 @@ list is `PORTFOLIO-ROADMAP.md` in `C:\Projects`.
 | item | state | ruled? |
 |---|---|---|
 | Open PRs including Dependabot | none open at `a198c29` before this file's PR (#141) was opened; `gh pr list --state open` returned `[]` then | RULED (standing charge) |
-| Issue #110 and the `git grep -c` over-deny | queued, not started | waits on a PM TASK |
+| Issue #110 (lane-restart: record a launch name only when it is a safe identifier) | DONE: merged as agentlife#115 (0.16.5), 2026-10-16T18:20Z, read back with `gh pr view`. The `git grep -c` over-deny this row used to name has no record (PM, 2026-10-17); row dropped | RULED, merged |
 | Dispatch infrastructure: `check_profile`, model pinning, per-model `max_tokens`, per-model timeouts, tool_calls consumption proof | landed (PRs #83, #84, #90, #92) | RULED, merged |
 | Local-model dispatch design and the Lightbulb OpenAI-compat checklist (#91) | design docs merged; no implementation scheduled here | UNRULED (needs the PM to schedule) |
 | Claims checker, paid-provider cost-vs-quality comparison, Synapse sender-proof signing field | parked or pending in the lane's notes; **not re-verified at this ref** | UNRULED |

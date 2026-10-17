@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.14.5 (docs only)
+
+- `docs/PILOT-OVERMIND-LANE-CONFIG.md`: the exact `overmind.mcp.json` and `overmind.launch.json` `launch_args` for the Synapse pilot (from `synapse@519bd52` runbook section 3), plus a code read of `lane-restart` (`agentlife@e609da5`) answering the runbook's open question: `--mcp-config` and the channels flag are on the carry-over allowlist, but a restart rebuilds the spec from the state file, so a spec-only edit is lost and a hand launch (whose `SessionStart` re-records `launch_args`) is required; the runbook's rollback has the same gap. Also flags `RESTART-TOOL-DESIGN.md` line 241 as stale. Proposal only; nothing was run or written to `.lane-state`.
+- `ROADMAP.md` section 4: the stale row "Issue #110 and the `git grep -c` over-deny" now says #110 is done (agentlife#115, 0.16.5, merged 2026-10-16T18:20Z) and that the over-deny has no record.
+- This version also covers the already-merged vault-allowlist design (#149, `WITH-SECRET-REQUESTER-ALLOWLIST-DESIGN.md`), which merged without a version bump.
+
 ## 0.14.4 (docs only)
 
 - `docs/LANE-LAUNCH-POLICY.md` section 3: `model-not-pinned` is `refused`, not `failed` (PM ruling 2026-10-16: terminal, retrying cannot help; AgentLife already answers `refused`). The old text's alarm (three attempts then `unreachable`) goes with `failed`; no rule replaces it; section 6 now lists the missing alarm sink as an open gap owned by the AgentLife service. New section 3a maps every outcome of AgentLife's `lane-restart start --json` (`started|already-running|refused|failed|dry-run`) to section 3, including `disk-floor`, which `main.rs` emits directly, each row with its agentlife ref (`1df1b98`); rows AgentLife emits that the policy does not name are marked. Spec only; nothing was run.

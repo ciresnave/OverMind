@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased (PM allocates the number)
+## 0.14.6
 
 - `rig` provider (local, address from `OVERMIND_RIG_BASE_URL`, off until set) and `Provider.local` replacing the `key == "ollama"` checks; `probe/rig_probe.py` (context ladder with clip detection, tool-call verdict, decode rate) for the multi-GPU box. Measured: Ollama 0.40.4 silently clips an over-context prompt and reports the clipped count (`LOCAL-MODEL-DISPATCH-DESIGN.md` 5a). `probe/daily_limits.py` and `probe/p1_bench.py` use `.local` instead of the `ollama` name (a `rig` task gets the local timeout and token budget). No behaviour change for existing providers.
 

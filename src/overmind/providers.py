@@ -55,6 +55,7 @@ import json
 import os
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 from types import SimpleNamespace
@@ -171,6 +172,9 @@ def require_secret(name: str, *, provider: str | None = None) -> str:
 # Provider table
 # --------------------------------------------------------------------------- #
 
+LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
+
+
 @dataclass(frozen=True)
 class Provider:
     key: str
@@ -222,6 +226,14 @@ class Provider:
     #: available (`available_providers`) and `resolved_base` names the variable.
     base_url_env: str | None = None
 
+    def __post_init__(self) -> None:
+        # ⚠️ audit 2026-10-18 (group5 finding 2): a hosted provider's bearer
+        # token goes to its address, so that address must be fixed in code;
+        # only a local server may take its address from the environment.
+        if self.base_url_env and not self.local:
+            raise ValueError(f"{self.key}: base_url_env is for local providers only "
+                             f"(a hosted provider's token must not follow an env var)")
+
     def resolved_base(self) -> str:
         base = self.base_url
         if self.base_url_env:
@@ -230,6 +242,12 @@ class Provider:
                 raise ProviderError(self.key, None,
                                     f"{self.base_url_env} is not set; {self.key} "
                                     f"has no address to talk to")
+            parts = urllib.parse.urlsplit(base)
+            if (parts.scheme not in ("http", "https") or not parts.hostname
+                    or parts.username is not None or parts.password is not None):
+                raise ProviderError(self.key, None,
+                                    f"{self.base_url_env} must be an http(s) URL with a host "
+                                    f"and no user:password")
         if self.account_secret_name:
             account = read_secret(self.account_secret_name)
             if not account:
@@ -557,8 +575,16 @@ class ProviderClient:
     def _token(self) -> str:
         """This provider's bearer token; `SecretNotSet` when a hosted one is absent."""
         if self.provider.local:
-            # a local server that ignores the header; no secret is involved
-            return read_secret(self.provider.secret_name) or "unused"
+            # A local server that ignores the header. A real key (an
+            # authenticated gateway) is sent only over https or to loopback:
+            # never in cleartext to an address taken from the environment.
+            secret = read_secret(self.provider.secret_name)
+            try:
+                parts = urllib.parse.urlsplit(self.provider.resolved_base())
+            except ProviderError:
+                return "unused"
+            safe = parts.scheme == "https" or parts.hostname in LOOPBACK_HOSTS
+            return secret if secret and safe else "unused"
         return require_secret(self.provider.secret_name, provider=self.provider.key)
 
     def _headers(self) -> dict[str, str]:

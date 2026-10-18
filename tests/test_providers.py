@@ -634,6 +634,44 @@ class LocalRigProvider(unittest.TestCase):
         with mock.patch.dict(os.environ, env, clear=True):
             self.assertEqual(ProviderClient("rig")._headers()["Authorization"], "Bearer unused")
 
+    # --- audit 2026-10-18 (group5 finding 2): the bearer token and the address ---
+
+    def test_an_address_that_is_not_http_is_refused(self):
+        from unittest import mock
+        from overmind.providers import ProviderError
+        for bad in ("file:///etc/passwd", "ftp://10.0.0.5/v1", "10.0.0.5:8000/v1",
+                    "http://", "http://user:pw@10.0.0.5/v1"):
+            with mock.patch.dict(os.environ, {"OVERMIND_RIG_BASE_URL": bad}):
+                with self.assertRaises(ProviderError, msg=bad):
+                    PROVIDERS["rig"].resolved_base()
+
+    def test_a_real_key_is_not_sent_over_cleartext_to_a_remote_host(self):
+        from unittest import mock
+        env = {"OVERMIND_RIG_API_KEY": "real-key-123456",
+               "OVERMIND_RIG_BASE_URL": "http://203.0.113.9:8000/v1"}
+        with mock.patch.dict(os.environ, env):
+            self.assertEqual(ProviderClient("rig")._headers()["Authorization"],
+                             "Bearer unused")
+
+    def test_a_real_key_is_sent_over_https_or_to_loopback(self):
+        """Control: the guard must not strip the key from every local provider."""
+        from unittest import mock
+        for url in ("https://rig.example/v1", "http://127.0.0.1:8000/v1"):
+            env = {"OVERMIND_RIG_API_KEY": "real-key-123456", "OVERMIND_RIG_BASE_URL": url}
+            with mock.patch.dict(os.environ, env):
+                self.assertEqual(ProviderClient("rig")._headers()["Authorization"],
+                                 "Bearer real-key-123456", url)
+
+    def test_only_a_local_provider_may_take_its_address_from_the_environment(self):
+        from overmind.providers import Provider
+        with self.assertRaises(ValueError):
+            Provider(key="x", base_url="https://api.example/v1", secret_name="X_KEY",
+                     base_url_env="X_BASE_URL")
+
+    def test_every_shipped_provider_passes_the_new_checks(self):
+        """Control: constructing the table at import already ran them."""
+        self.assertIn("groq", PROVIDERS)
+
     def test_a_hosted_provider_is_still_not_local(self):
         """Control: `local` must not have leaked onto a provider that needs a key."""
         self.assertFalse(PROVIDERS["groq"].local)

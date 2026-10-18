@@ -154,6 +154,7 @@ class Task:
             # a misspelt `check` must not silently become something else.
             raise ValueError(f"unknown task keys: {unknown}")
         task = cls(**data)
+        task._check_types()
         # ⚠️ `isinstance(list)` FIRST: a string is iterable and every element
         # of "cargo test" is a string, so the element test alone accepts it.
         if (not isinstance(task.check, list) or not task.check
@@ -170,6 +171,31 @@ class Task:
             # would send it to providers that have never heard of it.
             raise ValueError("`model` pins one provider; it cannot pin a route")
         return task
+
+    def _check_types(self) -> None:
+        """⚠️ Audit 2026-10-18 (group5 finding 3): `cls(**data)` checks no types,
+        so `fetch: "false"` was truthy, and `base` / `repo` reached `git worktree
+        add` and `gh pr create --base` as whatever the JSON said - including a
+        leading-dash string git or gh would read as an option."""
+        def strs(v: object) -> bool:
+            return isinstance(v, list) and all(isinstance(x, str) for x in v)
+        # bool is an int: `check_timeout_s: true` must not pass as 1
+        ok = (isinstance(self.id, str) and isinstance(self.goal, str)
+              and strs(self.check) and strs(self.writable) and strs(self.protected_globs)
+              and isinstance(self.fetch, bool)
+              and type(self.check_timeout_s) is int and type(self.max_steps) is int
+              and isinstance(self.provider, str) and isinstance(self.pr_body, str)
+              and all(v is None or isinstance(v, str)
+                      for v in (self.model, self.pr_title, self.check_name)))
+        if not ok:
+            raise ValueError("task fields have the wrong type: strings, string lists, "
+                             "a boolean `fetch`, integer `check_timeout_s` / `max_steps`")
+        for field_name, value in (("repo", self.repo), ("base", self.base)):
+            # a ref or a path, never option-shaped, never multi-line
+            if (not isinstance(value, str) or not value or value.startswith("-")
+                    or not re.fullmatch(r"[^\s\x00-\x1f]+", value)):
+                raise ValueError(f"`{field_name}` must be a non-empty string with no "
+                                 f"whitespace or control characters and no leading '-'")
 
     def provider_keys(self) -> list[str]:
         """`provider` is one key, or several separated by commas, tried in order."""
@@ -280,6 +306,7 @@ class WorkspaceConfined:
     #: matches that glob - see `dispatch_mcp.AGENT_INSTRUCTION_GLOBS`.
     extra_denied_globs: Sequence[str] = ()
     name: str = "workspace-confined"
+    requires_vouched_sender: bool = False
 
     def applies_to(self, call: ToolCall) -> bool:
         return call.name in READ_TOOLS + WRITE_TOOLS
@@ -627,7 +654,7 @@ def run_task(task: Task, client: Any = None, *, publish: bool = False, keep: boo
     run: AgentRun | None = None
     result: LaneResult | None = None
     try:
-        _git(repo, "worktree", "add", "-q", "--detach", str(root), task.base)
+        _git(repo, "worktree", "add", "-q", "--detach", "--", str(root), task.base)
         _git(root, "switch", "-q", "-c", branch)
         ws = Workspace(root, task)
         tracked = frozenset(n.casefold() for n in

@@ -229,6 +229,7 @@ class TestGateSemantics(unittest.TestCase):
     def test_any_denial_wins(self):
         class AlwaysAllow:
             name = "always-allow"
+            requires_vouched_sender = False
             def applies_to(self, call): return True
             def decide(self, call, facts): return Decision.allow("fine", self.name)
 
@@ -480,6 +481,24 @@ class TestPerSenderPoliciesRefuseUntilIdentityIsVouched(unittest.TestCase):
         self.assertFalse(outcome.allowed)
         self.assertEqual(outcome.decision.policy, "allow-senders")
         self.assertEqual(self.spy.calls, [])
+
+    def test_a_misspelt_vouch_flag_is_refused_when_the_gate_is_built(self):
+        """Audit 2026-10-18: the flag was read with getattr(..., False), so a
+        per-sender policy that misspelt it was silently NOT vouch-gated and
+        allowed an unvouched sender. Now a policy must declare the flag, as a
+        bool, and the gate refuses to be built without it."""
+        class PerSender:
+            name = "per-sender"
+            requires_vouch_sender = True        # typo
+
+            def applies_to(self, call):
+                return True
+
+            def decide(self, call, facts):
+                return Decision.allow("sender listed", self.name)
+
+        with self.assertRaises(TypeError):
+            Gate([PerSender()], facts=StaticFacts({"sender_vouched": False}), ledger=Ledger())
 
     def test_ordinary_policies_are_unaffected(self):
         """⚠️ The check must not become a tax on every policy in the system."""

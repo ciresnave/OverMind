@@ -452,6 +452,30 @@ class TestPieces(unittest.TestCase):
             with self.subTest(bad=bad), self.assertRaises((ValueError, TypeError)):
                 lw.Task.from_json(bad)
 
+    def test_task_json_refuses_option_shaped_and_mistyped_values(self):
+        """Audit 2026-10-18 (group5 finding 3): `base` and `repo` reach `git
+        worktree add` / `gh pr create --base`, and `fetch: "false"` is truthy.
+        Control: the same task with a plain base is accepted."""
+        good = dict(id="ok", repo=".", goal="g", check=["x"], writable=[])
+        self.assertEqual(lw.Task.from_json(dict(good, base="origin/release-1.2")).fetch, True)
+        for bad in (dict(good, base="--orphan"), dict(good, base="-b"),
+                    dict(good, base=""), dict(good, base="a b"), dict(good, base="x\ny"),
+                    dict(good, base=["origin/main"]), dict(good, repo="--upload-pack=x"),
+                    dict(good, repo=""), dict(good, repo=3),
+                    dict(good, fetch="false"), dict(good, fetch=0),
+                    dict(good, check_timeout_s="900"), dict(good, check_timeout_s=True),
+                    dict(good, max_steps="20"), dict(good, goal=5),
+                    dict(good, writable="src"), dict(good, writable=[1]),
+                    dict(good, protected_globs="x"), dict(good, pr_body=None),
+                    dict(good, pr_title=3), dict(good, model=3)):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                lw.Task.from_json(bad)
+
+    def test_the_worktree_add_ends_options_before_the_base(self):
+        import inspect
+        src = inspect.getsource(lw.run_task)
+        self.assertIn('"--detach", "--", str(root), task.base', src)
+
     def test_claims_done_both_ways(self):
         for text in ("I fixed a.txt and the check passed.", "Fixed it; all checks pass.",
                      "Bumped serde to 1.0.300. Tests pass."):

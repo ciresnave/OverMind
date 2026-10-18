@@ -147,6 +147,10 @@ class LedgerFacts:
 
 class Policy(Protocol):
     name: str
+    #: REQUIRED, not optional: the gate used to read it with getattr(..., False),
+    #: so a misspelt flag silently switched the unvouched-sender refusal off
+    #: (audit 2026-10-18). `Gate.__init__` rejects a policy without a bool.
+    requires_vouched_sender: bool
     def applies_to(self, call: ToolCall) -> bool: ...
     def decide(self, call: ToolCall, facts: FactSource) -> Decision: ...
 
@@ -161,6 +165,7 @@ class DenyUnlessDeclared:
     """
     reversible: frozenset[str]
     name: str = "deny-unless-declared-reversible"
+    requires_vouched_sender: bool = False
 
     def applies_to(self, call: ToolCall) -> bool:
         return True
@@ -194,6 +199,7 @@ class NoSelfMerge:
     """
     merge_tools: frozenset[str] = frozenset({"merge_pull_request"})
     name: str = "no-self-merge"
+    requires_vouched_sender: bool = False
 
     def applies_to(self, call: ToolCall) -> bool:
         return call.name in self.merge_tools
@@ -229,6 +235,7 @@ class RequirePrecondition:
     tool: str
     requires: str
     name: str = "require-precondition"
+    requires_vouched_sender: bool = False
 
     def applies_to(self, call: ToolCall) -> bool:
         return call.name == self.tool
@@ -249,6 +256,7 @@ class ForbidTools:
     tools: frozenset[str]
     reason: str = "this tool is forbidden for this agent"
     name: str = "forbid-tools"
+    requires_vouched_sender: bool = False
 
     def applies_to(self, call: ToolCall) -> bool:
         return call.name in self.tools
@@ -465,6 +473,13 @@ class Gate:
     def __init__(self, policies: Iterable[Policy], facts: FactSource | None = None,
                  ledger: Ledger | None = None) -> None:
         self.policies = list(policies)
+        for policy in self.policies:
+            if type(getattr(policy, "requires_vouched_sender", None)) is not bool:
+                raise TypeError(
+                    f"policy {getattr(policy, 'name', type(policy).__name__)!r} must declare "
+                    f"`requires_vouched_sender: bool` (True if it decides by who asked); "
+                    f"a missing or misspelt flag would silently skip the unvouched-sender refusal"
+                )
         # ⚠️ `is None`, NOT `or`. `Ledger` defines __len__, so an EMPTY ledger is
         # FALSY and `ledger or Ledger()` silently substituted a fresh one for the
         # caller's. The gate then wrote to one ledger while policies read another,
@@ -520,7 +535,7 @@ class Gate:
             # remember - and it is a refusal rather than a note, because a
             # constraint that lives in a design document is one restart away
             # from being forgotten.
-            if getattr(policy, "requires_vouched_sender", False):
+            if policy.requires_vouched_sender:
                 if self.facts.fact("sender_vouched") is not True:
                     return Decision.deny(
                         f"{getattr(policy, 'name', type(policy).__name__)} decides by sender "

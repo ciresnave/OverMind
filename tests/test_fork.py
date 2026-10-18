@@ -517,6 +517,7 @@ class TestForkInTheAgentLoop(unittest.TestCase):
 
         class NotNow:
             name = "not-now"
+            requires_vouched_sender = False
 
             def applies_to(self, call):
                 return call.name == "fork"
@@ -562,6 +563,7 @@ class TestForkInTheAgentLoop(unittest.TestCase):
 
         class Boom:
             name = "boom"
+            requires_vouched_sender = False
 
             def applies_to(self, call):
                 return call.name == "list_entities"
@@ -753,6 +755,7 @@ class TestDeferredMinors(unittest.TestCase):
 
         class Boom:
             name = "boom"
+            requires_vouched_sender = False
 
             def applies_to(self, call):
                 return call.name == "list_entities"

@@ -53,12 +53,13 @@ import pathlib
 import re
 import shutil
 import subprocess
+import io
 import sys
 import tempfile
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence, cast
 
 from .agent import AgentRun, run_agent
 from .gate import (
@@ -731,6 +732,7 @@ def run_task(task: Task, client: Any = None, *, publish: bool = False, keep: boo
                 except Exception:  # noqa: BLE001 - cleanup must not mask the result
                     pass
             shutil.rmtree(holder, ignore_errors=True)
+    assert result is not None   # every path that does not raise sets it
     result.seconds = round(time.time() - started, 1)
     return result
 
@@ -745,7 +747,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     task = Task.from_json(json.loads(pathlib.Path(args.task).read_text(encoding="utf-8")))
     result = run_task(task, publish=args.publish, keep=args.keep)
     try:
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        cast(io.TextIOWrapper, sys.stdout).reconfigure(encoding="utf-8", errors="replace")
     except (AttributeError, ValueError):
         pass
     print(result.to_json())

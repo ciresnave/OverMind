@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "overmind"
-version = "0.14.8"
+version = "0.14.9"
 description = "A multi-agent orchestrating harness for running agent work on non-Claude providers"
 readme = "README.md"
 # ⚠️ RULED, not inferred. This read `MIT` because I inferred it from
@@ -25,3 +25,11 @@ where = ["src"]
 
 [tool.setuptools.package-dir]
 "" = "src"
+
+# Static types (CIRESNAVE-EXPECTATIONS 6.16, audit 2026-10-18). `basic` over the
+# whole package; gate.py is strict because it is the authorisation surface.
+[tool.pyright]
+include = ["src"]
+pythonVersion = "3.11"
+typeCheckingMode = "basic"
+strict = ["src/overmind/gate.py"]

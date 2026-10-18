@@ -44,6 +44,7 @@ import tempfile
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from typing import Callable
 
 __all__ = ["QuotaBook", "daily_limit_in", "monthly_limit_in", "next_reset",
           "next_month_reset", "default_path", "PROVIDER_WIDE"]
@@ -178,7 +179,7 @@ def default_path() -> pathlib.Path:
 class QuotaBook:
     """Per provider/model: requests this quota day, the known cap, a block."""
     path: pathlib.Path | None = None
-    clock: callable = time.time
+    clock: Callable[[], float] = time.time
     _data: dict = field(default_factory=dict)
 
     def __post_init__(self) -> None:

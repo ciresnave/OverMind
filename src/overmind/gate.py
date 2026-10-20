@@ -58,7 +58,7 @@ class ToolCall:
     ARGUMENTS, which are the only parts that can have an effect.
     """
     name: str
-    arguments: Mapping[str, Any] = field(default_factory=dict)
+    arguments: Mapping[str, Any] = field(default_factory=lambda: dict[str, Any]())
     actor: str = "unknown"
 
     def arg(self, key: str, default: Any = None) -> Any:
@@ -108,7 +108,8 @@ class StaticFacts:
     established out-of-band (the agent's own identity, for instance)."""
 
     def __init__(self, values: Mapping[str, Any] | None = None) -> None:
-        self._values = dict(values or {})
+        # keys are a str, or a (str, params) tuple for a per-parameter override
+        self._values: dict[Any, Any] = dict(values or {})
 
     def set(self, key: str, value: Any) -> None:
         self._values[key] = value
@@ -392,7 +393,7 @@ class Ledger:
         """
         if not self._entries:
             return "Nothing has been done yet."
-        lines = []
+        lines: list[str] = []
         for entry in self._entries[-limit:]:
             args = ", ".join(f"{k}={v!r}" for k, v in sorted(entry.call.arguments.items()))
             mark = f"[fork {'/'.join(entry.lineage)}] " if entry.lineage else ""
@@ -438,7 +439,7 @@ class Ledger:
         return name in self.executed_tools()
 
     def to_json(self) -> str:
-        rows = []
+        rows: list[dict[str, Any]] = []
         for e in self._entries:
             row = {
                 "seq": e.seq,
@@ -504,7 +505,7 @@ class Gate:
         The gate stays authoritative about what may RUN; this only reports what
         should never have been OFFERED.
         """
-        out = []
+        out: list[str] = []
         for tool in tools:
             for policy in self.policies:
                 check = getattr(policy, "definitely_denies", None)

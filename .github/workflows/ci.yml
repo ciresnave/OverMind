@@ -123,6 +123,24 @@ jobs:
             exit 1
           fi
 
+  types:
+    name: pyright (basic; gate.py strict)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+
+      - name: Install pyright and mcp (the optional import it types against)
+        run: python -m pip install --quiet pyright==1.1.414 "mcp>=2.2.0"
+
+      - name: pyright
+        # CIRESNAVE-EXPECTATIONS 6.16 / OverMind audit 2026-10-18: the package is
+        # annotated, and until this job nothing checked the annotations. Config
+        # is [tool.pyright] in pyproject.toml.
+        run: pyright
+
   gate-boundary:
     name: gate boundary is intact
     runs-on: ubuntu-latest

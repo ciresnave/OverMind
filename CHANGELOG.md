@@ -1,11 +1,11 @@
 # Changelog
 
-## Unreleased (compile-time audit group5, 2026-10-18; version allocated by the PM)
+## 0.14.9 (pyright in CI + compile-time audit group5, 2026-10-19)
 
+- **CI: a `types` job runs pyright** (`[tool.pyright]` in `pyproject.toml`): `basic` over `src`, `strict` for `gate.py`. Baseline before this change was 30 errors in 7 files; all fixed with annotations, one real typing gap (`StaticFacts` keyed by a tuple but typed `dict[str, ...]`), and three `pyright: ignore` on `agent.py`'s lazily imported fork names (bound by the `fork is not None` guard, which pyright cannot see). No behaviour change.
 - **gate: `requires_vouched_sender` is now a required `Policy` member**, read directly and checked when a `Gate` is built (`TypeError` for a missing, misspelt or non-bool flag). It used to be `getattr(policy, ..., False)`, so a per-sender policy that misspelt it silently skipped the unvouched-sender refusal. Every in-repo policy declares it; a custom policy must too (**breaking for out-of-tree policies**).
 - **providers: only a local provider may take its address from an env var** (`Provider.__post_init__`), the address must be an http(s) URL with a host and no `user:pass`, and a local provider's real key is sent only over https or to loopback, never in cleartext to an env-supplied host. Severity: latent for the shipped table (`rig` ignores its key), real for anyone who sets `OVERMIND_RIG_API_KEY` and points `OVERMIND_RIG_BASE_URL` at a remote http host.
 - **lanework: `Task.from_json` type-checks every field** (`fetch: "false"` was truthy) and refuses a `repo` or `base` that is empty, option-shaped (leading `-`) or contains whitespace or control characters; `git worktree add` now ends options with `--` before the base. Argument-injection class; the task file is operator-written, so severity is low.
-- Not done (deferred while the disk hold is on): pyright/mypy in CI.
 
 ## 0.14.8
 

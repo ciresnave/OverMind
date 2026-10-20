@@ -250,7 +250,7 @@ class McpToolSource:
         async def _connect():
             stack = AsyncExitStack()
             read, write = await stack.enter_async_context(stdio_client(params))
-            kwargs = {"notification_bindings": bindings} if bindings else {}
+            kwargs: dict[str, Any] = {"notification_bindings": bindings} if bindings else {}
             session = await stack.enter_async_context(ClientSession(read, write, **kwargs))
             info = await session.initialize()
             caps = getattr(info, "capabilities", None)

@@ -42,11 +42,11 @@ import json
 import pathlib
 import tomllib
 from dataclasses import dataclass
-from typing import Callable
+from typing import Callable, TypeAlias
 
 #: What a marker's own resolver returns: either the (argv, public name) to
 #: check against, or a `str` reason the marker's content didn't validate.
-_Resolution = "tuple[list[str], str] | str"
+_Resolution: TypeAlias = "tuple[list[str], str] | str"
 
 
 def _resolve_cargo_toml(root: pathlib.Path) -> _Resolution:

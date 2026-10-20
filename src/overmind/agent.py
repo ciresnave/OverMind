@@ -482,14 +482,14 @@ def run_agent(client: ProviderClient, executor: GatedExecutor,
             # THE ONLY PATH TO AN EFFECT - a fork call included (execute_fork
             # runs it through this same gate).
             actor = f"{result.provider}:{result.model}"
-            if fork is not None and name == FORK_TOOL and ends_run:
+            if fork is not None and name == FORK_TOOL and ends_run:  # pyright: ignore[reportPossiblyUnbound]  (bound by the `fork is not None` import above)
                 messages.append(_tool_result_message(
                     call.get("id", ""), name,
                     "NOT RUN: a call in this turn repeats one that was already "
                     "stopped, so the run ends now and the fork was not started."))
                 continue
-            if fork is not None and name == FORK_TOOL:
-                outcome, forked = execute_fork(
+            if fork is not None and name == FORK_TOOL:  # pyright: ignore[reportPossiblyUnbound]
+                outcome, forked = execute_fork(  # pyright: ignore[reportPossiblyUnbound]
                     client, executor, tools, messages=messages, calls=calls, index=index,
                     args=args, actor=actor, config=fork, time_sensitive=time_sensitive,
                     parent_call_index=len(call_usage) - 1, parent_model=result.model,

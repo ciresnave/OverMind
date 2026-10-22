@@ -43,8 +43,9 @@ sends to the *lane* instead. Whether one-way is acceptable is the question for t
    and one role, and each must fail a test.
 2. **A real one-server capture.** The only real dialog fixture with synapse is the two-server one (2026-10-09). The
    `server:synapse`-only screen is built by string replacement. The restarttest lane ran with it; its capture, if one was kept,
-   is in `.lane-state/unhandled-prompts/` (a scan was started, result not in hand when this was written). If none is kept, the
-   first pilot relaunch produces one and the fixture is replaced then.
+   is in `.lane-state/unhandled-prompts/`. Scanned 2026-10-22: 21 captures, none with a one-server `Channels: server:synapse` line (control: the
+   host logs of restarttest do mention it, so the dialog was seen and answered, which leaves no capture). The first pilot relaunch
+   that stops at it produces one; the fixture is replaced then.
 3. **The cutover record (draft only).** Channels `server:synapse`, `roles: ["*"]`, same anchors and action as the pilot, expiry
    per CireSnave. It needs his verbatim quote; I draft the file and the PM relays the ask. I do not merge into his repo.
 4. **G6 decisions** (below), then flipping `notify_transport` in the user config, which is the PM's call (shared config).

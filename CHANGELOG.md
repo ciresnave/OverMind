@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.14.10 (Synapse cutover G5/G6 design note, probe MCP SDK 1.32.0, 2026-10-22)
+
+- `docs/SYNAPSE-CUTOVER-G5-G6-DESIGN.md` (design only, nothing run): G5/G6 are mostly built in agentlife (relay as `agentlife-launcher`, pilot dev-channels records); remaining gap is tests against the real approval records. PM ruled: keep the relay, no replies, one scratch-home send first.
+- probe: `@modelcontextprotocol/sdk` 1.31.0 -> 1.32.0 (folds dependabot #156; probe only, no runtime change).
+
 ## 0.14.9 (pyright in CI + compile-time audit group5, 2026-10-19)
 
 - **CI: a `types` job runs pyright** (`[tool.pyright]` in `pyproject.toml`): `basic` over `src`, `strict` for `gate.py`. Baseline before this change was 30 errors in 7 files; all fixed with annotations, one real typing gap (`StaticFacts` keyed by a tuple but typed `dict[str, ...]`), and three `pyright: ignore` on `agent.py`'s lazily imported fork names (bound by the `fork is not None` guard, which pyright cannot see). No behaviour change.

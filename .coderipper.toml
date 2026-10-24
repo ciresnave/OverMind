@@ -1,0 +1,21 @@
+# Waivers for the advisory portfolio check. Each says why; none changes a file.
+
+[[allow]]
+check = "licence"
+file = "LICENSE-MIT"
+reason = "CireSnave ruled 2026-10-24 (board 272): a person-named copyright holder is correct until the entities exist; LICENSE-MIT is deliberately unchanged"
+
+[[allow]]
+check = "SEC-002"
+file = "probe/pty_drive.py"
+reason = "SECRET is a made-up canary phrase the probe types into a session to test whether /clear forgets it; not a credential (checked by shape: 18 alphabetic characters, no digits or symbols)"
+
+[[allow]]
+check = "SEC-002"
+file = "probe/pty_lifecycle.py"
+reason = "false positive: flagged line is a file-path open() for a log, no secret"
+
+[[allow]]
+check = "SEC-002"
+file = "probe/pty_v4.py"
+reason = "false positive: flagged line is a file-path open() for a log, no secret"

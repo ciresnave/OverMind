@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.14.12 (ROADMAP row 6b: finish the vault move, 2026-10-24)
+
+- docs only: `ROADMAP.md` row 6b orders the rest of step 6 (the code already lives in `ciresnave/consent`; what remains here is the requester-allowlist design doc and its references). No code change.
+
 ## 0.14.11 (advisory CodeRipper portfolio check, 2026-10-24)
 
 - CI: `portfolio` job calls `ciresnave/coderipper`'s reusable `portfolio.yml` pinned to `c665210`. Advisory only (CireSnave 2026-10-23): not a required check, no rule silenced. Baseline findings become ROADMAP rows, one per failing rule.

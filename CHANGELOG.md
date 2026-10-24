@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.14.13 (ROADMAP row 6b steps 2-3: vault residue gone, 2026-10-24; provisional number)
+
+- docs only: `WITH-SECRET-REQUESTER-ALLOWLIST-DESIGN.md` removed here; it moved byte-identical to `docs/` in `ciresnave/consent` (consent#20). Sweep of `git ls-files` for `with-secret`/`user-request`: what remains are callers (`probe/`, `src/overmind/providers.py`, their tests, README) and `ARCHITECTURE-LAYERS-SPEC.md`, which describes the move itself. No code change.
+
 ## 0.14.12 (ROADMAP row 6b: finish the vault move, 2026-10-24)
 
 - docs only: `ROADMAP.md` row 6b orders the rest of step 6 (the code already lives in `ciresnave/consent`; what remains here is the requester-allowlist design doc and its references). No code change.
@@ -36,7 +40,7 @@
 
 - `docs/PILOT-OVERMIND-LANE-CONFIG.md`: the exact `overmind.mcp.json` and `overmind.launch.json` `launch_args` for the Synapse pilot (from `synapse@519bd52` runbook section 3), plus a code read of `lane-restart` (`agentlife@e609da5`) answering the runbook's open question: `--mcp-config` and the channels flag are on the carry-over allowlist, but a restart rebuilds the spec from the state file, so a spec-only edit is lost and a hand launch (whose `SessionStart` re-records `launch_args`) is required; the runbook's rollback has the same gap. Also flags `RESTART-TOOL-DESIGN.md` line 241 as stale. Proposal only; nothing was run or written to `.lane-state`.
 - `ROADMAP.md` section 4: the stale row "Issue #110 and the `git grep -c` over-deny" now says #110 is done (agentlife#115, 0.16.5, merged 2026-10-16T18:20Z) and that the over-deny has no record.
-- This version also covers the already-merged vault-allowlist design (#149, `WITH-SECRET-REQUESTER-ALLOWLIST-DESIGN.md`), which merged without a version bump.
+- This version also covers the already-merged vault-allowlist design (#149, `WITH-SECRET-REQUESTER-ALLOWLIST-DESIGN.md`, now `docs/` in `ciresnave/consent`), which merged without a version bump.
 
 ## 0.14.4 (docs only)
 

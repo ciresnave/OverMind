@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.14.11 (advisory CodeRipper portfolio check, 2026-10-24)
+
+- CI: `portfolio` job calls `ciresnave/coderipper`'s reusable `portfolio.yml` pinned to `c665210`. Advisory only (CireSnave 2026-10-23): not a required check, no rule silenced. Baseline findings become ROADMAP rows, one per failing rule.
+
 ## 0.14.10 (Synapse cutover G5/G6 design note, probe MCP SDK 1.32.0, 2026-10-22)
 
 - `docs/SYNAPSE-CUTOVER-G5-G6-DESIGN.md` (design only, nothing run): G5/G6 are mostly built in agentlife (relay as `agentlife-launcher`, pilot dev-channels records); remaining gap is tests against the real approval records. PM ruled: keep the relay, no replies, one scratch-home send first.

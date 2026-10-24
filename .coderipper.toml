@@ -3,7 +3,7 @@
 [[allow]]
 check = "licence"
 file = "LICENSE-MIT"
-reason = "CireSnave ruled 2026-10-24 (board 272): a person-named copyright holder is correct until the entities exist; LICENSE-MIT is deliberately unchanged"
+reason = "CireSnave ruled 2026-10-24 (board 272): a person-named licence holder is correct until the entities exist; LICENSE-MIT is deliberately unchanged"
 
 [[allow]]
 check = "SEC-002"

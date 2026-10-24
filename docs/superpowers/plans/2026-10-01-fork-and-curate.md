@@ -2,6 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **2026-10-24 note:** built in #101 and amended by #103; read the code, not the Task 6 listings. A gate that does not cover `fork` is now a `ValueError` at `run_agent` start (`agent.py:288`), not a refusal at call time, so the Task 6 test of that name was replaced; the loop gained an `ends_run` branch (`agent.py:453`) and spend accounting; `AgentRun` and `ForkResult` gained an internal-error / `curation_error` field.
+
 **Goal:** Let a model running under `run_agent` call a `fork` tool. The tool runs a sub-task in a copy of the model's own conversation. The copy goes through the same gate as the parent, plus any extra denials. It returns a curated summary (testimony) together with its execution ledger (evidence). The sub-task's raw transcript never enters the parent's context.
 
 **Architecture:** A new module `src/overmind/fork.py` holds the fork mechanics:

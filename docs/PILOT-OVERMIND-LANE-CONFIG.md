@@ -74,7 +74,7 @@ unfamiliar dialog means STOP.
 
 ## 4. Still blocking (not mine)
 
-- **G5**: CireSnave's yes and OverMind's approval record for the channel string
+- **G5** (2026-10-24: `claude-peers-synapse-dev-channels-pilot.json` now exists in `ciresnave/ciresnave` `.overmind/lane-restart/approvals`; who merged it, and CireSnave's yes, were not checked): CireSnave's yes and OverMind's approval record for the channel string
   `server:claude-peers, server:synapse`. Without it every relaunch stops at a dialog nobody answers.
 - The pilot **account name** (`<ACCT>`), and installing `synapsed`, `synapsectl`,
   `synapse-claude-channel` at the runbook's version. The runbook's header says it was written against

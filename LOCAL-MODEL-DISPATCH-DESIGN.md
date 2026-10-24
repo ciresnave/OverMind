@@ -1,8 +1,6 @@
 # Local-model dispatch — design (NOT implementation)
 
-**Status: draft, for PM review. No code written, no PR opened, per explicit instruction — the hardware
-this targets does not exist yet.** This file is intentionally uncommitted; it exists on disk in the shared
-working tree for the PM to read directly.
+**Status: design, merged in #91 (corrected 2026-10-24; it was written uncommitted, for PM review, before the hardware existed).** The provider pieces it proposes landed in #151 (`Provider.local`, the `rig` provider, `probe/rig_probe.py`; see §5a). The rest is still design.
 
 **Why now:** CireSnave is building a desktop (PCIe switch, several GPUs) to run Fuel + Lightbulb + OverMind
 with locally-hosted models specifically to reduce Claude token spend. This document answers whether
@@ -20,7 +18,7 @@ exist). Where a claim rests on `MEASUREMENTS.md` §28/§29, that data is from an
 ## 1. Does the dispatch abstraction already support a local OpenAI-compatible endpoint?
 
 **MEASURED, and the answer is: mostly yes, already built.** `src/overmind/providers.py` already carries a
-working `"ollama"` entry in `PROVIDERS` (line 235):
+working `"ollama"` entry in `PROVIDERS` (line 235 when written; `providers.py:310` since #151):
 
 ```python
 "ollama": Provider(
@@ -32,7 +30,7 @@ working `"ollama"` entry in `PROVIDERS` (line 235):
 ),
 ```
 
-`available_providers()` (providers.py:684) special-cases it: `if name == "ollama" or read_secret(prov.secret_name)` —
+`available_providers()` (providers.py:684 when written) special-cased it: `if name == "ollama" or read_secret(prov.secret_name)` (since #151 it reads `if prov.local or read_secret(...)`, `providers.py:835`) —
 local providers don't need a cloud API key to be considered available. `ProviderClient.chat()`, `roster()`,
 `candidates()`, `resolved_base()` were read in full: no cloud-specific hardcoding found — no assumption of
 HTTPS, no cloud-specific auth scheme, no assumption a roster endpoint returns cloud-shaped data. This
@@ -217,5 +215,4 @@ date, it just names the condition that would.
 
 ---
 
-*No code was written for this document. No PR was opened. This file itself is uncommitted, sitting in the
-shared working tree for review — delete, commit, or ask me to revise as needed.*
+*No code was written for this document itself; it merged as #91 and the provider work followed in #151.*

@@ -8,7 +8,7 @@ service owner as open) and the mechanism. This repository runs no poller, and **
 restarting lane**: a lane restarts at every task boundary and may itself be the role that is down.
 
 **What this spec REQUIRES of AgentLife and does not find on `origin/main`:** a start-one-lane-by-role entry
-point that takes the role and an explicit model, applies the existing launcher checks (`docs/LAUNCHER.md`:
+point that takes the role and an explicit model, applies the existing launcher checks (agentlife's `docs/LAUNCHER.md`, which moved there with the launcher:
 role regex, `;`/control-character refusal, model pin, memory floor, `restore.lock`, never `--resume`) and
 reports one of the section 3 results, and reports the role's last-stop class (section 6). LAUNCHER.md today executes plans through `restore`, after a person's
 approval. Everything below that says "the mechanism" means that entry point.

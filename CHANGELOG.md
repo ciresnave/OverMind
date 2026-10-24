@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.14.15 (docs: statements the code contradicts, 2026-10-24; provisional number)
+
+- docs only, from the spec-to-roadmap audit (ROADMAP 6.H, OverMind#162): `ARCHITECTURE-LAYERS-SPEC.md`, `DESIGN-PROPOSAL.md` (status line and 7.4 `docs_only`, built), `RESTART-TOOL-DESIGN.md` (built and moved; the carried-over flags; installed), `LOCAL-MODEL-DISPATCH-DESIGN.md` and the Lightbulb checklist (merged in #91, pre-#151 line numbers), `README.md` (nine backends), `MEASUREMENTS.md` (dated addenda, results unchanged), `docs/LANE-LAUNCH-POLICY.md`, `docs/PILOT-OVERMIND-LANE-CONFIG.md`, and a note on the fork-and-curate plan. Each correction cites its code. Not changed, because the code cannot settle them from here: RESTART-TOOL-DESIGN 11.1 (the re-run hold) and 12.11 (first fetched-approval relaunch). No code change.
 ## 0.14.14 (spec-to-roadmap audit, 2026-10-24; provisional number)
 
 - docs only: `ROADMAP.md` section 6 adds every open, held or done item found in the 18 spec/design docs that the roadmap did not carry (55 rows; 15 need a CireSnave call). Corrects the M8 row (phases 1-3 merged, agentlife#123/#124/#126) and the open-PRs row (#161). No code change; no new row is started here.

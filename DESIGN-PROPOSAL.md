@@ -1,6 +1,6 @@
 # OverMind — design proposal
 
-**Status: PROPOSAL. §2.4b IS NOW BUILT** (`src/overmind/gate.py`, 24 tests). Everything else is unbuilt. Written 2026-09-10 ~00:30Z against
+**Status: PROPOSAL, PARTLY BUILT (corrected 2026-10-24).** Built since this was written: §2.4b the gate (`src/overmind/gate.py`, `tests/test_gate.py`), `agent.py`, `providers.py`, `lanework.py`, `dispatch.py`, `dispatch_mcp.py` (including §7.4's `docs_only`), `fork.py`, `repo_probe.py`. The sections below are the proposal as written; ROADMAP section 6 lists what is still open. Written 2026-09-10 ~00:30Z against
 [`MEASUREMENTS.md`](MEASUREMENTS.md), not against the original brief — several parts of that brief
 are refuted below, with the measurement that refutes them.
 
@@ -387,7 +387,9 @@ questions 1 (for THAT channel) and 3 (in general) still open.** This section is 
 independent unattended path that reaches the same runner more narrowly, not a resolution of the
 FAM question.
 
-### 7.4 ⚠️ PROPOSED, not built - an explicit "docs-only / no executable check" mode, needs CireSnave
+### 7.4 BUILT (`dispatch_mcp.py` `docs_only`; the code records it as CireSnave's ruling) - an explicit "docs-only / no executable check" mode
+
+**Corrected 2026-10-24:** built as `DOCS_ONLY_CHECK`, `DOCS_ONLY_CHECK_NAME` and `DOCS_ONLY_WRITABLE = ("*.md", "docs/**")`, never caller-overridable (`dispatch_mcp.py:204-217`); the result is always a draft (`dispatch_mcp.py:284-293`). The text below is the proposal as written 2026-09-19.
 
 **PM finding, 2026-09-19, motivated by a real limitation §7.3's own `repo_probe.py` now surfaces
 correctly rather than silently:** `infer_check` refuses (`NoCheckInferred`) whenever a repo has no

@@ -1,6 +1,6 @@
 # Session restart tool — design spec
 
-**Status: SPEC, settled — not yet built.** Written per the task from CireSnave via the PM,
+**Status: SPEC, settled. BUILT (OverMind#53) and since moved to agentlife (`crates/lane-restart`; ROADMAP section 3 step 5). Corrected 2026-10-24: the code is not in this repo any more; this file is the design record, and agentlife has added since (`folder_trust`, WSL launch mode, a Synapse notify transport) what it does not describe.** Written per the task from CireSnave via the PM,
 2026-09-18: pulled ahead of the throttle ("it is another project that will help us avoid the
 condition that required the throttle in the first place"). Location decided: a Cargo workspace crate
 in this repo, sharing OverMind's version number, with a Rust CI job (fmt, clippy, test) branch
@@ -238,9 +238,11 @@ the whole point of restarting is a small, fresh context, not the old one reloade
   there is no resume. Instead: `--remote-control` is passed at launch when `state.remote_control` was
   true, which starts a NEW RC session (documented as a real launch flag) - the property "RC was on"
   carries over; the specific prior RC session's identity does not, and cannot, for a fresh session.
-- **`--mcp-config`, `--settings`, `--plugin-dir`, `--fallback-model`, `--add-dir`** are not carried
-  over by this tool at all (still not recorded in §1's schema) - documented here as NOT carried over,
-  rather than silently dropped without saying so, per this file's own §0 discipline.
+- **`--plugin-dir`, `--fallback-model`** are not carried over by this tool (unknown flags are dropped
+  and reported, per this file's own §0 discipline). **`--dev-channels`, `--add-dir`, `--mcp-config` and
+  `--settings` ARE carried over** (the §5 allowlist; agentlife `crates/lane-restart/src/relaunch.rs`
+  `LaunchFlag::{DevChannels, AddDir, McpConfig, Settings}`). Corrected 2026-10-24: this bullet used to list all
+  five as not carried over.
 - **The launch command:** `claude --name <name> --model <state.model> --permission-mode
   <state.permission_mode> [--remote-control] "read <role> HANDOFF and continue"`, run in the recorded
   `cwd`. **No shell in the loop** - PM finding, 2026-09-18: an earlier draft's `cmd /C start "" claude
@@ -690,7 +692,7 @@ not part of this settings.json block, which is identical across every lane.
 
 ## 11. Install proposal, for CireSnave
 
-**Still nothing installed.** This is the concrete plan the PM asked for, to put on his board -
+**Installed since (§11.2, `lane-restart@0.3.21`, 2026-09-19; corrected 2026-10-24).** What follows is the concrete plan the PM asked for, to put on his board -
 sequenced so nothing acts on a real lane before that lane's own behaviour is checked, and reversible
 at every step.
 

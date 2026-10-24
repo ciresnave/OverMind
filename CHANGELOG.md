@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.14.14 (spec-to-roadmap audit, 2026-10-24; provisional number)
+
+- docs only: `ROADMAP.md` section 6 adds every open, held or done item found in the 18 spec/design docs that the roadmap did not carry (55 rows; 15 need a CireSnave call). Corrects the M8 row (phases 1-3 merged, agentlife#123/#124/#126) and the open-PRs row (#161). No code change; no new row is started here.
+
 ## 0.14.13 (ROADMAP row 6b steps 2-3: vault residue gone, 2026-10-24; provisional number)
 
 - docs only: `WITH-SECRET-REQUESTER-ALLOWLIST-DESIGN.md` removed here; it moved byte-identical to `docs/` in `ciresnave/consent` (consent#20). Sweep of `git ls-files` for `with-secret`/`user-request`: what remains are callers (`probe/`, `src/overmind/providers.py`, their tests, README) and `ARCHITECTURE-LAYERS-SPEC.md`, which describes the move itself. No code change.

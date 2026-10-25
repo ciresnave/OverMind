@@ -2284,3 +2284,19 @@ Claude still reviews every output before it is used (PM rule, 2026-10-07).
 - **The guard against over-correcting:** `test_a_backticked_span_with_an_invented_word_is_still_flagged` keeps `h2 0.4.99` flagged.
 - **Mutation check:** mutating `all` to `any`, or removing the new check, each fails a test.
 - **Remaining limit:** a span made only of real words in a wrong combination now passes. That is why facts are scored separately.
+
+---
+
+## 37. Published free-tier daily caps, from the providers' own pages (E1, docs read only, fetched 2026-10-24)
+
+Read by a Sonnet subagent through WebFetch, which summarises pages with a small model: the quotes below are only as exact as that summary, and the Cloudflare, OpenRouter and Gemini ones should be re-read on the page before anyone relies on the exact wording. No provider was called and nothing was exhausted (ruled: read docs only). Section 23's "UNKNOWN" stands for every provider that publishes no number.
+
+| provider | published free-tier long-window number | source (page date) |
+|---|---|---|
+| Cloudflare Workers AI | 10,000 neurons/day: "Our free allocation allows anyone to use a total of 10,000 Neurons per day at no charge." `llama-3.3-70b-instruct-fp8-fast` is 26,668 neurons per M input tokens and 204,805 per M output tokens (arithmetic, not published: about 375k input or 49k output tokens a day, if only one kind is used) | developers.cloudflare.com/workers-ai/platform/pricing/ (Oct 20, 2026) |
+| OpenRouter free models | 50 requests/day with under $10 of credits purchased, 1000 with at least $10; 20 RPM both. Matches section 23's measured 50/day | openrouter.ai/docs/api-reference/limits (undated) |
+| Google AI Studio | **no published free-tier number**: "Rate limits depend on a variety of factors (such as your usage tier) and can be viewed in Google AI Studio." `gemini-3.5-flash-lite` appears only in paid-tier Batch API token tables | ai.google.dev/gemini-api/docs/rate-limits (2026-10-15) |
+| Groq | **none we could read**: the fetched table is the Developer plan (`qwen/qwen3.8-27b`: 30 RPM, 1K RPD, 8K TPM, 200K TPD, plan not stated on that row); the Free Plan tab did not come through in two attempts. The model id on the page is `qwen/qwen3.8-27b`, not the `qwen3.6-27b` this repo names | console.groq.com/docs/rate-limits (undated) |
+| NVIDIA NIM | **none**: the FAQ (seen only through a search summary, not fetched) says calls are limited to "evaluation and prototyping" and to check the account page; forum posts say 40 RPM (unofficial, no daily figure) | forums.developer.nvidia.com/t/nvidia-nim-faq/300317 (not checked) |
+
+Next step if CireSnave wants the three numbers: open Groq's Free Plan tab and `console.groq.com/settings/limits` while logged in, and the AI Studio rate-limit view. Neither is readable by a lane without a login.

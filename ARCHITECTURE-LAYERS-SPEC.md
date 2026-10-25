@@ -1,6 +1,6 @@
 # OverMind architecture: layers and spin-outs (spec, NOT implementation)
 
-**Status: APPROVED 2026-10-08 (board item 143); the rulings are in §8a and they override §5.2 and §8 where they differ.** Asked for by the PM on
+**Status: APPROVED 2026-10-08 (board item 143); the rulings are in §8a and they override §5.2 and §8 where they differ.** **Corrected 2026-10-24:** steps 1-7a are DONE (ROADMAP section 3; #130-#143); `crates/lane-restart`, `crates/user-request`, `crates/with-secret`, `tools/` and the gate-fleet workflow named below no longer exist in this repo (they live in agentlife, `ciresnave/consent` and `ThinkersJournal/licence-tools`), so read §4-§5 as the plan as approved, not as a description of this tree. Asked for by the PM on
 2026-10-07, for CireSnave. His words (verbatim, relayed by the PM):
 
 - *"Grab bag programs are bugs waiting to happen."*
@@ -53,12 +53,12 @@ MODEL CLIENT  (HTTP to providers; quota; failover WITHIN the route it is given)
 | Handler → Model client | `ModelClient.post(route, payload) -> Response`; failover inside the route | `model_client.api` only |
 | Orchestrator → Model client | **read-only data**: model cards, quota view (§6) | `model_client.cards`, `model_client.quota_view` |
 
-**Enforced import direction (ASSUMED: a new test; nothing like it exists yet).**
+**Enforced import direction (BUILT in #129: `tests/test_import_direction.py` holds the 18 frozen edges; this section was written before it existed).**
 - A unit test parses every module's imports with `ast` and fails on any edge not in the table above.
 - The nearest existing check is much weaker. `TestGateBoundaryDidNotMove` lowercases `gate.py`'s source
   and asserts that four words ("mcp", "clientsession", "stdio", "jsonrpc") do not appear in it
   (MEASURED: test_mcp_tools.py:248-257, run by CI's `gate-boundary` job). It is a substring check, not an
-  import check; nothing in `tests/` parses imports today.
+  import check. (When this was written nothing in `tests/` parsed imports; `tests/test_import_direction.py` does since #129.)
 - The new test replaces convention with a test. It is part of Phase 0 (§9).
 
 **Today, against that picture (MEASURED, cbeaba6).**

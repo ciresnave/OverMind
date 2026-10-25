@@ -43,8 +43,8 @@ failover across several providers (`RoutedClient`) needs several tokens in ONE p
   7-line fragment through a whole-file write. **The harness runs the check itself after the model
   stops** and computes the verdict from the tree and the exit code; the model's own claim is only
   compared against that, never trusted. Commits, pushes and opens the PR only on `PASS`.
-- **`src/overmind/providers.py`** — one OpenAI-shaped client over eight backends (seven hosted free
-  tiers + Ollama), with model failover, rate-limit handling, message normalisation, and
+- **`src/overmind/providers.py`** — one OpenAI-shaped client over nine backends (seven hosted free
+  tiers, Ollama, and `rig`, the multi-GPU box, unused unless `OVERMIND_RIG_BASE_URL` is set), with model failover, rate-limit handling, message normalisation, and
   `RoutedClient` to try several providers in order.
 - **`src/overmind/quota.py`** — a per-user book of daily and monthly free-tier allowances, learned
   from each provider's own refusal body (not guessed), so a spent model or a spent account is not

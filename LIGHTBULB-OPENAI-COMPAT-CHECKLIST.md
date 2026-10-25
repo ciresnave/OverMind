@@ -1,6 +1,6 @@
 # What OverMind requires of an OpenAI-compatible endpoint — a scoreable checklist
 
-**Status: draft, for PM review before it goes to the Lightbulb lane. Not committed, not a PR.** Every item
+**Status: draft, merged in #91 (corrected 2026-10-24); whether it went to the Lightbulb lane to be scored is not recorded (ROADMAP 6.D4). Line numbers below are from before #151.** Every item
 below is read directly out of `src/overmind/providers.py`, `agent.py`, and `gate.py` (this repo, current
 `main`) — not out of `LOCAL-MODEL-DISPATCH-DESIGN.md` or any other prior document, per explicit instruction:
 a design doc is a cached claim like any other artifact, and the only trustworthy source for "what does
@@ -103,7 +103,7 @@ max_tokens) applies unless Lightbulb's entry sets its own.
 **"One more `Provider(...)` table entry" is not quite the whole integration cost, measured precisely:**
 
 ```
-providers.py:745    if name == "ollama" or read_secret(prov.secret_name):
+providers.py:745    if name == "ollama" or read_secret(prov.secret_name):   # before #151; now providers.py:835 `if prov.local or read_secret(...)`
 ```
 
 `available_providers()` only returns providers whose secret is actually **readable** — with `"ollama"`

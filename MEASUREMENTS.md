@@ -4,8 +4,8 @@
 `observed running` = a process produced it. `read from source` = it has not been run.
 
 **Taken 2026-09-09, ~22:40Z–00:15Z.** Rig: `C:\Projects\OverMind\probe` (reproducible).
-Nothing in `C:\Projects\OverMind` is a project scaffold — the repo is deliberately empty
-pending a design ruling.
+Nothing in `C:\Projects\OverMind` was a project scaffold on 2026-09-09 — the repo was then deliberately empty
+pending a design ruling. (Corrected 2026-10-24: it is not empty now; `src/overmind/` holds the orchestrator modules.)
 
 > **Headline, at the strength the evidence supports:**
 > 1. A non-Claude MCP client sends **and** receives through FAM's **live** server — §7.
@@ -205,7 +205,7 @@ nothing listened on 7900. ⚠️ **That is not a statement about the database �
 
 ⚠️ **The FAM lane found the offline route is worse than stated:** `fam entity create` calls
 `loadCredentials()`, which throws `"No credentials found. Run \`fam auth\` first"` when
-`~/.fam/credentials.json` is absent — and `fam auth` is FAM issue **#44**, unbuilt. **So
+`~/.fam/credentials.json` is absent — and `fam auth` is FAM issue **#44**, unbuilt (on 2026-09-09; #44 is CLOSED as of 2026-10-24). **So
 bootstrap issues an account token and nothing consumes it**; they had to hand-write
 `credentials.json` first, a step that appears in no document. **#44 is therefore not a
 convenience command — it is the only supported path to a first entity.**
@@ -1943,7 +1943,7 @@ That puts §23's table in a new light: OpenRouter 50/day, Google 20/day for its 
 - **DeepSeek's fix was slow (963 s) despite `PASS`.** A working answer is not necessarily a fast one; wall time belongs beside the verdict when picking a default.
 - ⚠️ **One run per cell, as in §27.** Not a rate.
 
-Full four-task benchmark on the *default* model of each of these providers is unrun; the two tasks here were chosen to conserve daily allowance while screening breadth.
+**Addendum 2026-10-24:** `max-of-nothing` was removed from `probe/p1_bench.py` in 0.13.6 (its file `tools/gate_fleet.py` left the repo), so the `P1_TASKS=...max-of-nothing` commands in §30-§32 cannot be rerun; the recorded results stand. Full four-task benchmark on the *default* model of each of these providers is unrun; the two tasks here were chosen to conserve daily allowance while screening breadth.
 
 ---
 
@@ -2154,6 +2154,7 @@ of skipping; lowered to `go 1.16`, the lowest version the fixture code actually 
   would be exactly the defect the issue describes, wearing a green tick. OverMind#85 is closed only for
   the 5 scenarios this table marks EXECUTED; the `pytest`/`pnpm` gap is tracked as its own follow-up
   (OverMind#87), named explicitly rather than left implicit inside a closed issue.
+  **Addendum 2026-10-24:** OverMind#87 is CLOSED (2026-09-24) and #89 made `.github/workflows/ci.yml` install pytest and enable pnpm, so the two SKIPPED rows above are the observation of the day, not the present state; whether both now execute was not read from a CI log.
 - **One run per scenario per OS, as most measurements in this file are.** Not a rate - a toolchain's
   presence on a hosted runner image can change between GitHub's own image updates.
 - **The negative control (failing fixture) was manually mutation-tested** on the cargo scenario only

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.14.16 (CireSnave-asleep rulings recorded, 2026-10-25; provisional number)
+
+- docs only: `ROADMAP.md` section 6 records the PM's rulings of 2026-10-25 on 11 of the 15 audit calls, A10 and D9 only for their `CLAUDE.md` half (A3 defer, B3 no-go, D6 free-tier retry first, E1 read docs, E4 16k, E5 no, E6 skip, E7 to synapse, F1 MIT OR Apache-2.0 in agentlife); B7, C2(a,b), D5, A5 stay CireSnave's, as do D5 and the dispatch-wiring half of D9. `MEASUREMENTS.md` section 37 holds the E1 docs reading (Cloudflare and OpenRouter publish a daily number; Groq, Gemini, NVIDIA: none readable). agentlife#175 opened for F1. No code change.
+
 ## 0.14.15 (docs: statements the code contradicts, 2026-10-24; provisional number)
 
 - docs only, from the spec-to-roadmap audit (ROADMAP 6.H, OverMind#162): `ARCHITECTURE-LAYERS-SPEC.md`, `DESIGN-PROPOSAL.md` (status line and 7.4 `docs_only`, built), `RESTART-TOOL-DESIGN.md` (built and moved; the carried-over flags; installed), `LOCAL-MODEL-DISPATCH-DESIGN.md` and the Lightbulb checklist (merged in #91, pre-#151 line numbers), `README.md` (nine backends), `MEASUREMENTS.md` (dated addenda, results unchanged), `docs/LANE-LAUNCH-POLICY.md`, `docs/PILOT-OVERMIND-LANE-CONFIG.md`, and a note on the fork-and-curate plan. Each correction cites its code. Not changed, because the code cannot settle them from here: RESTART-TOOL-DESIGN 11.1 (the re-run hold) and 12.11 (first fetched-approval relaunch). No code change.

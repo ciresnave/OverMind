@@ -10,12 +10,18 @@ anything differs (plan P3.6).
 parent's environment: the same stance as lanework's scrubbed check environment.
 The registry and extra import paths are orchestrator arguments. They are never
 read from the config.
+
+Every event from the child must carry the session's nonce; others are dropped and
+counted (`rejected_events`). A session that never reports, or reports a
+malformed event, is a `SessionError`, and the handle kills it: a session the
+orchestrator cannot read back is not left running.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import secrets
 import subprocess
 import sys
 import tempfile
@@ -23,11 +29,11 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import IO, Any, Iterator, Mapping, Sequence
+from typing import Any, Iterator, Mapping, Sequence
 
-from .config import SessionConfig
+from .config import ConfigError, SessionConfig
 from .manifest import LoadedManifest
-from .primitives import kill_process_tree
+from .proctree import ProcessTree
 
 _BOOT = (
     "import sys\n"
@@ -47,7 +53,7 @@ _ENV_ALLOWLIST = ("PATH", "SystemRoot", "SYSTEMROOT", "SystemDrive", "TEMP", "TM
 
 
 class SessionError(RuntimeError):
-    """The session process failed or died without reporting."""
+    """The session process failed, died, or sent something unreadable."""
 
 
 class SessionRefused(SessionError):
@@ -74,12 +80,17 @@ def _overmind_src_root() -> str:
 
 
 class SessionHandle:
-    def __init__(self, proc: "subprocess.Popen[str]", stderr: IO[bytes]) -> None:
+    def __init__(self, proc: "subprocess.Popen[str]", tree: ProcessTree, nonce: str,
+                 stderr_path: str) -> None:
         self._proc = proc
-        self._stderr = stderr
+        self._tree = tree
+        self._nonce = nonce
+        self._stderr_path = stderr_path
         self._events: list[dict[str, Any]] = []
+        self.rejected_events = 0
         self._eof = False
         self._cond = threading.Condition()
+        self._stop_lock = threading.Lock()
         self._stopped: StopResult | None = None
         self._reader = threading.Thread(target=self._pump, daemon=True)
         self._reader.start()
@@ -94,10 +105,16 @@ class SessionHandle:
                     event = json.loads(line)
                 except ValueError:
                     continue
-                if isinstance(event, dict) and isinstance(event.get("event"), str):
-                    with self._cond:
+                ok = (isinstance(event, dict) and isinstance(event.get("event"), str)
+                      and event.get("nonce") == self._nonce)
+                with self._cond:
+                    if ok:
                         self._events.append(event)
-                        self._cond.notify_all()
+                    else:
+                        self.rejected_events += 1
+                    self._cond.notify_all()
+        except (OSError, ValueError, UnicodeDecodeError):
+            pass
         finally:
             with self._cond:
                 self._eof = True
@@ -118,11 +135,14 @@ class SessionHandle:
                 self._cond.wait(left)
 
     def _stderr_tail(self) -> str:
+        """The last 800 bytes the child wrote to stderr, read through a separate
+        handle (seeking the child's own would move ITS write offset)."""
         try:
-            self._stderr.flush()
-            self._stderr.seek(0)
-            return self._stderr.read()[-800:].decode("utf-8", "replace").strip()
-        except (OSError, ValueError):
+            with open(self._stderr_path, "rb") as f:
+                f.seek(0, os.SEEK_END)
+                f.seek(max(0, f.tell() - 800))
+                return f.read().decode("utf-8", "replace").strip()
+        except OSError:
             return ""
 
     # -- the contract ----------------------------------------------------------
@@ -136,22 +156,36 @@ class SessionHandle:
         return self._proc.poll()
 
     def loaded(self, timeout: float = 30.0) -> LoadedManifest:
-        e = self._wait(("loaded", "refused", "error"), timeout)
+        """The manifest the harness reports. On a refusal, an error, a silence or
+        a malformed report the session is stopped (killed if need be) and the
+        cause raised: a session that cannot be read back is not left running."""
+        try:
+            e = self._wait(("loaded", "refused", "error"), timeout)
+        except SessionError:
+            self.stop(timeout=0)
+            raise
         if e is None:
             try:
                 code = self._proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 code = None
+            tail = self._stderr_tail()
+            self.stop(timeout=0)
             raise SessionError(f"the session process exited (code {code}) before it reported; "
-                               f"stderr: {self._stderr_tail()!r}")
-        if e["event"] == "refused":
-            raise SessionRefused(str(e.get("reason")))
-        if e["event"] == "error":
-            raise SessionError(str(e.get("error")))
-        return LoadedManifest.from_dict(e["manifest"])
+                               f"stderr: {tail!r}")
+        if e["event"] in ("refused", "error"):
+            self.stop(timeout=1)
+            text = str(e.get("reason") if e["event"] == "refused" else e.get("error"))
+            raise (SessionRefused if e["event"] == "refused" else SessionError)(text)
+        try:
+            return LoadedManifest.from_dict(e["manifest"])
+        except (KeyError, ConfigError) as exc:
+            self.stop(timeout=0)
+            raise SessionError(f"the session sent a malformed manifest: {type(exc).__name__}: {exc}") from exc
 
     def events(self) -> Iterator[dict[str, Any]]:
-        """Every event so far, then each new one, until the process has closed its channel."""
+        """Every accepted event so far, then each new one, until the child has
+        closed its channel. Blocks for as long as a live child stays silent."""
         i = 0
         while True:
             with self._cond:
@@ -165,35 +199,48 @@ class SessionHandle:
             yield event
 
     def stop(self, timeout: float = 10.0) -> StopResult:
-        if self._stopped is not None:
-            return self._stopped
-        killed = False
-        records: dict[str, Any] = {}
-        try:
-            assert self._proc.stdin is not None
-            self._proc.stdin.write(json.dumps({"cmd": "stop"}) + "\n")
-            self._proc.stdin.flush()
-            e = self._wait(("stopped",), timeout)
-            if e is not None:
-                records = dict(e.get("records") or {})
-        except (SessionError, OSError, ValueError):
-            pass
-        try:
-            self._proc.wait(timeout=2 if records else 0.5)
-        except subprocess.TimeoutExpired:
-            killed = True
-            kill_process_tree(self._proc)
-            self._proc.wait(timeout=10)
-        for stream in (self._proc.stdin, self._proc.stdout):
+        with self._stop_lock:
+            if self._stopped is not None:
+                return self._stopped
+            killed = False
+            records: dict[str, Any] = {}
+            reported = False
             try:
-                if stream:
-                    stream.close()
-            except OSError:
-                pass
-        self._stopped = StopResult(records, self._proc.returncode, killed)
-        self._reader.join(timeout=2)
-        self._stderr.close()
-        return self._stopped
+                try:
+                    assert self._proc.stdin is not None
+                    self._proc.stdin.write(json.dumps({"cmd": "stop"}) + "\n")
+                    self._proc.stdin.flush()
+                    e = self._wait(("stopped",), timeout) if timeout > 0 else None
+                    if e is not None:
+                        reported = True
+                        r = e.get("records")
+                        records = dict(r) if isinstance(r, dict) else {}
+                except (SessionError, OSError, ValueError):
+                    pass
+                try:
+                    self._proc.wait(timeout=5 if reported else 0.5)
+                except subprocess.TimeoutExpired:
+                    killed = True
+                # the child's own children die with it, clean stop or not
+                self._tree.kill()
+                try:
+                    self._proc.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    pass
+            finally:
+                for stream in (self._proc.stdin, self._proc.stdout):
+                    try:
+                        if stream:
+                            stream.close()
+                    except OSError:
+                        pass
+                self._reader.join(timeout=2)
+                try:
+                    os.unlink(self._stderr_path)
+                except OSError:
+                    pass
+                self._stopped = StopResult(records, self._proc.poll(), killed)
+            return self._stopped
 
     def __enter__(self) -> "SessionHandle":
         return self
@@ -213,14 +260,17 @@ def spawn(config: SessionConfig, *, registry: str = "overmind.harness.registry:R
     argv += ["--registry", registry]
     group: dict[str, Any] = ({"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
                              if sys.platform == "win32" else {"start_new_session": True})
-    stderr = tempfile.TemporaryFile()
-    proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=stderr,
-                            text=True, encoding="utf-8", shell=False,
-                            env=dict(env if env is not None else default_child_env()), **group)
+    nonce = secrets.token_hex(16)
+    fd, stderr_path = tempfile.mkstemp(prefix="overmind-session-", suffix=".stderr")
+    with os.fdopen(fd, "wb") as stderr:
+        proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=stderr,
+                                text=True, encoding="utf-8", shell=False,
+                                env=dict(env if env is not None else default_child_env()), **group)
+    tree = ProcessTree(proc)                          # contained before it can start children
     assert proc.stdin is not None
     try:
-        proc.stdin.write(config.to_json() + "\n")
+        proc.stdin.write(nonce + "\n" + config.to_json() + "\n")
         proc.stdin.flush()
     except OSError:
         pass                                          # the child is already gone; loaded() will say so
-    return SessionHandle(proc, stderr)
+    return SessionHandle(proc, tree, nonce, stderr_path)

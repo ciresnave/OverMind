@@ -28,7 +28,6 @@ plug-in's business (and a later piece), not this layer's.
 
 from __future__ import annotations
 
-import os
 import subprocess
 import sys
 import threading
@@ -36,6 +35,7 @@ from contextlib import contextmanager
 from typing import Any, Iterator, Mapping, Sequence
 
 from .plugin_api import HarnessCall
+from .proctree import ProcessTree
 
 _state = threading.local()
 
@@ -96,24 +96,6 @@ def _do_write(path: str, data: bytes) -> None:
         f.write(data)
 
 
-def kill_process_tree(proc: "subprocess.Popen[str]") -> None:
-    """Kill the process AND its children. `Popen.kill` alone leaves grandchildren
-    holding the output pipes, so a timeout would block until they exit."""
-    if sys.platform == "win32":
-        subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"],
-                       capture_output=True, check=False)
-    else:
-        import signal
-        try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-    try:
-        proc.kill()
-    except OSError:
-        pass
-
-
 class Primitives:
     """What an effect function is handed. Every method refuses unless a tool
     call is allowed on THIS thread."""
@@ -146,13 +128,16 @@ class Primitives:
         with _frame("run_process", call):
             proc = subprocess.Popen(list(argv), cwd=cwd, env=dict(env), stdout=subprocess.PIPE,
                                     stderr=subprocess.PIPE, text=True, shell=False, **group)
+            tree = ProcessTree(proc)
             try:
                 out, err = proc.communicate(timeout=timeout)
             except subprocess.TimeoutExpired:
-                kill_process_tree(proc)
+                tree.kill()
                 try:
                     proc.communicate(timeout=5)
                 except subprocess.TimeoutExpired:
                     pass                          # a detached grandchild still holds a pipe
                 raise
+            finally:
+                tree.kill()                       # nothing the command started outlives the call
             return subprocess.CompletedProcess(list(argv), proc.returncode, out, err)

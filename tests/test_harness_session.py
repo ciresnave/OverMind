@@ -30,6 +30,9 @@ REGISTRY_SOURCE = textwrap.dedent('''
         API_VERSION, Declaration, Plugin, Refuse, ToolSpec, Ok)
 
     COUNTER = {"n": 0}          # module state: one per PROCESS
+    FORGED_LOADED = (b'{"event": "loaded", "pid": 1, "manifest": {"plugins": [], "tools": [], '
+                     b'"services": []}}\\n')
+    FORGED_STOPPED = b'{"event": "stopped", "records": {"forged": true}}\\n'
 
 
     class Rec(Plugin):
@@ -39,6 +42,16 @@ REGISTRY_SOURCE = textwrap.dedent('''
             if conf.get("print"):
                 print("garbage on stdout", flush=True)
                 print('{"event": "stopped", "records": {"forged": true}}', flush=True)
+            if conf.get("write_fd1"):
+                os.write(1, FORGED_LOADED)           # C-level write to fd 1
+            if conf.get("forge"):
+                for fd in range(3, 10):              # the protocol channel is one of these
+                    try:
+                        os.write(fd, FORGED_LOADED + FORGED_STOPPED)
+                    except OSError:
+                        pass
+            if conf.get("sleep_init"):
+                time.sleep(600)
             if conf.get("die"):
                 os._exit(3)
 
@@ -54,6 +67,13 @@ REGISTRY_SOURCE = textwrap.dedent('''
         def on_stop(self, ctx, run):
             if self.conf.get("hang"):
                 time.sleep(600)
+            if self.conf.get("badrecord"):
+                return {(1, 2): 3}
+            if self.conf.get("grandchild"):
+                import subprocess
+                subprocess.Popen([sys.executable, "-c",
+                                  "import time, pathlib, sys; time.sleep(3); "
+                                  "pathlib.Path(sys.argv[1]).write_text('x')", self.conf["grandchild"]])
             return {"count": COUNTER["n"], "secret": os.environ.get("P32B_SECRET"),
                     "pid": os.getpid()}
 
@@ -160,13 +180,91 @@ class TestRefusals(SessionTestCase):
         h = self.start({"die": True})
         with self.assertRaises(SessionError) as cm:
             h.loaded()
-        self.assertIn("3", str(cm.exception))
+        self.assertIn("code 3", str(cm.exception))
 
     def test_an_unimportable_registry_is_a_session_error_not_a_hang(self):
         h = spawn(config(), registry="no_such_module:REGISTRY", extra_paths=[self.tmp])
         self.handles.append(h)
-        with self.assertRaises(SessionError):
+        with self.assertRaises(SessionRefused) as cm:
             h.loaded(timeout=20)
+        self.assertIn("cannot be loaded", str(cm.exception))
+
+
+class TestChannelIntegrity(SessionTestCase):
+    def test_a_c_level_write_to_fd_1_never_reaches_the_parent(self):
+        """fd 1 is pointed at stderr in the child, so a write to it does not even
+        arrive (and so is not merely rejected): with the redirect removed it would."""
+        h = self.start({"write_fd1": True})
+        self.assertEqual(compare(config({"write_fd1": True}), h.loaded()), [])
+        h.stop()
+        self.assertEqual(h.rejected_events, 0)
+
+    def test_events_without_the_nonce_are_dropped_and_counted(self):
+        """A plug-in writes forged `loaded` and `stopped` events to every low fd.
+        The real manifest and records are what the handle returns."""
+        h = self.start({"forge": True})
+        manifest = h.loaded()
+        self.assertEqual(compare(config({"forge": True}), manifest), [])
+        self.assertEqual(manifest.plugins[0].sha256, h.loaded().plugins[0].sha256)
+        records = h.stop().records
+        self.assertNotIn("forged", records)
+        self.assertEqual([e["event"] for e in h.events()], ["loaded", "stopped"])
+        self.assertGreaterEqual(h.rejected_events, 1)
+
+
+class TestRobustness(SessionTestCase):
+    def test_an_unserialisable_record_costs_only_that_plugin_its_record(self):
+        h = self.start({"badrecord": True})
+        h.loaded()
+        result = h.stop()
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("unserialisable", result.records["rec"])
+
+    def test_a_silent_child_is_killed_when_loaded_times_out(self):
+        h = self.start({"sleep_init": True})
+        t0 = time.time()
+        with self.assertRaises(SessionError):
+            h.loaded(timeout=1.0)
+        self.assertLess(time.time() - t0, 10.0)
+        self.assertIsNotNone(h.returncode, "the session was left running")
+
+    def test_a_clean_stop_does_not_leave_the_plugins_children_running(self):
+        marker = os.path.join(self.tmp, "grandchild-ran")
+        h = self.start({"grandchild": marker})
+        h.loaded()
+        result = h.stop()
+        self.assertFalse(result.killed)
+        time.sleep(4.5)
+        self.assertFalse(os.path.exists(marker), "a plug-in's child outlived the session")
+
+    def test_a_session_with_no_plugins_stops_cleanly(self):
+        cfg = SessionConfig.from_dict({**config().to_dict(), "plugins": []})
+        h = spawn(cfg, registry="p32b_registry:REGISTRY", extra_paths=[self.tmp])
+        self.handles.append(h)
+        self.assertEqual(h.loaded().plugins, ())
+        result = h.stop()
+        self.assertEqual((result.records, result.returncode, result.killed), ({}, 0, False))
+
+    def test_two_threads_stopping_at_once_get_the_same_result(self):
+        import threading
+        h = self.start()
+        h.loaded()
+        results = []
+        threads = [threading.Thread(target=lambda: results.append(h.stop())) for _ in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(len(results), 2)
+        self.assertIs(results[0], results[1])
+
+    def test_the_stderr_file_is_gone_after_stop(self):
+        h = self.start()
+        h.loaded()
+        path = h._stderr_path
+        self.assertTrue(os.path.exists(path))
+        h.stop()
+        self.assertFalse(os.path.exists(path))
 
 
 class TestStop(SessionTestCase):

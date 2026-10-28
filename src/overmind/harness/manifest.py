@@ -18,7 +18,7 @@ import re
 from dataclasses import dataclass
 from typing import Mapping
 
-from .config import ConfigError, SessionConfig
+from .config import ConfigError, SessionConfig, check_text
 
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 
@@ -31,11 +31,11 @@ class PluginRecord:
     sha256: str
 
     def __post_init__(self) -> None:
-        if not self.name or not self.version:
-            raise ConfigError("plug-in record: name and version must be non-empty")
+        check_text(self.name, "plug-in record name")
+        check_text(self.version, f"plug-in {self.name!r} version")
         if type(self.api_version) is not int or self.api_version < 1:
             raise ConfigError(f"plug-in {self.name!r}: api_version must be a positive integer")
-        if not _SHA256.fullmatch(self.sha256):
+        if type(self.sha256) is not str or not _SHA256.fullmatch(self.sha256):
             raise ConfigError(f"plug-in {self.name!r}: sha256 must be 64 lowercase hex digits")
 
 
@@ -44,6 +44,14 @@ class LoadedManifest:
     plugins: tuple[PluginRecord, ...]
     tools: tuple[str, ...]
     services: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if type(self.plugins) is not tuple or not all(isinstance(r, PluginRecord) for r in self.plugins):
+            raise ConfigError("manifest.plugins: expected a tuple of PluginRecord")
+        for field in ("tools", "services"):
+            v = getattr(self, field)
+            if type(v) is not tuple or not all(type(x) is str and x for x in v):
+                raise ConfigError(f"manifest.{field}: expected a tuple of non-empty strings")
 
 
 def source_sha256(path: str) -> str:
@@ -58,10 +66,23 @@ def compare(config: SessionConfig, manifest: LoadedManifest,
             expected_sha256: Mapping[str, str] | None = None) -> list[str]:
     """Every difference between what the orchestrator wrote and what loaded.
     An empty list means they agree. `expected_sha256` pins source hashes by
-    plug-in name; a pin for a plug-in that did not load is itself a difference."""
+    plug-in name; a pin for a plug-in that did not load is itself a difference.
+
+    ⚠️ Without pins this checks NO integrity: any hash passes. The orchestrator
+    must pass a pin for every plug-in it relies on. Also not compared, because
+    the config names nothing to compare them with: `api_version` (the major
+    check is the pipeline's, plan P3.2), the tool names, the services, and the
+    config a plug-in actually received. Whether a tool or service the config
+    never named should stop the session is open (plan P3.2)."""
     diffs: list[str] = []
     wanted = {p.name: p for p in config.plugins}
     loaded = {r.name: r for r in manifest.plugins}
+    counts: dict[str, int] = {}
+    for r in manifest.plugins:
+        counts[r.name] = counts.get(r.name, 0) + 1
+    for name, n in counts.items():
+        if n > 1:
+            diffs.append(f"plug-in {name!r} was loaded twice ({n} times)")
 
     for name, p in wanted.items():
         r = loaded.get(name)

@@ -121,34 +121,43 @@ HARNESS_ALLOWED: frozenset[tuple[str, str]] = frozenset({
 def harness_edges() -> set[tuple[str, str]]:
     """Every overmind import made by a module under src/overmind/harness/,
     resolved to a flat module name or a "harness/x" name. Relative levels are
-    resolved against the file's own package: `.x` is a sibling, `..x` is flat."""
+    resolved against the file's own package: `.x` is a sibling, `..x` is flat.
+    A form this cannot resolve (level 3 or more) raises rather than being skipped."""
+    def name_of(dotted: str, imported: tuple[str, ...] = ()) -> list[str]:
+        """`dotted` is a path under `overmind` ("" is the package itself)."""
+        parts = [x for x in dotted.split(".") if x]
+        if not parts:
+            return [("harness/__init__" if n == "harness" else n) for n in imported]
+        if parts[0] != "harness":
+            return [parts[0]]
+        if len(parts) > 1:
+            return ["harness/" + parts[1]]
+        return ["harness/" + n if (SRC / "harness" / (n + ".py")).exists() else "harness/__init__"
+                for n in imported] or ["harness/__init__"]
+
     edges: set[tuple[str, str]] = set()
     for path in sorted((SRC / "harness").glob("*.py")):
         own = "harness/" + path.stem
         for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
             targets: list[str] = []
             if isinstance(node, ast.ImportFrom):
+                names = tuple(a.name for a in node.names)
                 mod = node.module or ""
-                if node.level == 1:                      # sibling in harness/
-                    if mod:
-                        targets = ["harness/" + mod.split(".")[0]]
-                    else:
-                        targets = ["harness/" + a.name for a in node.names]
-                elif node.level == 2:                    # flat overmind module
-                    targets = [mod.split(".")[0]] if mod else [a.name for a in node.names]
-                elif node.level == 0 and mod.split(".")[0] == "overmind":
+                if node.level == 0:
                     parts = mod.split(".")
-                    if len(parts) > 1:
-                        targets = ["harness/" + parts[2] if parts[1] == "harness" and len(parts) > 2
-                                   else parts[1]]
-                    else:
-                        targets = [a.name for a in node.names]
+                    if parts[0] == "overmind":
+                        targets = name_of(".".join(parts[1:]), names)
+                elif node.level == 1:                      # sibling in harness/
+                    targets = name_of("harness." + mod if mod else "harness", names)
+                elif node.level == 2:                      # a flat overmind module
+                    targets = name_of(mod, names)
+                else:
+                    raise AssertionError(f"{own}: unsupported relative import level {node.level}")
             elif isinstance(node, ast.Import):
                 for a in node.names:
                     parts = a.name.split(".")
                     if parts[0] == "overmind" and len(parts) > 1:
-                        targets.append(parts[1] if parts[1] != "harness" or len(parts) < 3
-                                       else "harness/" + parts[2])
+                        targets += name_of(".".join(parts[1:]))
             for t in targets:
                 if t != own:
                     edges.add((own, t))
@@ -189,6 +198,13 @@ class TestImportDirection(unittest.TestCase):
             "from ..gate import Gate\n": {("harness/manifest", "gate")},
             "from overmind.quota import Q\n": {("harness/manifest", "quota")},
             "import overmind.harness.config\n": {("harness/manifest", "harness/config")},
+            "from . import config\n": {("harness/manifest", "harness/config")},
+            "from overmind.harness import config\n": {("harness/manifest", "harness/config")},
+            "from overmind import harness\n": {("harness/manifest", "harness/__init__")},
+            "import overmind.harness\n": {("harness/manifest", "harness/__init__")},
+            "from ..harness.config import X\n": {("harness/manifest", "harness/config")},
+            "from .. import gate, quota\n": {("harness/manifest", "gate"), ("harness/manifest", "quota")},
+            "from overmind import gate\n": {("harness/manifest", "gate")},
             "import json\nfrom typing import Any\n": set(),
         }
         for src, want in cases.items():
@@ -197,6 +213,7 @@ class TestImportDirection(unittest.TestCase):
                 saved = SRC
                 try:
                     (Path(tmp) / "harness").mkdir()
+                    (Path(tmp) / "harness" / "config.py").write_text("", encoding="utf-8")
                     (Path(tmp) / "harness" / "manifest.py").write_text(src, encoding="utf-8")
                     SRC = Path(tmp)
                     self.assertEqual(harness_edges(), want, src)

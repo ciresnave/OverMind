@@ -238,5 +238,110 @@ class TestSourceHash(unittest.TestCase):
                             source_sha256(self.write(b"a\r\nb\r\n")))
 
 
+class TestPluginConfigIsJson(unittest.TestCase):
+    """A plug-in's `config` is data the harness hands over: refuse what JSON
+    cannot carry NOW, not as a TypeError out of to_json later, and refuse
+    NaN/Infinity, which json.loads accepts but is not JSON (review of P3.1)."""
+
+    def refused(self, value):
+        d = sample()
+        d["plugins"][0]["config"] = {"x": value}
+        with self.assertRaises(ConfigError):
+            SessionConfig.from_dict(d)
+
+    def test_a_set(self):
+        self.refused({1, 2})
+
+    def test_bytes(self):
+        self.refused(b"a")
+
+    def test_a_non_string_key(self):
+        d = sample()
+        d["plugins"][0]["config"] = {1: "x"}
+        with self.assertRaises(ConfigError):
+            SessionConfig.from_dict(d)
+
+    def test_nan_and_infinity(self):
+        self.refused(float("nan"))
+        self.refused(float("inf"))
+
+    def test_nested_bad_value(self):
+        self.refused([{"y": (1, 2)}])
+
+    def test_json_text_with_NaN(self):
+        text = json.dumps(sample()).replace('"policies"', '"n": NaN, "policies"')
+        with self.assertRaises(ConfigError):
+            SessionConfig.from_json(text)
+
+    def test_json_values_are_all_accepted(self):
+        d = sample()
+        d["plugins"][0]["config"] = {"a": None, "b": True, "c": 1.5, "d": "s", "e": [1, {"f": []}]}
+        cfg = SessionConfig.from_dict(d)
+        self.assertEqual(json.loads(cfg.to_json())["plugins"][0]["config"], d["plugins"][0]["config"])
+
+    def test_the_config_is_detached_from_the_callers_data(self):
+        d = sample()
+        cfg = SessionConfig.from_dict(d)
+        d["plugins"][0]["config"]["policies"].append("tampered")
+        self.assertEqual(cfg.plugins[0].config["policies"], ["workspace-confined", "deny-unless-declared"])
+
+
+class TestStringsAreSane(unittest.TestCase):
+    def refused(self, mutate):
+        d = sample()
+        mutate(d)
+        with self.assertRaises(ConfigError):
+            SessionConfig.from_dict(d)
+
+    def test_whitespace_only(self):
+        self.refused(lambda d: d.update(session_id="   "))
+
+    def test_control_character(self):
+        self.refused(lambda d: d.update(session_id="a\x00b"))
+        self.refused(lambda d: d.update(session_id="a\nb"))
+
+    def test_lone_surrogate(self):
+        self.refused(lambda d: d.update(session_id="\ud800"))
+
+    def test_str_subclass(self):
+        class S(str):
+            pass
+        self.refused(lambda d: d.update(session_id=S("x")))
+
+    def test_applies_to_every_string_field(self):
+        self.refused(lambda d: d["route"][0].update(provider="  "))
+        self.refused(lambda d: d["workspace"].update(repo="a\x00"))
+        self.refused(lambda d: d["plugins"][0].update(name="g\tate"))
+
+    def test_from_json_none_is_a_config_error(self):
+        with self.assertRaises(ConfigError):
+            SessionConfig.from_json(None)  # type: ignore[arg-type]
+
+
+class TestCompareHoles(unittest.TestCase):
+    def setUp(self):
+        self.cfg = SessionConfig.from_dict(sample())
+
+    def test_a_plugin_loaded_twice_is_reported(self):
+        m = matching_manifest(self.cfg)
+        m = LoadedManifest(plugins=m.plugins + (m.plugins[0],), tools=m.tools, services=m.services)
+        diffs = compare(self.cfg, m)
+        self.assertTrue(any("gate" in x and "twice" in x for x in diffs), diffs)
+
+    def test_manifest_fields_are_checked(self):
+        with self.assertRaises(ConfigError):
+            LoadedManifest(plugins=[record()], tools=(), services=())  # type: ignore[arg-type]
+        with self.assertRaises(ConfigError):
+            LoadedManifest(plugins=(record(),), tools=(None,), services=())  # type: ignore[arg-type]
+
+    def test_record_strings_are_checked(self):
+        with self.assertRaises(ConfigError):
+            PluginRecord(name="  ", version="1", api_version=1, sha256="a" * 64)
+        with self.assertRaises(ConfigError):
+            PluginRecord(name="a", version=1, api_version=1, sha256="a" * 64)  # type: ignore[arg-type]
+        with self.assertRaises(ConfigError):
+            PluginRecord(name="a", version="1", api_version=1, sha256=None)  # type: ignore[arg-type]
+
+
 if __name__ == "__main__":
     unittest.main()

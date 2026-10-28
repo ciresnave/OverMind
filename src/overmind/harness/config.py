@@ -38,9 +38,45 @@ def _obj(value: Any, where: str, required: tuple[str, ...], optional: tuple[str,
 
 
 def _text(value: Any, where: str) -> str:
-    if not isinstance(value, str) or not value:
-        raise ConfigError(f"{where}: expected a non-empty string")
+    """A name, id or path-like string. `type(...) is str` (a subclass could
+    override anything), not blank, no control characters, and encodable: a lone
+    surrogate would break the first write to disk, and session ids and repos
+    end up in paths and argv."""
+    if type(value) is not str or not value.strip():
+        raise ConfigError(f"{where}: expected a non-blank string")
+    if any(ord(c) < 32 or ord(c) == 127 for c in value):
+        raise ConfigError(f"{where}: control characters are not allowed")
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        raise ConfigError(f"{where}: not valid text (lone surrogate)") from None
     return value
+
+
+def check_text(value: Any, where: str) -> str:
+    return _text(value, where)
+
+
+def _json_value(value: Any, where: str) -> Any:
+    """Deep-validate AND deep-copy a plug-in's config value: only what JSON can
+    carry (objects with string keys, lists, strings, finite numbers, bools,
+    null). The copy detaches the config from the caller's data."""
+    if value is None or type(value) is bool or type(value) is int or type(value) is str:
+        return value
+    if type(value) is float:
+        if value != value or value in (float("inf"), float("-inf")):
+            raise ConfigError(f"{where}: NaN and Infinity are not JSON")
+        return value
+    if type(value) is list:
+        return [_json_value(v, f"{where}[{i}]") for i, v in enumerate(value)]
+    if type(value) is dict:
+        out = {}
+        for k, v in value.items():
+            if type(k) is not str:
+                raise ConfigError(f"{where}: object keys must be strings, got {type(k).__name__}")
+            out[k] = _json_value(v, f"{where}.{k}")
+        return out
+    raise ConfigError(f"{where}: {type(value).__name__} is not JSON data")
 
 
 def _count(value: Any, where: str) -> int:
@@ -125,7 +161,8 @@ class SessionConfig:
             seen.add(name)
             if not isinstance(p["config"], dict):
                 raise ConfigError(f"plugins[{i}].config: expected an object")
-            plugins.append(PluginRef(name, _text(p["version"], f"plugins[{i}].version"), dict(p["config"])))
+            plugins.append(PluginRef(name, _text(p["version"], f"plugins[{i}].version"),
+                                     _json_value(p["config"], f"plugins[{i}].config")))
 
         w = _obj(top["workspace"], "workspace", ("repo", "base"))
         workspace = Workspace(_text(w["repo"], "workspace.repo"), _text(w["base"], "workspace.base"))
@@ -137,7 +174,7 @@ class SessionConfig:
     def from_json(cls, text: str) -> "SessionConfig":
         try:
             data = json.loads(text)
-        except ValueError as exc:
+        except (ValueError, TypeError) as exc:
             raise ConfigError(f"not valid JSON: {exc}") from exc
         return cls.from_dict(data)
 

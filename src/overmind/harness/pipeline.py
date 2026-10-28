@@ -25,29 +25,19 @@ from __future__ import annotations
 import copy
 import hashlib
 import inspect
-from dataclasses import dataclass
 from typing import Any, Callable, Iterable, Mapping
 
 from .config import ConfigError, SessionConfig, check_text
 from .manifest import LoadedManifest, PluginRecord, source_sha256
 from .plugin_api import (
     API_VERSION, Allow, Correct, Declaration, Deny, Drop, HarnessCall, NoOpinion, Ok, Pass,
-    Plugin, Redact, Refuse, Rewrite, SessionContext, Stop, ToolSpec,
+    Plugin, PipelineOutcome, Redact, Refuse, Rewrite, SessionContext, Stop, ToolSpec,
 )
 from .primitives import Primitives, allowing, cleared
 
 
 class PluginError(ValueError):
     """The set of plug-ins is refused whole."""
-
-
-@dataclass(frozen=True)
-class PipelineOutcome:
-    call: HarnessCall
-    decision: Allow | Deny
-    executed: bool
-    result: Any = None
-    error: str | None = None
 
 
 def _str(v: Any) -> bool:
@@ -131,6 +121,7 @@ class Pipeline:
         self._ctx = ctx
         self._decl: dict[int, Declaration] = {}
         self._tools: dict[str, ToolSpec] = {}
+        self._observer_errors: list[str] = []
         names: list[str] = []
         owners: dict[str, str] = {}
         for plugin in self._plugins:
@@ -233,8 +224,30 @@ class Pipeline:
                         "no-applicable-policy")
         return last
 
+    @property
+    def observer_errors(self) -> tuple[str, ...]:
+        """Every `on_tool_outcome` that raised. Observers cannot alter a decision,
+        but a broken one is never silent."""
+        return tuple(self._observer_errors)
+
+    def _observe(self, outcome: PipelineOutcome) -> None:
+        for plugin in self._plugins:
+            name = self._decl[id(plugin)].name
+            with cleared():
+                try:
+                    plugin.on_tool_outcome(self._ctx, copy.deepcopy(outcome))
+                except Exception as exc:              # noqa: BLE001 - recorded, decision unchanged
+                    self._observer_errors.append(
+                        f"plug-in {name!r} on_tool_outcome raised {type(exc).__name__}: {exc}")
+
     def execute(self, name: str, arguments: Mapping[str, Any] | None = None,
                 actor: str = "agent") -> PipelineOutcome:
+        outcome = self._execute(name, arguments, actor)
+        self._observe(outcome)
+        return outcome
+
+    def _execute(self, name: str, arguments: Mapping[str, Any] | None,
+                 actor: str) -> PipelineOutcome:
         try:
             pristine = copy.deepcopy(dict(arguments or {}))
         except Exception as exc:                      # noqa: BLE001
@@ -277,6 +290,8 @@ class Pipeline:
                     out[name] = plugin.on_stop(self._ctx, run)
                 except Exception as exc:              # noqa: BLE001
                     out[name] = {"error": f"{type(exc).__name__}: {exc}"}
+        if self._observer_errors:
+            out["<observer-errors>"] = list(self._observer_errors)
         return out
 
     # -- what loaded -------------------------------------------------------------

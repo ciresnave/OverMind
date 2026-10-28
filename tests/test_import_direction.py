@@ -106,7 +106,62 @@ ALLOWED: frozenset[tuple[str, str]] = frozenset({
 MODULES: frozenset[str] = frozenset({
     "agent", "dispatch", "dispatch_mcp", "fork", "gate", "lanework",
     "ledger", "mcp_tools", "outcome", "providers", "quota", "repo_probe",
+    # the harness subpackage (plan P3.1): "pkg/mod" names, scanned below
+    "harness/__init__", "harness/config", "harness/manifest",
 })
+
+# Edges INSIDE the harness package, plus edges from it to the flat modules.
+# P3.1 is pure data: it imports nothing from the flat modules, and only
+# manifest -> config inside the package.
+HARNESS_ALLOWED: frozenset[tuple[str, str]] = frozenset({
+    ("harness/manifest", "harness/config"),   # manifest.py: `from .config import ...`
+})
+
+
+def harness_edges() -> set[tuple[str, str]]:
+    """Every overmind import made by a module under src/overmind/harness/,
+    resolved to a flat module name or a "harness/x" name. Relative levels are
+    resolved against the file's own package: `.x` is a sibling, `..x` is flat.
+    A form this cannot resolve (level 3 or more) raises rather than being skipped."""
+    def name_of(dotted: str, imported: tuple[str, ...] = ()) -> list[str]:
+        """`dotted` is a path under `overmind` ("" is the package itself)."""
+        parts = [x for x in dotted.split(".") if x]
+        if not parts:
+            return [("harness/__init__" if n == "harness" else n) for n in imported]
+        if parts[0] != "harness":
+            return [parts[0]]
+        if len(parts) > 1:
+            return ["harness/" + parts[1]]
+        return ["harness/" + n if (SRC / "harness" / (n + ".py")).exists() else "harness/__init__"
+                for n in imported] or ["harness/__init__"]
+
+    edges: set[tuple[str, str]] = set()
+    for path in sorted((SRC / "harness").glob("*.py")):
+        own = "harness/" + path.stem
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            targets: list[str] = []
+            if isinstance(node, ast.ImportFrom):
+                names = tuple(a.name for a in node.names)
+                mod = node.module or ""
+                if node.level == 0:
+                    parts = mod.split(".")
+                    if parts[0] == "overmind":
+                        targets = name_of(".".join(parts[1:]), names)
+                elif node.level == 1:                      # sibling in harness/
+                    targets = name_of("harness." + mod if mod else "harness", names)
+                elif node.level == 2:                      # a flat overmind module
+                    targets = name_of(mod, names)
+                else:
+                    raise AssertionError(f"{own}: unsupported relative import level {node.level}")
+            elif isinstance(node, ast.Import):
+                for a in node.names:
+                    parts = a.name.split(".")
+                    if parts[0] == "overmind" and len(parts) > 1:
+                        targets += name_of(".".join(parts[1:]))
+            for t in targets:
+                if t != own:
+                    edges.add((own, t))
+    return edges
 
 
 def actual_edges() -> set[tuple[str, str]]:
@@ -127,6 +182,43 @@ class TestImportDirection(unittest.TestCase):
         found = {p.relative_to(SRC).with_suffix("").as_posix() for p in SRC.rglob("*.py")}
         self.assertEqual(found, set(MODULES),
                          f"new: {sorted(found - MODULES)}, gone: {sorted(MODULES - found)}")
+
+    def test_harness_edges_are_the_known_ones(self):
+        """The flat scan is `SRC.glob("*.py")` and never sees the subpackage, so
+        it needs its own scan (and the allow-list can be empty only on purpose)."""
+        actual = harness_edges()
+        self.assertEqual(sorted(actual - HARNESS_ALLOWED), [], "new harness import edge")
+        self.assertEqual(sorted(HARNESS_ALLOWED - actual), [], "allowed harness edge that no longer exists")
+
+    def test_harness_extractor_on_known_sources(self):
+        """Test of the test: the resolver on sources whose answer is known."""
+        import tempfile
+        cases = {
+            "from .config import X\n": {("harness/manifest", "harness/config")},
+            "from ..gate import Gate\n": {("harness/manifest", "gate")},
+            "from overmind.quota import Q\n": {("harness/manifest", "quota")},
+            "import overmind.harness.config\n": {("harness/manifest", "harness/config")},
+            "from . import config\n": {("harness/manifest", "harness/config")},
+            "from overmind.harness import config\n": {("harness/manifest", "harness/config")},
+            "from overmind import harness\n": {("harness/manifest", "harness/__init__")},
+            "import overmind.harness\n": {("harness/manifest", "harness/__init__")},
+            "from ..harness.config import X\n": {("harness/manifest", "harness/config")},
+            "from .. import gate, quota\n": {("harness/manifest", "gate"), ("harness/manifest", "quota")},
+            "from overmind import gate\n": {("harness/manifest", "gate")},
+            "import json\nfrom typing import Any\n": set(),
+        }
+        for src, want in cases.items():
+            with tempfile.TemporaryDirectory() as tmp:
+                global SRC
+                saved = SRC
+                try:
+                    (Path(tmp) / "harness").mkdir()
+                    (Path(tmp) / "harness" / "config.py").write_text("", encoding="utf-8")
+                    (Path(tmp) / "harness" / "manifest.py").write_text(src, encoding="utf-8")
+                    SRC = Path(tmp)
+                    self.assertEqual(harness_edges(), want, src)
+                finally:
+                    SRC = saved
 
     def test_no_import_edge_outside_the_allow_list(self):
         actual = actual_edges()

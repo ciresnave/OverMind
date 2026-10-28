@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.14.19 (A3 P3.2: the plug-in pipeline, 2026-10-28; provisional number)
+
+- `overmind.harness.plugin_api` (the seven hooks and their closed result types; `NoOpinion` added for `before_tool_call`), `primitives` (thread-local `allowed_call` and `primitive_frame`; `write_file` and `run_process` refuse unless a call is allowed on that thread), `pipeline` (`Pipeline`, `load_pipeline`: config order, `Gate.decide` semantics for `before_tool_call`, hooks fail closed, the whole pipeline refused for a missing/mismatched plug-in or a different `api_version`) and `gate_plugin` (today's `Gate` as the first plug-in, decisions passed through unchanged). Nothing calls the pipeline yet (`run_agent` still uses `GatedExecutor`), so no behaviour changes. Plan P3.2. `declares()` is called once, with the allowance cleared, and snapshotted; every hook gets its own copy of the call and the effect runs on a pristine copy (what was decided is what executes); `run_process` requires an explicit `env` and kills the whole process tree on timeout; the manifest hash covers every class file in the plug-in's MRO. **Not in this piece:** service primitives (so the spec's first pipeline-only fixture, a model-output hook calling a declared service, is not built), hook timeouts, and binding a primitive's arguments to the allowed call's (an allowed effect may write any path or run any argv it is given).
+
 ## 0.14.18 (A3 P3.1: SessionConfig and LoadedManifest, 2026-10-28; provisional number)
 
 - `overmind.harness.config` (`SessionConfig`: strict, refuses an unknown `schema_version`, unknown or missing fields and wrong types, `true` is not a number) and `overmind.harness.manifest` (`LoadedManifest`, `source_sha256`, `compare`: every difference, not the first). Pure data, stdlib only; nothing calls them yet, so no behaviour changes. `tests/test_import_direction.py` now scans the `harness/` subpackage too. Plan: `docs/superpowers/plans/2026-10-28-phase3-harness.md` P3.1.

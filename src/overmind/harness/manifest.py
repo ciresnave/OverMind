@@ -16,9 +16,9 @@ from __future__ import annotations
 import hashlib
 import re
 from dataclasses import dataclass
-from typing import Mapping
+from typing import Any, Mapping
 
-from .config import ConfigError, SessionConfig, check_text
+from .config import ConfigError, SessionConfig, check_text, expect_object
 
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 
@@ -44,6 +44,28 @@ class LoadedManifest:
     plugins: tuple[PluginRecord, ...]
     tools: tuple[str, ...]
     services: tuple[str, ...]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "plugins": [{"name": r.name, "version": r.version, "api_version": r.api_version,
+                         "sha256": r.sha256} for r in self.plugins],
+            "tools": list(self.tools),
+            "services": list(self.services),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "LoadedManifest":
+        top = expect_object(data, "manifest", ("plugins", "tools", "services"))
+        if not isinstance(top["plugins"], list):
+            raise ConfigError("manifest.plugins: expected a list")
+        records = []
+        for i, p in enumerate(top["plugins"]):
+            p = expect_object(p, f"manifest.plugins[{i}]", ("name", "version", "api_version", "sha256"))
+            records.append(PluginRecord(p["name"], p["version"], p["api_version"], p["sha256"]))
+        for field in ("tools", "services"):
+            if not isinstance(top[field], list):
+                raise ConfigError(f"manifest.{field}: expected a list")
+        return cls(plugins=tuple(records), tools=tuple(top["tools"]), services=tuple(top["services"]))
 
     def __post_init__(self) -> None:
         if type(self.plugins) is not tuple or not all(isinstance(r, PluginRecord) for r in self.plugins):

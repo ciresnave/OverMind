@@ -4,25 +4,35 @@
 `before_tool_call` keeps `Gate.decide`'s semantics (gate.py:517-553): only
 plug-ins with an opinion are asked, the first `Deny` returns at once, and a call
 nobody covers is denied. Every other hook composes as its docstring in
-plugin_api.py says. A hook that raises, or returns the wrong kind of result,
-fails closed.
+plugin_api.py says. A hook that raises, or returns the wrong kind of result (or
+a right kind with a malformed payload), fails closed.
 
-`load_pipeline` is where "the harness never runs a partial pipeline" lives: a
-plug-in that is not registered, declares itself differently from the config, or
-has another API major version refuses the WHOLE pipeline.
+⚠️ Three things this file does on purpose, each found by review:
+  * `declares()` is called ONCE per plug-in, in `__init__`, with the allowance
+    cleared, and the answer is snapshotted. A plug-in cannot answer differently
+    later, and a `declares()` that runs inside a fork's allowed call cannot reach
+    a primitive (spec §3: no `declares()` ever runs inside the parent's call).
+  * Every hook gets its OWN copy of the call, and the effect runs on a pristine
+    copy taken before any hook ran. The arguments a policy allowed are the
+    arguments that execute; a hook that mutates its copy changes nothing.
+  * `load_pipeline` is where "the harness never runs a partial pipeline" lives:
+    a plug-in that is not registered, declares itself differently from the
+    config, or has another API major version refuses the WHOLE pipeline.
 """
 
 from __future__ import annotations
 
+import copy
+import hashlib
 import inspect
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable, Mapping
 
-from .config import SessionConfig
+from .config import ConfigError, SessionConfig, check_text
 from .manifest import LoadedManifest, PluginRecord, source_sha256
 from .plugin_api import (
-    API_VERSION, Allow, Correct, Deny, Drop, HarnessCall, NoOpinion, Ok, Pass, Plugin,
-    Redact, Refuse, Rewrite, SessionContext, Stop, ToolSpec,
+    API_VERSION, Allow, Correct, Declaration, Deny, Drop, HarnessCall, NoOpinion, Ok, Pass,
+    Plugin, Redact, Refuse, Rewrite, SessionContext, Stop, ToolSpec,
 )
 from .primitives import Primitives, allowing, cleared
 
@@ -40,21 +50,105 @@ class PipelineOutcome:
     error: str | None = None
 
 
+def _str(v: Any) -> bool:
+    return type(v) is str
+
+
+#: A result of the right TYPE is still refused if its payload is malformed
+#: (`Correct(None)` would otherwise crash the join that composes corrections).
+_PAYLOAD: dict[type, Callable[[Any], bool]] = {
+    Ok: lambda r: True,
+    Pass: lambda r: True,
+    NoOpinion: lambda r: True,
+    Refuse: lambda r: _str(r.reason),
+    Drop: lambda r: _str(r.reason),
+    Stop: lambda r: _str(r.reason),
+    Rewrite: lambda r: _str(r.message),
+    Correct: lambda r: _str(r.note),
+    Redact: lambda r: True,
+    Allow: lambda r: _str(r.reason) and (r.policy is None or _str(r.policy)),
+    Deny: lambda r: _str(r.reason) and (r.policy is None or _str(r.policy)),
+}
+
+
+def _check_declaration(decl: Any) -> Declaration:
+    if type(decl) is not Declaration:
+        raise PluginError(f"declares() returned {type(decl).__name__}, not a Declaration")
+    try:
+        check_text(decl.name, "declaration name")
+        check_text(decl.version, f"plug-in {decl.name!r} version")
+    except ConfigError as exc:
+        raise PluginError(str(exc)) from None
+    if type(decl.api_version) is not int:
+        raise PluginError(f"plug-in {decl.name!r}: api_version must be an integer")
+    if type(decl.tools) is not tuple or not all(type(t) is ToolSpec for t in decl.tools):
+        raise PluginError(f"plug-in {decl.name!r}: tools must be a tuple of ToolSpec")
+    if type(decl.services) is not tuple or not all(type(s) is str and s for s in decl.services):
+        raise PluginError(f"plug-in {decl.name!r}: services must be a tuple of non-empty strings")
+    for t in decl.tools:
+        try:
+            check_text(t.name, f"plug-in {decl.name!r} tool name")
+        except ConfigError as exc:
+            raise PluginError(str(exc)) from None
+        if not callable(t.effect):
+            raise PluginError(f"plug-in {decl.name!r}: tool {t.name!r} has no callable effect")
+    return decl
+
+
+def plugin_sha256(plugin: Plugin) -> str:
+    """SHA-256 of the plug-in's source, byte for byte.
+
+    ⚠️ Scope: the source file of EVERY class in the plug-in's MRO below `Plugin`
+    (so behaviour inherited from a base in another file is covered). One file
+    gives that file's own digest, which is what the spec records; several give
+    the SHA-256 of their sorted digests. NOT covered: tool effect functions
+    defined elsewhere and any helper module the plug-in imports, and two plug-ins
+    defined in one file share a digest. The orchestrator pins per checkout
+    (line endings are part of the bytes)."""
+    files: list[str] = []
+    for cls in type(plugin).__mro__:
+        if cls is object or cls is Plugin:
+            continue
+        try:
+            path = inspect.getsourcefile(cls)
+        except (TypeError, OSError):
+            path = None
+        if path is None:
+            raise PluginError(f"plug-in class {cls.__name__}: no source file to hash")
+        if path not in files:
+            files.append(path)
+    if not files:
+        raise PluginError("plug-in has no source file to hash")
+    digests = sorted(source_sha256(p) for p in files)
+    if len(digests) == 1:
+        return digests[0]
+    return hashlib.sha256("\n".join(digests).encode("ascii")).hexdigest()
+
+
 class Pipeline:
     def __init__(self, plugins: Iterable[Plugin], ctx: SessionContext) -> None:
         self._plugins = list(plugins)
         self._ctx = ctx
+        self._decl: dict[int, Declaration] = {}
         self._tools: dict[str, ToolSpec] = {}
-        self._names: list[str] = []
+        names: list[str] = []
         owners: dict[str, str] = {}
         for plugin in self._plugins:
-            decl = plugin.declares()
-            if type(decl.api_version) is not int or decl.api_version != API_VERSION:
+            with cleared():
+                try:
+                    raw = plugin.declares()
+                except Exception as exc:              # noqa: BLE001
+                    raise PluginError(
+                        f"plug-in {type(plugin).__name__}: declares() raised "
+                        f"{type(exc).__name__}: {exc}") from exc
+            decl = _check_declaration(raw)
+            if decl.api_version != API_VERSION:
                 raise PluginError(
                     f"plug-in {decl.name!r}: api_version {decl.api_version!r}, this harness is {API_VERSION}")
-            if decl.name in self._names:
+            if decl.name in names:
                 raise PluginError(f"plug-in {decl.name!r} is loaded twice")
-            self._names.append(decl.name)
+            names.append(decl.name)
+            self._decl[id(plugin)] = decl
             for spec in decl.tools:
                 if spec.name in owners:
                     raise PluginError(
@@ -62,18 +156,28 @@ class Pipeline:
                 owners[spec.name] = decl.name
                 self._tools[spec.name] = spec
 
+    @property
+    def declarations(self) -> tuple[Declaration, ...]:
+        """The snapshot taken at construction, in config order."""
+        return tuple(self._decl[id(p)] for p in self._plugins)
+
     # -- one guarded hook call ------------------------------------------------
 
     def _call(self, plugin: Plugin, hook: str, args: tuple[Any, ...],
               valid: tuple[type, ...], fail: Callable[[str], Any]) -> Any:
-        name = plugin.declares().name
+        name = self._decl[id(plugin)].name
+        # each hook gets its own copy of the call: a mutation stays in that copy
+        fresh = tuple(copy.deepcopy(a) if isinstance(a, HarnessCall) else a for a in args)
         with cleared():
             try:
-                result = getattr(plugin, hook)(self._ctx, *args)
+                result = getattr(plugin, hook)(self._ctx, *fresh)
             except Exception as exc:                  # noqa: BLE001 - fails closed, says why
                 return fail(f"plug-in {name!r} {hook} raised {type(exc).__name__}: {exc}")
         if type(result) not in valid:
             return fail(f"plug-in {name!r} {hook} returned {type(result).__name__}, "
+                        f"which is not a result of that hook")
+        if not _PAYLOAD[type(result)](result):
+            return fail(f"plug-in {name!r} {hook} returned a malformed {type(result).__name__}, "
                         f"which is not a result of that hook")
         return result
 
@@ -131,7 +235,13 @@ class Pipeline:
 
     def execute(self, name: str, arguments: Mapping[str, Any] | None = None,
                 actor: str = "agent") -> PipelineOutcome:
-        call = HarnessCall(name=name, arguments=dict(arguments or {}), actor=actor)
+        try:
+            pristine = copy.deepcopy(dict(arguments or {}))
+        except Exception as exc:                      # noqa: BLE001
+            call = HarnessCall(name=name, arguments={}, actor=actor)
+            return PipelineOutcome(call, Deny(f"arguments cannot be copied ({type(exc).__name__}); refused",
+                                              "uncopyable-arguments"), executed=False)
+        call = HarnessCall(name=name, arguments=copy.deepcopy(pristine), actor=actor)
         decision = self.decide(call)
         if isinstance(decision, Deny):
             return PipelineOutcome(call, decision, executed=False)
@@ -143,9 +253,10 @@ class Pipeline:
 
         result: Any = None
         error: str | None = None
-        with allowing(call):
+        # the effect runs on the pristine copy: what was decided is what executes
+        with allowing(HarnessCall(name=name, arguments=copy.deepcopy(pristine), actor=actor)):
             try:
-                result = spec.effect(Primitives(), **call.arguments)
+                result = spec.effect(Primitives(), **copy.deepcopy(pristine))
             except Exception as exc:                  # noqa: BLE001 - recorded, not swallowed
                 error = f"{type(exc).__name__}: {exc}"
 
@@ -160,7 +271,7 @@ class Pipeline:
         """Each plug-in's record, by name. A plug-in that raises records the error."""
         out: dict[str, Any] = {}
         for plugin in self._plugins:
-            name = plugin.declares().name
+            name = self._decl[id(plugin)].name
             with cleared():
                 try:
                     out[name] = plugin.on_stop(self._ctx, run)
@@ -174,11 +285,8 @@ class Pipeline:
         records: list[PluginRecord] = []
         services: list[str] = []
         for plugin in self._plugins:
-            decl = plugin.declares()
-            path = inspect.getsourcefile(type(plugin))
-            if path is None:
-                raise PluginError(f"plug-in {decl.name!r}: no source file to hash")
-            records.append(PluginRecord(decl.name, decl.version, decl.api_version, source_sha256(path)))
+            decl = self._decl[id(plugin)]
+            records.append(PluginRecord(decl.name, decl.version, decl.api_version, plugin_sha256(plugin)))
             services.extend(s for s in decl.services if s not in services)
         return LoadedManifest(plugins=tuple(records), tools=tuple(self._tools), services=tuple(services))
 
@@ -191,12 +299,17 @@ def load_pipeline(config: SessionConfig,
         factory = registry.get(ref.name)
         if factory is None:
             raise PluginError(f"plug-in {ref.name!r} is in the config but not registered")
-        plugin = factory(ref.config)
-        decl = plugin.declares()
+        try:
+            plugins.append(factory(ref.config))
+        except PluginError:
+            raise
+        except Exception as exc:                      # noqa: BLE001
+            raise PluginError(f"plug-in {ref.name!r}: its factory raised {type(exc).__name__}: {exc}") from exc
+    pipeline = Pipeline(plugins, SessionContext(session_id=config.session_id))
+    for ref, decl in zip(config.plugins, pipeline.declarations):
         if decl.name != ref.name:
             raise PluginError(f"plug-in {ref.name!r}: the registered plug-in declares itself {decl.name!r}")
         if decl.version != ref.version:
             raise PluginError(
                 f"plug-in {ref.name!r}: config version {ref.version!r}, declared version {decl.version!r}")
-        plugins.append(plugin)
-    return Pipeline(plugins, SessionContext(session_id=config.session_id))
+    return pipeline

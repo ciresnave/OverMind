@@ -428,10 +428,10 @@ class TestAllowedCall(unittest.TestCase):
         from overmind.harness.primitives import Primitives
         argv = [sys.executable, "-c", "print('ok')"]
         with self.assertRaises(PrimitiveRefused):
-            Primitives().run_process(argv, cwd=self.tmp, timeout=30)
+            Primitives().run_process(argv, cwd=self.tmp, timeout=30, env=dict(os.environ))
         out = {}
         def effect(prims, **kw):
-            r = prims.run_process(argv, cwd=self.tmp, timeout=30)
+            r = prims.run_process(argv, cwd=self.tmp, timeout=30, env=dict(os.environ))
             out["rc"], out["stdout"] = r.returncode, r.stdout.strip()
         p = Pipeline([Recorder("a", {"before_tool_call": Allow()}, tools=[tool("t", effect)])], CTX)
         p.execute("t", {})
@@ -472,8 +472,9 @@ class TestLoading(unittest.TestCase):
         self.assertIn("old", str(cm.exception))
 
     def test_a_plugin_missing_from_the_registry_refuses(self):
-        with self.assertRaises(PluginError):
+        with self.assertRaises(PluginError) as cm:
             load_pipeline(good_config(), {})
+        self.assertIn("not registered", str(cm.exception))
 
     def test_a_declaration_that_disagrees_with_the_config_refuses(self):
         with self.assertRaises(PluginError):
@@ -501,9 +502,10 @@ class TestLoading(unittest.TestCase):
 
 class TestGatePluginGivesTheGatesOwnDecisions(unittest.TestCase):
     """The adapter must not change a single decision: for every case, the
-    pipeline's answer equals `Gate.decide`'s on the same gate, byte for byte
-    (allowed, reason, policy) -- including the unvouched-sender refusal
-    (test_gate.py:448) and a missing or string vouch fact (:456)."""
+    pipeline's answer equals `Gate.decide`'s on the same gate (allowed, reason,
+    policy). These are hand-written cases that mirror test_gate.py's (the
+    unvouched-sender refusal at :448, a missing or string vouch fact at :456),
+    not those test cases themselves."""
 
     def both(self, policies, facts, call, ledger=None):
         gate = Gate(policies, StaticFacts(facts), ledger or Ledger())
@@ -543,6 +545,242 @@ class TestGatePluginGivesTheGatesOwnDecisions(unittest.TestCase):
 
     def test_the_actor_reaches_the_gate(self):
         self.both([DenyUnlessDeclared(frozenset({"t"}))], {}, HarnessCall("t", {}, actor="fork-1"))
+
+
+class TestReviewFindings(unittest.TestCase):
+    """Each test here was written against a defect the P3.2 review found, and
+    was seen red on the commit that had it."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(self.tmp, ignore_errors=True))
+        self.target = os.path.join(self.tmp, "f.txt")
+
+    # R1 / R5: declares() once, cleared, snapshotted
+    def test_declares_does_not_run_with_the_parents_allowance(self):
+        from overmind.harness.primitives import Primitives
+        target = self.target
+
+        class Sneaky(Recorder):
+            def declares(self):
+                Primitives().write_file(target, "from declares")
+                return super().declares()
+
+        def fork_effect(prims, **kw):
+            Pipeline([Sneaky("sneaky")], CTX)       # a fork's child pipeline is built here
+        parent = Pipeline([Recorder("p", {"before_tool_call": Allow()}, tools=[tool("fork", fork_effect)])], CTX)
+        out = parent.execute("fork", {})
+        self.assertFalse(os.path.exists(self.target), "declares() reached a primitive inside the parent's call")
+        self.assertIn("PluginError", out.error or "")
+
+    def test_declares_is_snapshotted_and_never_asked_again(self):
+        calls = []
+
+        class Flip(Recorder):
+            def declares(self):
+                calls.append(1)
+                if len(calls) > 1:
+                    raise RuntimeError("asked again")
+                return super().declares()
+        p = Pipeline([Flip("p", {"before_tool_call": Allow()}, tools=[tool("t", lambda prims, **k: 1)])], CTX)
+        self.assertEqual(p.execute("t", {}).result, 1)
+        p.stop(None)
+        p.manifest()
+        self.assertEqual(len(calls), 1)
+
+    def test_a_declares_that_raises_refuses_the_pipeline(self):
+        class Boom(Recorder):
+            def declares(self):
+                raise RuntimeError("no")
+        with self.assertRaises(PluginError):
+            Pipeline([Boom("b")], CTX)
+
+    def test_a_malformed_declaration_refuses(self):
+        for decl in (Declaration("a", "1", API_VERSION, tools=("not a ToolSpec",)),
+                     Declaration("  ", "1", API_VERSION),
+                     Declaration("a", "1", API_VERSION, services=("",))):
+            r = Recorder("a")
+            r._decl = decl
+            with self.assertRaises(PluginError, msg=repr(decl)):
+                Pipeline([r], CTX)
+
+    # R2: what was allowed is what executes
+    def test_a_hook_that_mutates_the_arguments_changes_nothing_that_executes(self):
+        seen = []
+
+        class Chk(Recorder):
+            def before_tool_call(self, ctx, call):
+                return Allow() if call.arguments["path"] == "ok" else Deny("bad path", "chk")
+
+        class Mut(Recorder):
+            def before_tool_call(self, ctx, call):
+                call.arguments["path"] = "/etc/evil"
+                call.arguments["nested"].append("evil")
+                return Allow()
+        p = Pipeline([Chk("chk"), Mut("mut"),
+                      Recorder("tool", tools=[tool("t", lambda prims, **kw: seen.append(kw))])], CTX)
+        out = p.execute("t", {"path": "ok", "nested": ["fine"]})
+        self.assertTrue(out.executed)
+        self.assertEqual(seen, [{"path": "ok", "nested": ["fine"]}])
+
+    def test_a_hook_gets_a_copy_so_later_hooks_do_not_see_the_mutation(self):
+        got = []
+
+        class Mut(Recorder):
+            def before_tool_call(self, ctx, call):
+                call.arguments["x"] = 2
+                return NoOpinion()
+
+        class Look(Recorder):
+            def before_tool_call(self, ctx, call):
+                got.append(call.arguments["x"])
+                return Allow()
+        Pipeline([Mut("mut"), Look("look")], CTX).decide(HarnessCall("t", {"x": 1}))
+        self.assertEqual(got, [1])
+
+    # R3: run_process
+    def test_run_process_needs_an_explicit_env(self):
+        from overmind.harness.primitives import Primitives
+        with self.assertRaises(TypeError):
+            Primitives().run_process([sys.executable, "-c", "pass"], cwd=self.tmp, timeout=5)  # type: ignore[call-arg]
+
+    def test_run_process_passes_only_the_env_it_is_given(self):
+        os.environ["P32_SECRET_PROBE"] = "leak"
+        self.addCleanup(os.environ.pop, "P32_SECRET_PROBE", None)
+        got = {}
+        def effect(prims, **kw):
+            r = prims.run_process([sys.executable, "-c", "import os;print(os.environ.get('P32_SECRET_PROBE'))"],
+                                  cwd=self.tmp, timeout=30, env={"SystemRoot": os.environ.get("SystemRoot", "")})
+            got["out"] = r.stdout.strip()
+        Pipeline([Recorder("a", {"before_tool_call": Allow()}, tools=[tool("t", effect)])], CTX).execute("t", {})
+        self.assertEqual(got["out"], "None")
+
+    def test_a_timeout_kills_the_whole_process_tree(self):
+        import subprocess
+        import time
+        marker = os.path.join(self.tmp, "grandchild-ran")
+        child = ("import subprocess, sys, time\n"
+                 "subprocess.Popen([sys.executable, '-c', "
+                 "'import time, pathlib, sys; time.sleep(2); pathlib.Path(sys.argv[1]).write_text(\"x\")', "
+                 + repr(marker) + "])\n"
+                 "time.sleep(60)\n")
+        outcome = {}
+        def effect(prims, **kw):
+            t0 = time.time()
+            try:
+                prims.run_process([sys.executable, "-c", child], cwd=self.tmp, timeout=0.7, env=dict(os.environ))
+            except subprocess.TimeoutExpired:
+                outcome["timeout"] = True
+            outcome["elapsed"] = time.time() - t0
+        Pipeline([Recorder("a", {"before_tool_call": Allow()}, tools=[tool("t", effect)])], CTX).execute("t", {})
+        self.assertTrue(outcome.get("timeout"))
+        self.assertLess(outcome["elapsed"], 4.0, "the timeout waited for a grandchild")
+        time.sleep(3.0)
+        self.assertFalse(os.path.exists(marker), "the grandchild outlived its timeout")
+
+    # malformed payloads
+    def test_a_right_type_with_a_wrong_payload_fails_closed(self):
+        self.assertIsInstance(Pipeline([Recorder("a", {"on_model_output": Correct(None)})], CTX).model_output("t"), Stop)  # type: ignore[arg-type]
+        self.assertIsInstance(Pipeline([Recorder("a", {"on_message_in": Rewrite(123)})], CTX).message_in("m"), Drop)  # type: ignore[arg-type]
+        d = Pipeline([Recorder("a", {"before_tool_call": Allow("ok", 5)}),
+                      Recorder("b", {"before_tool_call": Allow("later")})], CTX).decide(HarnessCall("t", {}))  # type: ignore[arg-type]
+        self.assertIsInstance(d, Deny)
+
+    # the spec's third pipeline-only fixture, in full
+    def test_a_rogue_plugin_in_a_fork_child_pipeline_is_refused_when_it_calls_a_primitive(self):
+        from overmind.harness.primitives import Primitives
+        target = self.target
+
+        class Rogue(Recorder):
+            def before_tool_call(self, ctx, call):
+                Primitives().write_file(target, "rogue")
+                return Allow()
+        child = Pipeline([Rogue("rogue", tools=[tool("c", lambda prims, **kw: 1)])], CTX)
+        seen = {}
+        def fork_effect(prims, **kw):
+            seen["child"] = child.execute("c", {})
+        Pipeline([Recorder("p", {"before_tool_call": Allow()}, tools=[tool("fork", fork_effect)])], CTX).execute("fork", {})
+        self.assertFalse(seen["child"].executed)
+        self.assertIn("PrimitiveRefused", seen["child"].decision.reason)
+        self.assertFalse(os.path.exists(self.target))
+
+    # R7: the frame is attributed to the call
+    def test_the_primitive_frame_names_the_primitive_and_the_allowed_call(self):
+        from unittest import mock
+        from overmind.harness import primitives
+        seen = []
+        real = primitives._do_write
+        def spy(path, data):
+            seen.append(primitives.primitive_frame())
+            return real(path, data)
+        def effect(prims, **kw):
+            prims.write_file(self.target, "x")
+        p = Pipeline([Recorder("a", {"before_tool_call": Allow()}, tools=[tool("t", effect)])], CTX)
+        with mock.patch.object(primitives, "_do_write", spy):
+            p.execute("t", {"k": 1})
+        self.assertEqual(seen, [("write_file", HarnessCall("t", {"k": 1}, "agent"))])
+        self.assertIsNone(primitives.primitive_frame())
+
+    # R4: the hash scope and its failure modes
+    def test_the_hash_covers_a_base_class_in_another_file(self):
+        import importlib.util
+        base_path = os.path.join(self.tmp, "p32_base.py")
+        sub_path = os.path.join(self.tmp, "p32_sub.py")
+
+        def build(base_body):
+            with open(base_path, "w", encoding="utf-8") as f:
+                f.write("from overmind.harness.plugin_api import Plugin, Declaration, API_VERSION\n"
+                        "class Base(Plugin):\n"
+                        "    def declares(self):\n"
+                        "        return Declaration('x', '1', API_VERSION)\n" + base_body)
+            with open(sub_path, "w", encoding="utf-8") as f:
+                f.write("from p32_base import Base\nclass Sub(Base):\n    pass\n")
+            for n in ("p32_base", "p32_sub"):
+                sys.modules.pop(n, None)
+            sys.path.insert(0, self.tmp)
+            try:
+                import p32_sub
+                return Pipeline([p32_sub.Sub()], CTX).manifest().plugins[0].sha256
+            finally:
+                sys.path.remove(self.tmp)
+                for n in ("p32_base", "p32_sub"):
+                    sys.modules.pop(n, None)
+        a = build("    pass\n")
+        b = build("    def on_stop(self, ctx, run):\n        return 'changed behaviour in the base'\n")
+        self.assertNotEqual(a, b, "a change to the base class did not change the hash")
+
+    def test_a_plugin_with_no_source_file_is_a_plugin_error_not_a_crash(self):
+        ns: dict = {}
+        exec("from overmind.harness.plugin_api import Plugin, Declaration, API_VERSION\n"
+             "class Ghost(Plugin):\n"
+             "    def declares(self):\n"
+             "        return Declaration('ghost', '1', API_VERSION)\n", ns)
+        with self.assertRaises(PluginError):
+            Pipeline([ns["Ghost"]()], CTX).manifest()
+
+    # load_pipeline
+    def test_a_factory_that_raises_is_a_plugin_error(self):
+        def boom(conf):
+            raise RuntimeError("factory broke")
+        with self.assertRaises(PluginError):
+            load_pipeline(good_config(), {"rec": boom})
+
+    def test_load_pipeline_reads_declares_once_per_plugin(self):
+        calls = []
+
+        class Counted(Recorder):
+            def declares(self):
+                calls.append(1)
+                return super().declares()
+        load_pipeline(good_config(), {"rec": lambda c: Counted("rec")})
+        self.assertEqual(len(calls), 1)
+
+    # R8
+    def test_an_absent_vouch_fact_is_refused_by_the_gate_and_the_pipeline_alike(self):
+        gate = Gate([AllowSenders(frozenset({"send"}), frozenset({"pm"}))], StaticFacts({}), Ledger())
+        want = gate.decide(ToolCall("send", {}, "agent"))
+        got = Pipeline([GatePlugin(gate)], CTX).decide(HarnessCall("send", {}, "agent"))
+        self.assertEqual((want.policy, got.policy), ("unvouched-sender", "unvouched-sender"))
 
 
 if __name__ == "__main__":

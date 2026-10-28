@@ -25,6 +25,8 @@ from typing import Any
 
 def _windows_job(pid: int) -> Any:
     """A kill-on-close Job Object holding process `pid`, or None."""
+    if sys.platform != "win32":                              # also narrows the type checker's platform
+        return None
     import ctypes
     from ctypes import wintypes
 

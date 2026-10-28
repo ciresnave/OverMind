@@ -37,6 +37,11 @@ def _obj(value: Any, where: str, required: tuple[str, ...], optional: tuple[str,
     return value
 
 
+def expect_object(value: Any, where: str, required: tuple[str, ...],
+                  optional: tuple[str, ...] = ()) -> Mapping[str, Any]:
+    return _obj(value, where, required, optional)
+
+
 def _text(value: Any, where: str) -> str:
     """A name, id or path-like string. `type(...) is str` (a subclass could
     override anything), not blank, no control characters, and encodable: a lone

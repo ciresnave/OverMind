@@ -96,7 +96,7 @@ def _do_write(path: str, data: bytes) -> None:
         f.write(data)
 
 
-def _kill_tree(proc: "subprocess.Popen[str]") -> None:
+def kill_process_tree(proc: "subprocess.Popen[str]") -> None:
     """Kill the process AND its children. `Popen.kill` alone leaves grandchildren
     holding the output pipes, so a timeout would block until they exit."""
     if sys.platform == "win32":
@@ -149,7 +149,7 @@ class Primitives:
             try:
                 out, err = proc.communicate(timeout=timeout)
             except subprocess.TimeoutExpired:
-                _kill_tree(proc)
+                kill_process_tree(proc)
                 try:
                     proc.communicate(timeout=5)
                 except subprocess.TimeoutExpired:

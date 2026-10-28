@@ -70,10 +70,14 @@ REGISTRY_SOURCE = textwrap.dedent('''
             if self.conf.get("badrecord"):
                 return {(1, 2): 3}
             if self.conf.get("grandchild"):
+                # stands in for a service the HARNESS launched (its own I/O, so exempt):
+                # a plug-in's own Popen would now be a chokepoint violation
                 import subprocess
-                subprocess.Popen([sys.executable, "-c",
-                                  "import time, pathlib, sys; time.sleep(3); "
-                                  "pathlib.Path(sys.argv[1]).write_text('x')", self.conf["grandchild"]])
+                from overmind.harness.primitives import harness_owned
+                with harness_owned():
+                    subprocess.Popen([sys.executable, "-c",
+                                      "import time, pathlib, sys; time.sleep(3); "
+                                      "pathlib.Path(sys.argv[1]).write_text('x')", self.conf["grandchild"]])
             return {"count": COUNTER["n"], "secret": os.environ.get("P32B_SECRET"),
                     "pid": os.getpid()}
 

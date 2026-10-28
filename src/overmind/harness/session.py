@@ -56,6 +56,10 @@ class SessionError(RuntimeError):
     """The session process failed, died, or sent something unreadable."""
 
 
+class SessionViolation(SessionError):
+    """The session broke the chokepoint (I/O outside a primitive) and was ended."""
+
+
 class SessionRefused(SessionError):
     """The harness refused to start the session (config, plug-in set, a plug-in's own refusal)."""
 
@@ -160,7 +164,7 @@ class SessionHandle:
         a malformed report the session is stopped (killed if need be) and the
         cause raised: a session that cannot be read back is not left running."""
         try:
-            e = self._wait(("loaded", "refused", "error"), timeout)
+            e = self._wait(("loaded", "refused", "error", "violation"), timeout)
         except SessionError:
             self.stop(timeout=0)
             raise
@@ -173,8 +177,10 @@ class SessionHandle:
             self.stop(timeout=0)
             raise SessionError(f"the session process exited (code {code}) before it reported; "
                                f"stderr: {tail!r}")
-        if e["event"] in ("refused", "error"):
+        if e["event"] in ("refused", "error", "violation"):
             self.stop(timeout=1)
+            if e["event"] == "violation":
+                raise SessionViolation(f"chokepoint violation: {e.get('violation')}")
             text = str(e.get("reason") if e["event"] == "refused" else e.get("error"))
             raise (SessionRefused if e["event"] == "refused" else SessionError)(text)
         try:
@@ -182,6 +188,12 @@ class SessionHandle:
         except (KeyError, ConfigError) as exc:
             self.stop(timeout=0)
             raise SessionError(f"the session sent a malformed manifest: {type(exc).__name__}: {exc}") from exc
+
+    @property
+    def violations(self) -> list[dict[str, Any]]:
+        """Chokepoint violations the session reported (it ends after the first)."""
+        with self._cond:
+            return [e["violation"] for e in self._events if e["event"] == "violation"]
 
     def events(self) -> Iterator[dict[str, Any]]:
         """Every accepted event so far, then each new one, until the child has

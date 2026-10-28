@@ -268,7 +268,7 @@ not a fact I can measure:**
 3. **Does this need a second gate policy**, parallel to `WorkspaceConfined`, that inspects `Task`
    itself (not just tool calls made *during* the run) before `run_task` ever starts a subprocess?
 
-**Until one of these is answered, `dispatch.py` and `lanework.py` stay unconnected.** The gap README
+**Until one of these is answered, `dispatch.py` and `lanework.py` stay unconnected.** (**Answered 2026-10-28: see 7.5.**) The gap README
 names is real; wiring it the obvious way would open a different one.
 
 ### 7.1 Update, same day — question 2 has a real answer, on Synapse's `main`, verified against the code
@@ -423,3 +423,31 @@ and is shown to someone, even if it's never auto-merged), not an implementation 
 class of decision §0/§2.4's own "narrating success" discipline requires a real ruling for, not an
 agent's own judgment call. **Not implemented, not scoped further, until CireSnave decides whether this
 mode should exist at all.**
+
+### 7.5 RULED by CireSnave 2026-10-28, relayed by the PM (board 286 q3): questions 1-3 of section 7 have an answer
+
+His words, verbatim as relayed by the PM:
+
+> *"yes...but only in a sandbox. For commands that have effects outside of a sandbox on my system, only pre-defined ones."*
+
+Wiring `dispatch.py` to `lanework.py` is therefore allowed, under one rule with two halves. **The reading below is OverMind's, not his words:**
+
+| a command is... | it runs... | who picks it |
+|---|---|---|
+| **agent-generated** (a dispatch or a model supplies the argv) | **only inside a sandbox**: AntSpawn (`ANTSPAWN-SPEC.md`, command `spawn`), never on this host | the agent |
+| **anything with effects outside a sandbox** on his system (the host, its network, its files outside the task worktree) | **only a pre-defined one**, chosen **by name** from a pre-registered list | the host's registry, never the sender |
+
+Answers to the three questions, under that rule:
+
+1. **Does a dispatched task ever get to supply `check`?** Yes, but only as a command that runs in a sandbox. A dispatched task never supplies an argv that runs on the host; for a host-side effect it names an entry in the registry.
+2. **What proves the sender may be trusted with it?** The rule does not rest on the sender. An unvouched sender (`MEASUREMENTS.md` section 18 measured `sender_vouched` false) can still only reach a sandboxed run or a name in the registry, so `vouched` is no longer what stands between a message and a host command. Which senders may *select* a registry entry is still a separate question, not answered here.
+3. **Does this need a second gate policy that inspects `Task` before `run_task` starts a subprocess?** Yes: the `check-policy` plug-in. It is built for the Phase 3 harness (`ROADMAP.md` A3; plan `docs/superpowers/plans/2026-10-28-phase3-harness.md`), at `on_session_start`, where `Refuse(reason)` stops the session before any process starts.
+
+**What exists today (read at `origin/main` `3c14339`, 2026-10-28).**
+- The pre-defined half already exists for `dispatch_lane_task`: its check comes from `CHECK_TABLE` and `NAMED_CHECK_PROFILES` in `repo_probe.py`, which the module's own comments call "host-owned" and "never a caller-supplied argv" (`repo_probe.py:241-266`). A name selects a fixed entry. Those commands run repo-supplied code on the host (`pytest`, `cargo test`, `npm test` execute whatever is in the checkout, including what the model just wrote), so they **can** have effects outside the clone. They are pre-defined, which is what the rule allows on the host; whether to sandbox them as well is not decided here and goes to the PM (plan P3.5).
+- **The sandbox half exists, in part.** AntSpawn is a real crate (`C:\Projects\antspawn`, read at `origin/main` `0325da0`, 0.0.30), not a spec: a strict TOML job spec (`src/spec.rs`: `[job]` cmd/cwd/env, `[[mount]]` `ro`/`rw`/`scratch`, `[limits]`, `[needs]` network/gpu, `[[output]]`), a launcher registry, a capability matrix (`matrix/launchers.tsv`), and the `spawn` CLI (`check`, `providers`, `matrix`, `run`). Two launchers are built:
+  - **`windows-sandbox`** drives `wsb.exe` (one throwaway VM per job; network and vGPU off; only the declared folders mapped; the job runs as SYSTEM inside the VM). Its matrix rows are `yes` for `isolation.no-read-outside`, `isolation.no-write-outside`, `clean-slate-next-run`, `kills-runaway-process` and `network.off`, each with a known-bad control on the host (`docs/MEASUREMENTS.md`, "windows-sandbox certified", 2026-10-24).
+  - **`account`** runs the job as the local account `antspawn-run` through a scheduled task; same five rows `yes`; its one-time setup is CireSnave's, elevated.
+- **What it cannot yet be said to run** (all from the same `docs/MEASUREMENTS.md`; none re-measured here): `gpu.*` and `concurrent` are `no` ("no probe yet"); start latency, cleanup time and concurrency for `windows-sandbox` are listed as pending; the guest's Smart App Control lets an **unsigned exe start once per VM, then blocks it**, so a check that launches its own unsigned binary twice in one VM will fail; secrets are refused (names only, none implemented); the Windows legs of its own tests are runner-only and **UNVERIFIED in CI**. Whether a Python or Cargo check (toolchain mapped read-only, then `pytest` or `cargo test`) runs at an acceptable cost is **not measured**: the one proof is `slangc` (`tests/slangc_proof.rs`). `spawn` is not on this machine's PATH.
+- **`lanework.Task.check` is still an argv from `task.json` that `_run` executes on the host** (`lanework.py:469-474`): trusted-author only, as section 7 says. Nothing in OverMind calls AntSpawn yet.
+- **So the sandbox seam can be built for real.** The agent-generated half of the policy is: translate a dispatch-supplied check into an AntSpawn job spec (read-only checkout mount, declared outputs, `network = "off"`, limits) and run it with a launcher the matrix certifies for the isolation set, refusing when none does. How OverMind calls it (the `spawn run <spec.toml>` CLI as a subprocess, or a Rust library entry point, which OverMind as Python cannot link) and which launcher it names are open and go to agentlife. Until that seam exists, `check-policy` refuses any `Task` whose check is not what `infer_check` derives, not `DOCS_ONLY_CHECK`, and not a human-written `task.json` (plan P3.5 says how provenance is carried).

@@ -67,6 +67,19 @@ class TestClassify(unittest.TestCase):
         for flag in (os.O_WRONLY, os.O_RDWR, os.O_APPEND, os.O_CREAT, os.O_TRUNC):
             self.assertEqual(chokepoint.classify("open", ("p", None, flag)), "file-write", flag)
 
+    def test_events_an_accident_could_reach_that_the_review_found_unclassified(self):
+        self.assertEqual(chokepoint.classify("os.startfile", ("p",)), "process")
+        self.assertEqual(chokepoint.classify("webbrowser.open", ("u",)), "process")
+        self.assertEqual(chokepoint.classify("os.kill", (1, 9)), "process")
+        self.assertEqual(chokepoint.classify("socket.sendto", ()), "network")
+        self.assertEqual(chokepoint.classify("os.utime", ("p",)), "file-write")
+        self.assertEqual(chokepoint.classify("sqlite3.connect", ("app.db",)), "file-write")
+
+    def test_an_in_memory_database_is_not_a_file_write(self):
+        self.assertIsNone(chokepoint.classify("sqlite3.connect", (":memory:",)))
+        self.assertIsNone(chokepoint.classify("sqlite3.connect", ("",)))
+        self.assertIsNone(chokepoint.classify("sqlite3.connect/handle", (1,)))
+
     def test_reads_and_other_events_are_not_violations(self):
         self.assertIsNone(chokepoint.classify("open", ("p", "r", 0)))
         self.assertIsNone(chokepoint.classify("open", ("p", "rb", 0)))
@@ -88,6 +101,7 @@ class TestCheck(unittest.TestCase):
     def test_armed_outside_a_frame_is_a_violation(self):
         with self.ARMED:
             v = chokepoint.check("subprocess.Popen", ("x",))
+        assert v is not None
         self.assertEqual((v.event, v.category), ("subprocess.Popen", "process"))
         self.assertEqual(v.thread, threading.current_thread().name)
 
@@ -153,6 +167,23 @@ class TestCheck(unittest.TestCase):
         self.assertIsNone(verdicts["service"])
         self.assertIsNotNone(verdicts["plain"])
 
+    def test_a_thread_started_by_a_marked_thread_is_not_itself_marked(self):
+        verdicts = {}
+
+        def grandchild():
+            with self.ARMED:
+                verdicts["grandchild"] = chokepoint.check("subprocess.Popen", ())
+
+        def service_loop():
+            mark_thread_harness_owned()
+            t = threading.Thread(target=grandchild)
+            t.start()
+            t.join()
+        t = threading.Thread(target=service_loop)
+        t.start()
+        t.join()
+        self.assertIsNotNone(verdicts["grandchild"])
+
     def test_plugin_code_never_runs_under_a_harness_owned_mark(self):
         """spec §3: harness-owned frames never call plug-in code. A hook run from
         inside one sees the mark cleared, and it is back afterwards."""
@@ -216,6 +247,17 @@ class TestStaticScan(unittest.TestCase):
         }.items():
             self.assertIn(("banned-os", name), self.kinds(src), src)
 
+    def test_import_os_path_still_binds_os(self):
+        """`import os.path` binds the name `os`: `os.system` after it must be flagged."""
+        self.assertIn(("banned-os", "os.system"), self.kinds("import os.path\nos.system('x')"))
+        self.assertIn(("banned-os", "os.system"), self.kinds("import os.path as p\nimport os\nos.system('x')"))
+
+    def test_os_names_that_merely_start_with_exec_or_spawn_are_not_flagged(self):
+        for name in ("executable", "execute_thing", "spawner", "spawn_helper"):
+            self.assertEqual(self.kinds(f"import os\nx = os.{name}"), [], name)
+        for name in ("execv", "execvp", "execlpe", "spawnl", "spawnvpe"):
+            self.assertIn(("banned-os", f"os.{name}"), self.kinds(f"import os\nos.{name}('a', [])"), name)
+
     def test_star_import_of_os_is_flagged(self):
         self.assertEqual(self.kinds("from os import *")[0][0], "banned-os")
 
@@ -243,6 +285,13 @@ class TestStaticScan(unittest.TestCase):
                            other_plugin_modules={"pkg.sibling.tool"})
         self.assertIn(("other-plugin-import", "pkg.sibling.tool"), kinds)
 
+    def test_the_harness_package_itself_is_not_importable_by_a_plugin(self):
+        for src in ("import overmind.harness", "from overmind import harness",
+                    "import overmind.harness as h"):
+            self.assertIn("harness-internal-import", [k for k, _ in self.kinds(src)], src)
+        self.assertEqual(self.kinds("from overmind.harness import plugin_api"), [])
+        self.assertEqual(self.kinds("from overmind.harness.plugin_api import Plugin"), [])
+
     def test_plugins_may_import_only_plugin_api_from_the_harness(self):
         ok = self.kinds("from .plugin_api import Plugin, Allow", package="overmind.harness")
         self.assertEqual(ok, [])
@@ -257,8 +306,22 @@ class TestStaticScan(unittest.TestCase):
         """These pass the scan on purpose: only the audit hook catches them."""
         for src in ("import asyncio\nasyncio.create_subprocess_exec", "open('f', 'w')",
                     "import pathlib\npathlib.Path('f').write_text('x')",
-                    "__import__('subprocess')", "import smtplib"):
+                    "__import__('subprocess')", "import smtplib",
+                    "import importlib\nimportlib.import_module('subprocess')",
+                    "exec('import subprocess')", "import nt", "x = 1"):
             self.assertEqual(self.kinds(src), [], src)
+
+    def test_a_file_the_importer_would_read_is_read_the_same_way(self):
+        """A UTF-8 BOM (Notepad, PowerShell) and a `# coding:` line are valid Python."""
+        with tempfile.TemporaryDirectory() as tmp:
+            bom = os.path.join(tmp, "bom.py")
+            with open(bom, "wb") as f:
+                f.write(b"\xef\xbb\xbfimport subprocess\n")
+            self.assertEqual([x.kind for x in scan_file(bom)], ["banned-import"])
+            latin = os.path.join(tmp, "latin.py")
+            with open(latin, "wb") as f:
+                f.write(b"# coding: latin-1\nx = '\xe9'\nimport socket\n")
+            self.assertEqual([x.kind for x in scan_file(latin)], ["banned-import"])
 
     def test_a_syntax_error_is_an_error_not_a_pass(self):
         with self.assertRaises(SyntaxError):
@@ -491,15 +554,18 @@ class TestRogueFixtures(RogueFixtureCase):
     def test_d1_a_process_started_through_a_helper_module(self):
         r = self.only("d1_helper_process", "dynamic")
         self.assertEqual(r["violations"][0]["event"], "subprocess.Popen")
+        self.assertIn("-c", r["violations"][0]["args"])
         self.assertEqual(r["returncode"], 4)
 
     def test_d2_smtplib_connects_a_socket_from_on_model_output(self):
         r = self.only("d2_smtplib_socket", "dynamic")
         self.assertEqual(r["violations"][0]["event"], "socket.connect")
+        self.assertIn(str(self.port), r["violations"][0]["args"])
 
     def test_d3_an_effect_that_opens_a_file_for_writing_itself(self):
         r = self.only("d3_effect_open_write", "dynamic")
         self.assertEqual(r["violations"][0]["event"], "open")
+        self.assertIn("effect.txt", r["violations"][0]["args"])
         self.assertFalse(os.path.exists(os.path.join(self.tmp, "effect.txt")),
                          "the audit event fires BEFORE the open: the file must not exist")
 
@@ -527,6 +593,64 @@ class TestRogueFixtures(RogueFixtureCase):
         covered = {n[5:7] for n in dir(self) if n.startswith("test_") and n[5:7] in ("d1", "d2", "d3", "d4", "s1", "p2", "p3")}
         self.assertEqual(covered, {"d1", "d2", "d3", "d4", "s1", "p2", "p3"})
         self.assertEqual({k[:2] for k in FIXTURES}, covered)
+
+
+PLUMBING = textwrap.dedent('''
+    import os, sys, threading, time
+    sys.path[:0] = [sys.argv[1]]
+    sys.dont_write_bytecode = True
+    from overmind.harness import chokepoint
+
+    mode = sys.argv[2]
+    tmp = sys.argv[3]
+    if mode == "report_raises_base":
+        def report(v):
+            raise KeyboardInterrupt()          # a BaseException from the report callback
+        chokepoint.arm(report)
+    elif mode == "stop_returns":
+        chokepoint.arm(lambda v: print("REPORTED " + v["event"], flush=True), stop=lambda: None)
+    else:
+        chokepoint.arm(lambda v: print("REPORTED " + v["event"], flush=True))
+    target = os.path.join(tmp, "created.txt")
+    try:
+        open(target, "w").close()              # a violation, outside any frame
+    except BaseException as exc:               # a hostile or sloppy plug-in swallowing everything
+        print("CAUGHT " + type(exc).__name__, flush=True)
+    try:
+        open(target, "w").close()
+    except BaseException as exc:
+        print("CAUGHT2 " + type(exc).__name__, flush=True)
+    print("SURVIVED " + str(os.path.exists(target)), flush=True)
+''')
+
+
+class TestVerdictPlumbing(unittest.TestCase):
+    def run_mode(self, mode):
+        with tempfile.TemporaryDirectory() as tmp:
+            script = os.path.join(tmp, "plumbing.py")
+            with open(script, "w", encoding="utf-8") as f:
+                f.write(PLUMBING)
+            p = subprocess.run([sys.executable, "-B", "-I", script, SRC, mode, tmp],
+                               capture_output=True, text=True, timeout=60)
+            return p.returncode, p.stdout
+
+    def test_a_report_that_raises_a_baseexception_still_stops_the_process(self):
+        code, out = self.run_mode("report_raises_base")
+        self.assertEqual(code, 4, out)
+        self.assertNotIn("SURVIVED", out)
+
+    def test_the_default_stop_ends_the_process_after_the_report(self):
+        code, out = self.run_mode("default")
+        self.assertEqual(code, 4, out)
+        self.assertIn("REPORTED open", out)
+        self.assertNotIn("CAUGHT", out)
+
+    def test_when_the_stop_handler_returns_the_operation_is_refused_every_time(self):
+        code, out = self.run_mode("stop_returns")
+        self.assertEqual(code, 0, out)
+        self.assertIn("CAUGHT ChokepointViolation", out)
+        self.assertIn("CAUGHT2 ChokepointViolation", out)
+        self.assertIn("SURVIVED False", out)           # the file was never created
 
 
 class TestTheChokepointEndsTheSession(unittest.TestCase):

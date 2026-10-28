@@ -10,16 +10,31 @@ imported (`session_main.main` does); code run at import time is then covered too
 
 DEFAULT DENY. An event of a class below that happens outside a `primitive_frame`
 or a harness-owned frame is a violation: it is reported and the process exits
-(`os._exit`, so no plug-in can catch it and carry on). Each class is an event name
-this repo measured, not one assumed:
+(`os._exit`, so no plug-in can catch it and carry on). The names were measured on
+Python 3.15.0 / Windows (MEASUREMENTS.md §38) except where marked; nothing was
+measured on POSIX or 3.11-3.13 (CI's test matrix is that measurement):
 
   process   subprocess.Popen, _winapi.CreateProcess, os.system, os.spawn,
-            os.posix_spawn, os.exec, os.fork, os.forkpty, pty.spawn
-  network   socket.connect, socket.bind, urllib.Request
+            os.startfile, webbrowser.open, os.kill; NOT measured here: os.posix_spawn,
+            os.exec, os.fork, os.forkpty, pty.spawn (names taken from the Python docs)
+  network   socket.connect, socket.bind, socket.sendto, urllib.Request
   file      `open` that WRITES (by its mode OR its flags, since `os.open` raises
-            the event with mode None), and os.remove/rename/rmdir/mkdir/symlink/
-            link/truncate/chmod/chown
+            the event with mode None), `sqlite3.connect` to anything but
+            ":memory:", and os.remove/rename/rmdir/mkdir/symlink/link/truncate/chmod/
+            utime/mkfifo/mknod; NOT measured here: os.chown
   load      ctypes.dlopen
+
+KNOWN FALSE STOPS, accepted and not worked around (a plug-in does these through a
+primitive or not at all): `import ctypes` itself raises `ctypes.dlopen('kernel32')`
+on Windows; `asyncio.run()` on Windows raises `socket.bind` and `socket.connect`
+(the proactor loop's self-pipe), so a plug-in must not run its own event loop (an
+MCP service's loop thread is harness-owned instead); `tempfile.gettempdir()` probes
+by creating a file; `socket.socketpair()` raises `socket.bind` on Windows.
+
+KNOWN GAPS, not detected by this layer (nothing here sees them; the pipeline and
+review do): `os.putenv`/`os.environ` writes, DNS (`socket.gethostbyname`),
+`mmap`, the `winreg` writers, `_winapi.CreateFile` with write access (raises no
+event at all), UDP via `socket.sendmsg`.
 
 Reads are NOT violations: importing a module opens files, and the interpreter is
 started with bytecode writing off so an import does not write a .pyc.
@@ -46,12 +61,12 @@ from .primitives import in_harness_owned_frame, in_primitive_frame
 
 PROCESS_EVENTS = frozenset({
     "subprocess.Popen", "_winapi.CreateProcess", "os.system", "os.spawn", "os.posix_spawn",
-    "os.exec", "os.fork", "os.forkpty", "pty.spawn",
+    "os.exec", "os.fork", "os.forkpty", "pty.spawn", "os.startfile", "webbrowser.open", "os.kill",
 })
-NETWORK_EVENTS = frozenset({"socket.connect", "socket.bind", "urllib.Request"})
+NETWORK_EVENTS = frozenset({"socket.connect", "socket.bind", "socket.sendto", "urllib.Request"})
 FILE_EVENTS = frozenset({
     "os.remove", "os.rename", "os.rmdir", "os.mkdir", "os.symlink", "os.link", "os.truncate",
-    "os.chmod", "os.chown",
+    "os.chmod", "os.chown", "os.utime", "os.mkfifo", "os.mknod",
 })
 LOAD_EVENTS = frozenset({"ctypes.dlopen"})
 
@@ -81,6 +96,8 @@ def classify(event: str, args: tuple[Any, ...]) -> str | None:
         return "network"
     if event in FILE_EVENTS or (event == "open" and _opens_for_write(args)):
         return "file-write"
+    if event == "sqlite3.connect" and args and args[0] not in (":memory:", "", None):
+        return "file-write"                           # creating or opening a database file
     if event in LOAD_EVENTS:
         return "load"
     return None
@@ -139,11 +156,11 @@ def _audit(event: str, args: tuple[Any, ...]) -> None:
         return
     _reentry.busy = True
     try:
-        if _report is not None:
-            try:
+        try:
+            if _report is not None:
                 _report(asdict(violation))
-            except Exception:                         # noqa: BLE001 - the stop still happens
-                pass
+        except BaseException:                         # noqa: BLE001 - whatever the report did, the stop happens
+            pass
         (_stop or _hard_stop)()
     finally:
         _reentry.busy = False

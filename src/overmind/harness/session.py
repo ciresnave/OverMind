@@ -69,6 +69,8 @@ class StopResult:
     records: dict[str, Any]
     returncode: int | None
     killed: bool
+    #: chokepoint violations the session reported (it ends after the first)
+    violations: tuple[dict[str, Any], ...] = ()
 
 
 def default_child_env() -> dict[str, str]:
@@ -160,7 +162,11 @@ class SessionHandle:
         return self._proc.poll()
 
     def loaded(self, timeout: float = 30.0) -> LoadedManifest:
-        """The manifest the harness reports. On a refusal, an error, a silence or
+        """The manifest the harness reports. ⚠️ A session can pass this and then violate
+        the chokepoint (a plug-in thread that fires a moment later): a returned
+        manifest is not a promise the session is still alive. The orchestrator
+        watches `violations`, `events()` and `returncode` for the life of the session.
+ On a refusal, an error, a silence or
         a malformed report the session is stopped (killed if need be) and the
         cause raised: a session that cannot be read back is not left running."""
         try:
@@ -175,6 +181,9 @@ class SessionHandle:
                 code = None
             tail = self._stderr_tail()
             self.stop(timeout=0)
+            if code == 4:
+                raise SessionViolation("the session ended with a chokepoint violation (exit code 4) "
+                                       "and its report did not arrive")
             raise SessionError(f"the session process exited (code {code}) before it reported; "
                                f"stderr: {tail!r}")
         if e["event"] in ("refused", "error", "violation"):
@@ -251,7 +260,7 @@ class SessionHandle:
                     os.unlink(self._stderr_path)
                 except OSError:
                     pass
-                self._stopped = StopResult(records, self._proc.poll(), killed)
+                self._stopped = StopResult(records, self._proc.poll(), killed, tuple(self.violations))
             return self._stopped
 
     def __enter__(self) -> "SessionHandle":

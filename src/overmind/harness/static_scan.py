@@ -15,9 +15,11 @@ Flags:
 ⚠️ What it does NOT catch, by design, and the dynamic layer's job (chokepoint.py):
 `import asyncio` + `asyncio.create_subprocess_exec`, `os.posix_spawn` through an
 alias this scan does not track, a third-party HTTP library, `open(..., "w")`,
-`pathlib` writes, `__import__("subprocess")`, I/O done by a helper module outside
-the plug-in package. A scan that passes a module says "no direct route", never
-"no I/O".
+`pathlib` writes, `__import__("subprocess")`, `importlib.import_module("subprocess")`,
+`exec`/`eval`, `import nt` / `posix` / `_winapi` / `_socket` / `pty`, `x = os; x.system`,
+`getattr(os, "system")`, `import http; http.client`, I/O done by a helper module
+outside the plug-in package. A scan that passes a module says "no direct route",
+never "no I/O".
 """
 
 from __future__ import annotations
@@ -29,8 +31,9 @@ from typing import Iterable
 
 BANNED_MODULES = ("subprocess", "socket", "urllib", "http.client", "ctypes", "multiprocessing",
                   "asyncio.subprocess")
-_OS_EXACT = frozenset({"system", "popen", "posix_spawn", "posix_spawnp", "fork", "forkpty"})
-_OS_PREFIXES = ("spawn", "exec")
+_VARIANTS = ("l", "le", "lp", "lpe", "v", "ve", "vp", "vpe")
+_OS_EXACT = frozenset({"system", "popen", "posix_spawn", "posix_spawnp", "fork", "forkpty"}
+                      | {"spawn" + v for v in _VARIANTS} | {"exec" + v for v in _VARIANTS})
 _HARNESS_PUBLIC = frozenset({"overmind.harness.plugin_api"})
 
 
@@ -50,7 +53,7 @@ def _banned_module(name: str) -> str | None:
 
 
 def _banned_os(name: str) -> bool:
-    return name in _OS_EXACT or name.startswith(_OS_PREFIXES)
+    return name in _OS_EXACT
 
 
 def _resolve(module: str | None, level: int, package: str) -> str:
@@ -62,7 +65,7 @@ def _resolve(module: str | None, level: int, package: str) -> str:
     return ".".join(base + ([module] if module else []))
 
 
-def scan_source(source: str, filename: str = "<plug-in>", *, package: str = "",
+def scan_source(source: str | bytes, filename: str = "<plug-in>", *, package: str = "",
                 other_plugin_modules: Iterable[str] = ()) -> list[Finding]:
     """`package` is the dotted package the module lives in (to resolve relative
     imports); `other_plugin_modules` are the dotted names of OTHER plug-ins' modules."""
@@ -73,7 +76,7 @@ def scan_source(source: str, filename: str = "<plug-in>", *, package: str = "",
     def add(node: ast.AST, kind: str, detail: str) -> None:
         findings.append(Finding(filename, getattr(node, "lineno", 0), kind, detail))
 
-    def check_module(node: ast.AST, dotted: str) -> None:
+    def check_module(node: ast.AST, dotted: str, *, from_package: bool = False) -> None:
         banned = _banned_module(dotted)
         if banned:
             add(node, "banned-import", f"{dotted} ({banned} is I/O)")
@@ -82,17 +85,20 @@ def scan_source(source: str, filename: str = "<plug-in>", *, package: str = "",
         public = any(dotted == p or dotted.startswith(p + ".") for p in _HARNESS_PUBLIC)
         if dotted.startswith("overmind.harness.") and not public:
             add(node, "harness-internal-import", dotted)
+        elif dotted == "overmind.harness" and not from_package:
+            # `import overmind.harness` / `from overmind import harness` reach every internal
+            add(node, "harness-internal-import", f"{dotted} (the package itself)")
 
     tree = ast.parse(source, filename)
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
                 check_module(node, alias.name)
-                if alias.name == "os":
-                    os_names.add(alias.asname or "os")
+                if alias.name == "os" or (alias.name.startswith("os.") and alias.asname is None):
+                    os_names.add(alias.asname or "os")        # `import os.path` binds `os` too
         elif isinstance(node, ast.ImportFrom):
             dotted = _resolve(node.module, node.level, package)
-            check_module(node, dotted)
+            check_module(node, dotted, from_package=True)
             for alias in node.names:
                 # `from http import client`, `from asyncio import subprocess`, `from pkg import tool_module`
                 if alias.name != "*":
@@ -115,5 +121,6 @@ def scan_source(source: str, filename: str = "<plug-in>", *, package: str = "",
 def scan_file(path: str | Path, *, package: str = "",
               other_plugin_modules: Iterable[str] = ()) -> list[Finding]:
     p = Path(path)
-    return scan_source(p.read_text(encoding="utf-8"), str(p), package=package,
+    # bytes, so a BOM or a `# coding:` line is honoured exactly as the importer would
+    return scan_source(p.read_bytes(), str(p), package=package,
                        other_plugin_modules=other_plugin_modules)

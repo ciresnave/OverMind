@@ -108,13 +108,21 @@ MODULES: frozenset[str] = frozenset({
     "ledger", "mcp_tools", "outcome", "providers", "quota", "repo_probe",
     # the harness subpackage (plan P3.1): "pkg/mod" names, scanned below
     "harness/__init__", "harness/config", "harness/manifest",
+    "harness/plugin_api", "harness/primitives", "harness/pipeline", "harness/gate_plugin",
 })
 
 # Edges INSIDE the harness package, plus edges from it to the flat modules.
-# P3.1 is pure data: it imports nothing from the flat modules, and only
-# manifest -> config inside the package.
+# Only `gate_plugin` (the Gate adapter) reaches a flat module, and only `gate`:
+# the pipeline and the primitives import nothing outside the package.
 HARNESS_ALLOWED: frozenset[tuple[str, str]] = frozenset({
     ("harness/manifest", "harness/config"),   # manifest.py: `from .config import ...`
+    ("harness/primitives", "harness/plugin_api"),
+    ("harness/pipeline", "harness/config"),
+    ("harness/pipeline", "harness/manifest"),
+    ("harness/pipeline", "harness/plugin_api"),
+    ("harness/pipeline", "harness/primitives"),
+    ("harness/gate_plugin", "harness/plugin_api"),
+    ("harness/gate_plugin", "gate"),          # the Gate adapter: the one place harness meets a flat module
 })
 
 

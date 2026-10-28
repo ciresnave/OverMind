@@ -7,7 +7,8 @@ writes (same `seq`, decision, `executed`, `repr(result)[:500]`, error), so
 everything that reads a `Ledger` reads this one unchanged.
 
 The ledger is evidence, and `result` here is what the model was shown (after any
-redaction), so the record never holds more than the model saw. `facts()` is the
+redaction); `error` is the raw exception text, as `GatedExecutor` records it,
+and redaction does not touch it. `facts()` is the
 live `executed_tools` source a `Gate` needs for `RequirePrecondition`; wiring it
 into `GatePlugin` is the `run_agent` move, a later piece.
 """

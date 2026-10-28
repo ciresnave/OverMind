@@ -73,11 +73,12 @@ class TestLedgerPlugin(unittest.TestCase):
         self.assertEqual(lp.ledger.executed_tools(), ("read", "read"))   # an errored call did not succeed
 
     def test_facts_are_live(self):
+        from overmind.gate import LedgerEntry, ToolCall, Decision
         lp = LedgerPlugin()
         facts = lp.facts()
         self.assertEqual(facts.fact("executed_tools"), ())
-        _, lp2 = self._both()
-        self.assertIn("read", lp2.facts().fact("executed_tools"))
+        lp.ledger.append(LedgerEntry(0, ToolCall("read", {}), Decision.allow(), executed=True))
+        self.assertEqual(facts.fact("executed_tools"), ("read",))   # same facts object, later append
 
     def test_on_stop_summary(self):
         _, lp = self._both()

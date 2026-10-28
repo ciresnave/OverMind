@@ -25,6 +25,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import inspect
+from dataclasses import replace
 from typing import Any, Callable, Iterable, Mapping
 
 from .config import ConfigError, SessionConfig, check_text
@@ -34,6 +35,12 @@ from .plugin_api import (
     Plugin, PipelineOutcome, Redact, Refuse, Rewrite, SessionContext, Stop, ToolSpec,
 )
 from .primitives import Primitives, allowing, cleared
+
+
+#: `Pipeline.stop` key for observer failures; no plug-in may take this name.
+OBSERVER_ERRORS_KEY = "<observer-errors>"
+#: Observer failures kept in full; the rest are counted.
+MAX_OBSERVER_ERRORS = 100
 
 
 class PluginError(ValueError):
@@ -69,6 +76,8 @@ def _check_declaration(decl: Any) -> Declaration:
         check_text(decl.version, f"plug-in {decl.name!r} version")
     except ConfigError as exc:
         raise PluginError(str(exc)) from None
+    if decl.name == OBSERVER_ERRORS_KEY:
+        raise PluginError(f"plug-in name {decl.name!r} is reserved")
     if type(decl.api_version) is not int:
         raise PluginError(f"plug-in {decl.name!r}: api_version must be an integer")
     if type(decl.tools) is not tuple or not all(type(t) is ToolSpec for t in decl.tools):
@@ -122,6 +131,7 @@ class Pipeline:
         self._decl: dict[int, Declaration] = {}
         self._tools: dict[str, ToolSpec] = {}
         self._observer_errors: list[str] = []
+        self._observer_errors_dropped = 0
         names: list[str] = []
         owners: dict[str, str] = {}
         for plugin in self._plugins:
@@ -230,14 +240,35 @@ class Pipeline:
         but a broken one is never silent."""
         return tuple(self._observer_errors)
 
+    @property
+    def observer_errors_dropped(self) -> int:
+        """Errors past `MAX_OBSERVER_ERRORS`, counted not kept."""
+        return self._observer_errors_dropped
+
+    def _note_observer_error(self, message: str) -> None:
+        if len(self._observer_errors) < MAX_OBSERVER_ERRORS:
+            self._observer_errors.append(message)
+        else:
+            self._observer_errors_dropped += 1
+
     def _observe(self, outcome: PipelineOutcome) -> None:
+        # ⚠️ An uncopyable result (a lock, a handle, a generator) must not hide an
+        # executed call from the ledger: observers get its repr instead.
+        try:
+            copy.deepcopy(outcome)
+            safe = outcome
+        except Exception as exc:                      # noqa: BLE001
+            self._note_observer_error(
+                f"outcome of {outcome.call.name!r} is not copyable ({type(exc).__name__}); "
+                f"observers were given repr(result)")
+            safe = replace(outcome, result=repr(outcome.result))
         for plugin in self._plugins:
             name = self._decl[id(plugin)].name
             with cleared():
                 try:
-                    plugin.on_tool_outcome(self._ctx, copy.deepcopy(outcome))
+                    plugin.on_tool_outcome(self._ctx, copy.deepcopy(safe))
                 except Exception as exc:              # noqa: BLE001 - recorded, decision unchanged
-                    self._observer_errors.append(
+                    self._note_observer_error(
                         f"plug-in {name!r} on_tool_outcome raised {type(exc).__name__}: {exc}")
 
     def execute(self, name: str, arguments: Mapping[str, Any] | None = None,
@@ -291,7 +322,9 @@ class Pipeline:
                 except Exception as exc:              # noqa: BLE001
                     out[name] = {"error": f"{type(exc).__name__}: {exc}"}
         if self._observer_errors:
-            out["<observer-errors>"] = list(self._observer_errors)
+            out[OBSERVER_ERRORS_KEY] = list(self._observer_errors)
+            if self._observer_errors_dropped:
+                out[OBSERVER_ERRORS_KEY].append(f"... and {self._observer_errors_dropped} more")
         return out
 
     # -- what loaded -------------------------------------------------------------

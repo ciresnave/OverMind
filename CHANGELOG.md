@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.14.22 (A3 P3.4: the ledger plug-in, 2026-10-28; provisional number)
+
+- Added: `Plugin.on_tool_outcome(ctx, PipelineOutcome)`, an eighth, observe-only hook (PM ruling 2026-10-28; `API_VERSION` stays 1; spec section 2 table row added). It sees every submitted call, denied ones included, with a private frozen copy; its return value is ignored; a raising observer is recorded in `Pipeline.observer_errors` (capped at 100, then counted) and shown by `Pipeline.stop` under the reserved key `<observer-errors>`. An uncopyable result reaches observers as its `repr`.
+- Added: `harness.ledger_plugin.LedgerPlugin`, `gate.Ledger` as a plug-in; a differential test shows it writes the same rows as `GatedExecutor`. `PipelineOutcome` moved to `plugin_api`.
+- NOT done: `run_agent` still uses `GatedExecutor`; the plug-in is not in the default registry; workspace-tools, fork and MCP plug-ins follow. `error` is raw exception text, as before.
+
 ## 0.14.21 (A3 P3.3: the chokepoint, 2026-10-28; provisional number)
 
 - `overmind.harness.chokepoint` (the dynamic layer: one audit hook, armed once and never disarmed, default deny for process, network, file-write and `ctypes.dlopen` events outside a `primitive_frame` or a harness-owned frame; a violation is reported and the process exits with code 4), `static_scan` (the static layer: the direct routes to I/O in a plug-in module, imports of another plug-in's tool module, and of harness internals) and, in `primitives`, `harness_owned()` / `mark_thread_harness_owned()` (the harness's own I/O; `cleared()` clears the mark so plug-in code never runs under it). `session_main` arms the hook first, before any registry or plug-in is imported, with bytecode writing off; `SessionHandle.violations` and `SessionViolation` report it. Nothing else calls `spawn` yet, so only a spawned session is affected.

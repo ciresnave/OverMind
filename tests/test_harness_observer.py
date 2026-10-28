@@ -14,7 +14,7 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-from overmind.harness.pipeline import Pipeline  # noqa: E402
+from overmind.harness.pipeline import MAX_OBSERVER_ERRORS, Pipeline, PluginError  # noqa: E402
 from overmind.harness.plugin_api import (  # noqa: E402
     API_VERSION, Allow, Declaration, Deny, NoOpinion, PipelineOutcome, Plugin, Redact,
     SessionContext, ToolSpec,
@@ -151,6 +151,36 @@ class TestOutcomeHook(unittest.TestCase):
         p = Pipeline([Policy(Allow()), Observer()], CTX)
         p.execute("t")
         self.assertNotIn("<observer-errors>", p.stop(None))
+
+    def test_uncopyable_result_still_reaches_observers(self):
+        import threading
+        obs = Observer()
+        p = Pipeline([Policy(Allow(), [tool("t", lambda prim: threading.Lock())]), obs], CTX)
+        out = p.execute("t")
+        self.assertTrue(out.executed)
+        self.assertEqual(len(obs.seen), 1)
+        self.assertTrue(obs.seen[0].executed)
+        self.assertIn("lock", obs.seen[0].result)          # the repr
+        self.assertEqual(len(p.observer_errors), 1)
+
+    def test_reserved_plugin_name_is_refused(self):
+        class Squatter(Plugin):
+            def declares(self):
+                return Declaration("<observer-errors>", "1", API_VERSION)
+
+        with self.assertRaises(PluginError):
+            Pipeline([Squatter()], CTX)
+
+    def test_observer_errors_are_capped_and_counted(self):
+        def raises(o):
+            raise ValueError("x")
+
+        p = Pipeline([Policy(Deny("n")), Observer("bad", raises)], CTX)
+        for _ in range(MAX_OBSERVER_ERRORS + 5):
+            p.execute("t")
+        self.assertEqual(len(p.observer_errors), MAX_OBSERVER_ERRORS)
+        self.assertEqual(p.observer_errors_dropped, 5)
+        self.assertIn("5 more", p.stop(None)["<observer-errors>"][-1])
 
     def test_base_plugin_default_is_a_noop(self):
         self.assertIsNone(Plugin.on_tool_outcome(Observer(), CTX, None))  # type: ignore[arg-type]

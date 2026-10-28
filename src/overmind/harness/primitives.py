@@ -57,6 +57,31 @@ def in_primitive_frame() -> bool:
     return primitive_frame() is not None
 
 
+def in_harness_owned_frame() -> bool:
+    """True while the harness's OWN I/O runs on this thread (the model call, a
+    service launch, the ledger) or on a thread the harness marked for its life.
+    Never true while plug-in code runs: `cleared()` clears it."""
+    return bool(getattr(_state, "owned", False))
+
+
+@contextmanager
+def harness_owned() -> Iterator[None]:
+    """Mark the harness's own I/O. ⚠️ Never wrap a call into plug-in code: spec §3,
+    "harness-owned frames never call plug-in code" (the pipeline clears it for hooks)."""
+    previous = in_harness_owned_frame()
+    _state.owned = True
+    try:
+        yield
+    finally:
+        _state.owned = previous
+
+
+def mark_thread_harness_owned() -> None:
+    """For the first line of a thread the HARNESS starts (a service's loop): the
+    mark lives as long as the thread. A thread a plug-in starts never has it."""
+    _state.owned = True
+
+
 @contextmanager
 def allowing(call: HarnessCall) -> Iterator[None]:
     """Set the allowance for the duration of one allowed call's effect."""
@@ -74,11 +99,14 @@ def cleared() -> Iterator[None]:
     restoring it after (a fork's child pipeline nests inside the parent's
     allowed call)."""
     previous = allowed_call()
+    previous_owned = in_harness_owned_frame()
     _state.allowed = None
+    _state.owned = False
     try:
         yield
     finally:
         _state.allowed = previous
+        _state.owned = previous_owned
 
 
 @contextmanager

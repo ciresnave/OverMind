@@ -22,12 +22,12 @@ bypass, not a hostile plug-in):
     reads fd 0 can consume the `stop` command; one that closes fd 0 ends the
     command loop (reported as an `error` event and exit 1, not a crash).
 
-The arming point for the audit hook (plan P3.3) is the top of `main`: it must run
-before `load_pipeline` imports a registry or any plug-in module. Nothing here
-arms it yet.
+The audit hook (chokepoint.py) is armed in `main` before `load_pipeline` imports a
+registry or any plug-in module. A violation reports a `violation` event and ends
+the process with exit code 4.
 
 Exit codes: 0 stopped (or parent gone), 2 refused (config, plug-in set, or a
-plug-in's `on_session_start`), 1 any other failure.
+plug-in's `on_session_start`), 4 chokepoint violation, 1 any other failure.
 """
 
 from __future__ import annotations
@@ -38,6 +38,7 @@ import os
 import sys
 from typing import Any, Mapping, TextIO
 
+from . import chokepoint
 from .config import ConfigError, SessionConfig
 from .pipeline import PluginError, load_pipeline
 from .plugin_api import Refuse
@@ -93,6 +94,12 @@ def main(argv: list[str]) -> int:
 
     def emit(event: dict[str, Any]) -> None:
         _emit(proto, nonce, event)
+
+    # ARMED FIRST: before the registry or any plug-in module is imported, so code run
+    # at import time is covered, and a violation anywhere ends this process (code 4).
+    # Bytecode writing is off so an import is not itself a file write.
+    sys.dont_write_bytecode = True
+    chokepoint.arm(lambda violation: emit({"event": "violation", "violation": violation}))
 
     try:
         config = SessionConfig.from_json(sys.stdin.readline())

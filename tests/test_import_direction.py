@@ -110,6 +110,7 @@ MODULES: frozenset[str] = frozenset({
     "harness/__init__", "harness/config", "harness/manifest",
     "harness/plugin_api", "harness/primitives", "harness/pipeline", "harness/gate_plugin",
     "harness/session", "harness/session_main", "harness/registry", "harness/proctree",
+    "harness/chokepoint", "harness/static_scan",
 })
 
 # Edges INSIDE the harness package, plus edges from it to the flat modules.
@@ -132,6 +133,8 @@ HARNESS_ALLOWED: frozenset[tuple[str, str]] = frozenset({
     ("harness/session_main", "harness/pipeline"),
     ("harness/session_main", "harness/plugin_api"),
     ("harness/registry", "harness/plugin_api"),
+    ("harness/chokepoint", "harness/primitives"),
+    ("harness/session_main", "harness/chokepoint"),
 })
 
 

@@ -2300,3 +2300,42 @@ Read by a Sonnet subagent through WebFetch, which summarises pages with a small 
 | NVIDIA NIM | **none**: the FAQ (seen only through a search summary, not fetched) says calls are limited to "evaluation and prototyping" and to check the account page; forum posts say 40 RPM (unofficial, no daily figure) | forums.developer.nvidia.com/t/nvidia-nim-faq/300317 (not checked) |
 
 Next step if CireSnave wants the three numbers: open Groq's Free Plan tab and `console.groq.com/settings/limits` while logged in, and the AI Studio rate-limit view. Neither is readable by a lane without a login.
+
+---
+
+## 38. 🟢🟡 AUDIT-HOOK FACTS FOR THE CHOKEPOINT (plan P3.3) — the events are the ones the spec names; harness-owned marking is feasible for an MCP session, but it is not built for it yet
+
+**Measured 2026-10-28 on Python 3.15.0, Windows 11, `mcp` 2.3.0.** Two throwaway scripts (an armed recording hook, nothing stopped) ran each route once; the numbers are what they printed. Python 3.11-3.13 and POSIX were NOT measured here: the new test suite runs on both in CI, which is the continuing measurement, and any event name that differs there will fail a named test.
+
+**1. An audit hook cannot be removed.** `sys` has `addaudithook` and `audit`, nothing else (`hasattr(sys, "removeaudithook")` is `False`). The spec's "armed once, never disarmed" is therefore a fact about the interpreter, not a promise.
+
+**2. Which events the routes raise** (the spec's ASSUMED line "these audit events cover the cases"):
+
+| route | events seen (outside plain reads and `os.listdir` noise) | thread |
+|---|---|---|
+| `subprocess.run`, `__import__("subprocess").run` | `subprocess.Popen`, `_winapi.CreateProcess` | caller's |
+| `os.system` / `os.popen` / `os.spawnv` | `os.system` / `subprocess.Popen` + `_winapi.CreateProcess` + `_winapi.CreatePipe` + `open` / `os.spawn` | caller's |
+| `open(p, "w"/"wb"/"a")`, `pathlib.Path.write_text` | `open` | caller's |
+| `os.open(p, O_WRONLY \| O_CREAT)` | `open` (mode is `None`, the flags carry the write) | caller's |
+| `shutil.copy`, `os.remove` | `open`, `os.chmod`, `shutil.copyfile`, `shutil.copymode` / `os.remove` | caller's |
+| `socket.create_connection`, `smtplib.SMTP(...)`, `http.client`, `urllib.request.urlopen` | `socket.connect` (plus `socket.__new__`, `socket.getaddrinfo`; `http.client.connect`/`send` and `urllib.Request` for those two) | caller's |
+| `asyncio.create_subprocess_exec` | `subprocess.Popen`, `_winapi.CreateProcess`, and **`socket.bind` + `socket.connect`** (the proactor loop's own self-pipe, on any new event loop) | caller's |
+| `ctypes.WinDLL(...)` | `ctypes.dlopen`, `ctypes.dlsym` (⚠️ `import ctypes` ITSELF raises `ctypes.dlopen('kernel32')` on Windows: found by review, not by this script) | caller's |
+| a thread started by the route | the events carry the WORKER thread's name (`worker`), so I/O from a thread a plug-in starts is attributable and has no frame | worker |
+| `threading.Thread(...).start()`, `multiprocessing` (not started) | no event | - |
+
+All four of the spec's "only the dynamic layer catches" fixtures have an event: `subprocess.Popen` (helper module), `socket.connect` (`smtplib`), `open` with a write mode (effect function), `socket.connect` from a thread with no frame. A new thread does not inherit a frame (thread-local state), also measured by the tests.
+
+**3. The spec's ASSUMED line "the harness can mark all of its own I/O as harness-owned, third-party libraries included, without false stops".** Measured on the one third-party path that is hard: a real MCP stdio session through `overmind.mcp_tools.McpToolSource` (open, one tool call, close) against a stub `MCPServer`. Recording, per thread:
+
+| thread | events |
+|---|---|
+| `MainThread` (inside `open()`) | `ctypes.dlopen` x2, `socket.bind` x1, `socket.connect` x1 (the new event loop and the SDK's own start-up) |
+| `overmind-mcp` (the loop thread `open()` starts) | `subprocess.Popen` x1, `_winapi.CreateProcess` x1 |
+| any other thread | none: no anyio worker thread, no executor thread; only `MainThread` was alive at exit |
+
+So marking is feasible without false stops **if** `McpToolSource.open()`/`close()` run inside `harness_owned()` and the loop thread calls `mark_thread_harness_owned()` as its first line. **Not built for MCP yet** (`McpToolSource` still starts its thread unmarked; plan P3.4 turns MCP into a service and does it). Not measured: the provider HTTP path (urllib in the calling thread, expected exempt by a frame), `expect_channels`, other `mcp` versions, POSIX.
+
+**Found by the P3.3 review, run on the built hook (a real armed session, 133 stdlib/overmind modules imported lazily under it):** reads are clean except `import ctypes` (a false stop on Windows, accepted); `asyncio.run()` on Windows raises `socket.bind` + `socket.connect`, `tempfile.gettempdir()` probes by creating a file, `socket.socketpair()` raises `socket.bind`: all false stops, accepted and listed in `chokepoint.py`. Routes that raised NO classified event and were added: `sqlite3.connect` (to a file), `socket.sendto`, `os.startfile`, `webbrowser.open`, `os.kill`, `os.utime`, `os.mkfifo`, `os.mknod`. Still not detected (documented as gaps): `os.putenv`, DNS, `mmap`, `winreg` writers, `_winapi.CreateFile` (no event at all), `socket.sendmsg`. **Event names NOT measured on this box** (taken from the Python documentation): `os.exec`, `os.fork`, `os.forkpty`, `pty.spawn`, `os.posix_spawn`, `os.chown`.
+
+**What was built from this** (`harness/chokepoint.py`, `static_scan.py`, `primitives.py`): the violation classes are the event names above (process, network, file write by mode OR flags, `ctypes.dlopen`); reads are not violations; the session child sets `sys.dont_write_bytecode` so an import is not a `.pyc` write; the hook is armed at the top of `session_main.main` and a violation reports and exits with code 4.

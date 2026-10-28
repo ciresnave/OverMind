@@ -22,7 +22,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from overmind.harness.config import ConfigError, SessionConfig  # noqa: E402
 from overmind.harness.manifest import LoadedManifest, PluginRecord, compare  # noqa: E402
-from overmind.harness.session import SessionError, SessionRefused, spawn  # noqa: E402
+from overmind.harness.session import SessionError, SessionRefused, SessionViolation, spawn  # noqa: E402
 
 REGISTRY_SOURCE = textwrap.dedent('''
     import os, sys, time
@@ -54,6 +54,18 @@ REGISTRY_SOURCE = textwrap.dedent('''
                 time.sleep(600)
             if conf.get("die"):
                 os._exit(3)
+            if conf.get("die4"):
+                os._exit(4)                          # exit code 4 with no violation event
+            if conf.get("late_thread"):
+                import smtplib, threading
+                port = conf["late_thread"]
+                def later():
+                    time.sleep(1.5)                  # after loaded() has returned
+                    try:
+                        smtplib.SMTP("127.0.0.1", port, timeout=2)
+                    except Exception:
+                        pass
+                threading.Thread(target=later).start()
 
         def declares(self):
             tools = (ToolSpec("t", {"type": "object"}, lambda prims, **kw: 1),)
@@ -70,10 +82,14 @@ REGISTRY_SOURCE = textwrap.dedent('''
             if self.conf.get("badrecord"):
                 return {(1, 2): 3}
             if self.conf.get("grandchild"):
+                # stands in for a service the HARNESS launched (its own I/O, so exempt):
+                # a plug-in's own Popen would now be a chokepoint violation
                 import subprocess
-                subprocess.Popen([sys.executable, "-c",
-                                  "import time, pathlib, sys; time.sleep(3); "
-                                  "pathlib.Path(sys.argv[1]).write_text('x')", self.conf["grandchild"]])
+                from overmind.harness.primitives import harness_owned
+                with harness_owned():
+                    subprocess.Popen([sys.executable, "-c",
+                                      "import time, pathlib, sys; time.sleep(3); "
+                                      "pathlib.Path(sys.argv[1]).write_text('x')", self.conf["grandchild"]])
             return {"count": COUNTER["n"], "secret": os.environ.get("P32B_SECRET"),
                     "pid": os.getpid()}
 
@@ -265,6 +281,35 @@ class TestRobustness(SessionTestCase):
         self.assertTrue(os.path.exists(path))
         h.stop()
         self.assertFalse(os.path.exists(path))
+
+
+class TestViolations(SessionTestCase):
+    def test_a_violation_after_loaded_is_reported_by_the_handle_not_by_loaded(self):
+        """`loaded()` passes, then a thread a plug-in started violates the chokepoint.
+        The handle must say so: `violations`, `returncode` 4, and `stop()`'s result."""
+        import socket
+        srv = socket.socket()
+        srv.bind(("127.0.0.1", 0))
+        srv.listen(5)
+        self.addCleanup(srv.close)
+        h = self.start({"late_thread": srv.getsockname()[1]})
+        h.loaded()                                           # returned: the session was alive
+        deadline = time.time() + 15
+        while not h.violations and time.time() < deadline:
+            time.sleep(0.1)
+        self.assertEqual([v["event"] for v in h.violations], ["socket.connect"])
+        while h.returncode is None and time.time() < deadline:
+            time.sleep(0.1)
+        self.assertEqual(h.returncode, 4)
+        result = h.stop()
+        self.assertEqual(len(result.violations), 1)
+        self.assertEqual(result.returncode, 4)
+
+    def test_exit_code_4_with_no_report_is_still_a_violation_not_a_plain_crash(self):
+        h = self.start({"die4": True})
+        with self.assertRaises(SessionViolation) as cm:
+            h.loaded()
+        self.assertIn("report did not arrive", str(cm.exception))
 
 
 class TestStop(SessionTestCase):

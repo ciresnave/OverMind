@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.14.17 (A3 plan and the sandbox policy, 2026-10-28; provisional number)
+
+- docs only: `DESIGN-PROPOSAL.md` 7.5 records CireSnave's 2026-10-28 ruling on section 7's questions 1-3 (agent-generated commands only in a sandbox; anything with effects outside one only from a pre-defined list), with what exists today (AntSpawn is a real crate with two certified launchers; the sandbox seam is plan step P3.7). `docs/superpowers/plans/2026-10-28-phase3-harness.md` plans ROADMAP A3 (his 2026-10-25 "Build the harness/plug-in API") as PRs P3.1-P3.7; nothing is built. ROADMAP rows A3, C2, D9 updated. No code change.
+
 ## 0.14.16 (CireSnave-asleep rulings recorded, 2026-10-25; provisional number)
 
 - docs only: `ROADMAP.md` section 6 records the PM's rulings of 2026-10-25 on 11 of the 15 audit calls, A10 and D9 only for their `CLAUDE.md` half (A3 defer, B3 no-go, D6 free-tier retry first, E1 read docs, E4 16k, E5 no, E6 skip, E7 to synapse, F1 MIT OR Apache-2.0 in agentlife); B7, C2(a,b), D5, A5 stay CireSnave's, as do D5 and the dispatch-wiring half of D9. `MEASUREMENTS.md` section 37 holds the E1 docs reading (Cloudflare and OpenRouter publish a daily number; Groq, Gemini, NVIDIA: none readable). agentlife#175 opened for F1. No code change.

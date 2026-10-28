@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.14.18 (A3 P3.1: SessionConfig and LoadedManifest, 2026-10-28; provisional number)
+
+- `overmind.harness.config` (`SessionConfig`: strict, refuses an unknown `schema_version`, unknown or missing fields and wrong types, `true` is not a number) and `overmind.harness.manifest` (`LoadedManifest`, `source_sha256`, `compare`: every difference, not the first). Pure data, stdlib only; nothing calls them yet, so no behaviour changes. `tests/test_import_direction.py` now scans the `harness/` subpackage too. Plan: `docs/superpowers/plans/2026-10-28-phase3-harness.md` P3.1.
+
 ## 0.14.17 (A3 plan and the sandbox policy, 2026-10-28; provisional number)
 
 - docs only: `DESIGN-PROPOSAL.md` 7.5 records CireSnave's 2026-10-28 ruling on section 7's questions 1-3 (agent-generated commands only in a sandbox; anything with effects outside one only from a pre-defined list), with what exists today (AntSpawn is a real crate with two certified launchers; the sandbox seam is plan step P3.7). `docs/superpowers/plans/2026-10-28-phase3-harness.md` plans ROADMAP A3 (his 2026-10-25 "Build the harness/plug-in API") as PRs P3.1-P3.7; nothing is built. ROADMAP rows A3, C2, D9 updated. No code change.

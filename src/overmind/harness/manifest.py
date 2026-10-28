@@ -1,0 +1,87 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+"""LoadedManifest: what a harness reports it actually loaded (spec §2).
+
+⚠️ "A state read, not an assumption." The orchestrator wrote a config; the
+harness says what it loaded; `compare` lists EVERY difference between the two
+and the orchestrator stops the session before turn 1 if there is any. It
+returns all of them rather than raising on the first so one mismatch cannot
+hide another.
+
+The SHA-256 is of the plug-in's source file as it is on disk, byte for byte, so
+a CRLF checkout of the same source hashes differently: pin per checkout.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import re
+from dataclasses import dataclass
+from typing import Mapping
+
+from .config import ConfigError, SessionConfig
+
+_SHA256 = re.compile(r"[0-9a-f]{64}")
+
+
+@dataclass(frozen=True)
+class PluginRecord:
+    name: str
+    version: str
+    api_version: int
+    sha256: str
+
+    def __post_init__(self) -> None:
+        if not self.name or not self.version:
+            raise ConfigError("plug-in record: name and version must be non-empty")
+        if type(self.api_version) is not int or self.api_version < 1:
+            raise ConfigError(f"plug-in {self.name!r}: api_version must be a positive integer")
+        if not _SHA256.fullmatch(self.sha256):
+            raise ConfigError(f"plug-in {self.name!r}: sha256 must be 64 lowercase hex digits")
+
+
+@dataclass(frozen=True)
+class LoadedManifest:
+    plugins: tuple[PluginRecord, ...]
+    tools: tuple[str, ...]
+    services: tuple[str, ...]
+
+
+def source_sha256(path: str) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for block in iter(lambda: f.read(65536), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
+def compare(config: SessionConfig, manifest: LoadedManifest,
+            expected_sha256: Mapping[str, str] | None = None) -> list[str]:
+    """Every difference between what the orchestrator wrote and what loaded.
+    An empty list means they agree. `expected_sha256` pins source hashes by
+    plug-in name; a pin for a plug-in that did not load is itself a difference."""
+    diffs: list[str] = []
+    wanted = {p.name: p for p in config.plugins}
+    loaded = {r.name: r for r in manifest.plugins}
+
+    for name, p in wanted.items():
+        r = loaded.get(name)
+        if r is None:
+            diffs.append(f"plug-in {name!r} is in the config but not loaded")
+        elif r.version != p.version:
+            diffs.append(f"plug-in {name!r}: config version {p.version!r}, loaded version {r.version!r}")
+    for name in loaded:
+        if name not in wanted:
+            diffs.append(f"plug-in {name!r} is loaded but not in the config")
+
+    common_wanted = [n for n in wanted if n in loaded]
+    common_loaded = [n for n in loaded if n in wanted]
+    if common_wanted != common_loaded:
+        diffs.append(f"plug-in order differs: config {common_wanted}, loaded {common_loaded}")
+
+    for name, sha in (expected_sha256 or {}).items():
+        r = loaded.get(name)
+        if r is None:
+            diffs.append(f"sha256 pinned for {name!r}, which did not load")
+        elif r.sha256 != sha:
+            diffs.append(f"plug-in {name!r}: sha256 {r.sha256}, expected {sha}")
+    return diffs

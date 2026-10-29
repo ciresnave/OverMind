@@ -28,11 +28,12 @@ plug-in's business (and a later piece), not this layer's.
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import threading
 from contextlib import contextmanager
-from typing import Any, Iterator, Mapping, Sequence
+from typing import Any, Iterator, Mapping, Sequence, cast
 
 from .plugin_api import HarnessCall
 from .proctree import ProcessTree
@@ -136,10 +137,14 @@ class Primitives:
                 f"inside the effect of a call the pipeline allowed")
         return call
 
-    def write_file(self, path: str, data: str | bytes) -> None:
+    def write_file(self, path: str, data: str | bytes, *, parents: bool = False) -> None:
+        """Write `data` to `path`. `parents=True` also creates missing parent
+        directories, inside the same frame (a mkdir outside one is a violation)."""
         call = self._require("write_file")
         payload = data.encode("utf-8") if isinstance(data, str) else bytes(data)
         with _frame("write_file", call):
+            if parents:
+                os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
             _do_write(path, payload)
 
     def run_process(self, argv: Sequence[str], *, cwd: str, timeout: float,
@@ -154,8 +159,10 @@ class Primitives:
         group: dict[str, Any] = ({"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
                                  if sys.platform == "win32" else {"start_new_session": True})
         with _frame("run_process", call):
-            proc = subprocess.Popen(list(argv), cwd=cwd, env=dict(env), stdout=subprocess.PIPE,
-                                    stderr=subprocess.PIPE, text=True, shell=False, **group)
+            # binary pipes (no text=): `**group` is Any, so the checker would guess str
+            proc = cast("subprocess.Popen[bytes]", subprocess.Popen(
+                list(argv), cwd=cwd, env=dict(env), stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, shell=False, **group))
             tree = ProcessTree(proc)
             try:
                 out, err = proc.communicate(timeout=timeout)
@@ -168,4 +175,7 @@ class Primitives:
                 raise
             finally:
                 tree.kill()                       # nothing the command started outlives the call
-            return subprocess.CompletedProcess(list(argv), proc.returncode, out, err)
+            # bytes decoded here, not by text mode: no newline translation, no decode error
+            return subprocess.CompletedProcess(list(argv), proc.returncode,
+                                               out.decode("utf-8", "replace"),
+                                               err.decode("utf-8", "replace"))

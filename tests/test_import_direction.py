@@ -93,6 +93,8 @@ ALLOWED: frozenset[tuple[str, str]] = frozenset({
     ("fork", "agent"),          # fork.py:23 (with agent->fork: today's one cycle)
     ("fork", "gate"),           # fork.py:24
     ("fork", "providers"),      # fork.py:26
+    ("workspace_plugin", "harness"),   # the one flat module that carries a plug-in into the harness
+    ("workspace_plugin", "lanework"),
     ("lanework", "agent"),      # lanework.py:63
     ("lanework", "gate"),       # lanework.py:64
     ("lanework", "outcome"),    # lanework.py:68
@@ -105,7 +107,7 @@ ALLOWED: frozenset[tuple[str, str]] = frozenset({
 # reviewed into ALLOWED; otherwise the control below fails, naming it.
 MODULES: frozenset[str] = frozenset({
     "agent", "dispatch", "dispatch_mcp", "fork", "gate", "lanework",
-    "ledger", "mcp_tools", "outcome", "providers", "quota", "repo_probe",
+    "ledger", "mcp_tools", "outcome", "providers", "quota", "repo_probe", "workspace_plugin",
     # the harness subpackage (plan P3.1): "pkg/mod" names, scanned below
     "harness/__init__", "harness/config", "harness/manifest",
     "harness/plugin_api", "harness/primitives", "harness/pipeline", "harness/gate_plugin",

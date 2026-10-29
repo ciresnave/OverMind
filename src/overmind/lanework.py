@@ -387,16 +387,39 @@ def _clip(text: str, limit: int = MAX_TOOL_CHARS) -> str:
 class Workspace:
     """The tools a model may call, bound to one worktree."""
 
-    def __init__(self, root: pathlib.Path, task: Task) -> None:
+    def __init__(self, root: pathlib.Path, task: Task, prims: Any = None) -> None:
         self.root = root
         self.task = task
+        #: Effect primitives (harness/primitives.py). None: today's direct I/O.
+        #: With them, every process and every write goes through the primitive
+        #: that the chokepoint attributes to the allowed call.
+        self.prims = prims
+
+    def _run(self, argv: Sequence[str], cwd: pathlib.Path, timeout: float = 120,
+             env: Mapping[str, str] | None = None) -> subprocess.CompletedProcess:
+        if self.prims is None:
+            return _run(argv, cwd, timeout, env)
+        exe = shutil.which(argv[0]) or argv[0]
+        done = self.prims.run_process([exe, *argv[1:]], cwd=str(cwd), timeout=timeout,
+                                      env=dict(os.environ) if env is None else dict(env))
+        # `_run` hands back bytes; the primitive decodes (utf-8, replace)
+        return subprocess.CompletedProcess(done.args, done.returncode,
+                                           (done.stdout or "").encode("utf-8"),
+                                           (done.stderr or "").encode("utf-8"))
+
+    def _git(self, cwd: pathlib.Path, *args: str, timeout: float = 120) -> str:
+        proc = self._run(["git", *args], cwd, timeout)
+        if proc.returncode != 0:
+            raise RuntimeError(f"git {args[0]} failed ({proc.returncode}): "
+                               f"{proc.stderr.decode('utf-8', 'replace').strip()[:300]}")
+        return proc.stdout.decode("utf-8", "replace")
 
     def _path(self, rel: str) -> pathlib.Path:
         # Defence in depth: the gate already refused anything this would.
         return resolve_inside(self.root, rel)
 
     def list_files(self, pattern: str = "**", path: str = "") -> str:
-        names = [n for n in _git(self.root, "ls-files", "-z").split("\0") if n]
+        names = [n for n in self._git(self.root, "ls-files", "-z").split("\0") if n]
         names = [n for n in names if glob_match(n, pattern if "/" in pattern or pattern == "**"
                                                 else "**/" + pattern)]
         if path:
@@ -422,7 +445,7 @@ class Workspace:
         args = ["grep", "-n", "-I", "-E", "-e", pattern]
         if path:
             args += ["--", self._path(path).relative_to(self.root.resolve()).as_posix() or "."]
-        proc = _run(["git", *args], self.root)
+        proc = self._run(["git", *args], self.root)
         if proc.returncode == 1:
             return "no matches"
         if proc.returncode != 0:
@@ -444,8 +467,12 @@ class Workspace:
         # task said not to make and its check could not see.
         if before.endswith(b"\n") and text and not text.endswith("\n"):
             text += "\n"
+        data = (text.replace("\n", "\r\n") if crlf else text).encode("utf-8")
+        if self.prims is not None:
+            self.prims.write_file(str(target), data, parents=True)
+            return
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes((text.replace("\n", "\r\n") if crlf else text).encode("utf-8"))
+        target.write_bytes(data)
 
     def write_file(self, path: str, content: str) -> str:
         target = self._path(path)
@@ -469,14 +496,14 @@ class Workspace:
     def check(self) -> tuple[int, str]:
         """The declared check. ⚠️ No argument reaches it from the model."""
         try:
-            proc = _run(self.task.check, self.root, self.task.check_timeout_s, scrubbed_env())
+            proc = self._run(self.task.check, self.root, self.task.check_timeout_s, scrubbed_env())
         except subprocess.TimeoutExpired:
             return 124, f"check timed out after {self.task.check_timeout_s}s"
         out = (proc.stdout + proc.stderr).decode("utf-8", "replace")
         return proc.returncode, _clip(out, 3000)
 
     def changed_files(self) -> list[str]:
-        out = _git(self.root, "status", "--porcelain", "-z", "--untracked-files=all")
+        out = self._git(self.root, "status", "--porcelain", "-z", "--untracked-files=all")
         return sorted({entry[3:] for entry in out.split("\0") if len(entry) > 3})
 
     def tools(self) -> dict[str, Callable[..., Any]]:

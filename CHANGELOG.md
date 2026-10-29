@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.14.23 (A3 P3.4: the workspace-tools plug-in, 2026-10-29; provisional number)
+
+- Added: `workspace_plugin.WorkspacePlugin`, the six `lanework.Workspace` tools (`list_files`, `read_file`, `search`, `write_file`, `replace_in_file`, `run_check`) as a plug-in. `Workspace` takes optional effect primitives: with them its processes (`git`, the task's check) run through `run_process` and its writes through `write_file`; without them it is unchanged, so `GatedExecutor` callers are untouched. Policy stays `WorkspaceConfined` on the gate plug-in; this plug-in has no opinion.
+- Changed (primitives): `write_file(..., parents=False)` can create missing parent directories inside its frame (a `mkdir` outside one is a chokepoint violation); `run_process` decodes output itself (utf-8, replace) instead of text mode, so no newline translation and no decode error on non-UTF-8 output.
+- Evidence: a child process with the chokepoint ARMED runs all six tools through the plug-in with 0 violations, and the same write done directly is a `file-write` violation.
+- NOT done: `run_agent` still uses `GatedExecutor`; the plug-in is not in the default registry (its config is a `Task`, written by lanework at P3.6); `read_file`/`list_files` read the tree directly (reads are not primitives); fork and MCP plug-ins follow.
+
 ## 0.14.22 (A3 P3.4: the ledger plug-in, 2026-10-28; provisional number)
 
 - Added: `Plugin.on_tool_outcome(ctx, PipelineOutcome)`, an eighth, observe-only hook (PM ruling 2026-10-28; `API_VERSION` stays 1; spec section 2 table row added). It sees every submitted call, denied ones included, with a private frozen copy; its return value is ignored; a raising observer is recorded in `Pipeline.observer_errors` (capped at 100, then counted) and shown by `Pipeline.stop` under the reserved key `<observer-errors>`. An uncopyable result reaches observers as its `repr`.

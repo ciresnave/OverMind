@@ -79,7 +79,7 @@ MODEL CLIENT  (HTTP to providers; quota; failover WITHIN the route it is given)
 ## 2. The plug-in interface
 
 **Shape (ASSUMED proposal).** A plug-in is an object with a declaration and any subset of these hooks.
-Every hook receives a `SessionContext` and returns a value the harness acts on. **No hook returns
+Every hook receives a `SessionContext` and returns a value the harness acts on (`on_tool_outcome` alone returns nothing). **No hook returns
 "proceed anyway".** That is gate.py's first constraint, kept (MEASURED: gate.py:10-14).
 
 | Hook | Called | May return |
@@ -91,6 +91,7 @@ Every hook receives a `SessionContext` and returns a value the harness acts on. 
 | `before_tool_call(ctx, call)` | each tool call, in pipeline order | `Allow`, `Deny(reason)`; any `Deny` wins (today's `Gate.decide` rule) |
 | `after_tool_call(ctx, call, result)` | each executed call | `Pass`, `Redact(result)` |
 | `on_stop(ctx, run)` | once, at the end | a verdict or record (checks, ledger flush) |
+| `on_tool_outcome(ctx, outcome)` | once per submitted call, denied calls included, after any `after_tool_call` redaction | nothing: observe-only (PM ruling 2026-10-28, plan P3.4). The outcome is a frozen private copy of `(call, decision, executed, result, error)`; the return value is ignored, so an observer cannot change or veto a decision; one that raises is recorded in the pipeline's observer errors (capped at 100, then counted; reported by `Pipeline.stop` under the reserved key `<observer-errors>`) and the decision stands. An uncopyable result is handed to observers as its `repr`. Additive: `api_version` stays 1. It exists because no other hook sees a denial or a tool's error, which a ledger must record |
 
 **Declaration** (`declares()`):
 - the plug-in's name and version;

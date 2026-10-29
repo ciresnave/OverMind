@@ -111,6 +111,18 @@ class HarnessCall:
     actor: str = "unknown"
 
 
+@dataclass(frozen=True)
+class PipelineOutcome:
+    """What became of one submitted call, DENIED ones included. `result` is what
+    the model is shown (after every `after_tool_call` redaction), so an observer
+    never sees more than the model does."""
+    call: HarnessCall
+    decision: Allow | Deny
+    executed: bool
+    result: Any = None
+    error: str | None = None
+
+
 # --- the declaration --------------------------------------------------------
 
 @dataclass(frozen=True)
@@ -158,6 +170,13 @@ class Plugin:
 
     def after_tool_call(self, ctx: SessionContext, call: HarnessCall, result: Any) -> Pass | Redact:
         return Pass()
+
+    def on_tool_outcome(self, ctx: SessionContext, outcome: "PipelineOutcome") -> None:
+        """Observe-only (eighth hook, additive; API_VERSION unchanged). Called once
+        per submitted call with a private copy of the outcome, denied calls
+        included. The return value is ignored: an observer cannot change or veto
+        anything. An exception is recorded in `Pipeline.observer_errors`."""
+        return None
 
     def on_stop(self, ctx: SessionContext, run: Any) -> Any:
         return None

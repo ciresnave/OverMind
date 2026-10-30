@@ -339,6 +339,7 @@ class TestPublishing(RepoCase):
         branch, base, title, body = self.opened[0]
         self.assertEqual((base, title), ("main", "Fix a.txt"))
         self.assertIn("exit 0", body)
+        self.assertIn("(trusted author's check, unsandboxed)", body)   # PM 2026-10-30: never read as sandboxed
         self.assertIn(branch, git(self.remote, "branch", "--list", "agent/*"))
         author = git(self.remote, "log", "-1", "--format=%an <%ae>", branch).strip()
         self.assertEqual(author, f"{lw.AGENT_NAME} <{lw.AGENT_EMAIL}>")

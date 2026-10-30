@@ -19,6 +19,7 @@ import dataclasses
 import pathlib
 from typing import Collection
 
+from .check_policy_plugin import CheckPolicyPlugin
 from .default_registry import REGISTRY
 from .dispatch_mcp import DOCS_ONLY_CHECK
 from .harness.config import SessionConfig
@@ -27,6 +28,14 @@ from .harness.pipeline import load_pipeline
 from .harness.pipeline_executor import PipelineExecutor
 from .harness.plugin_api import Refuse
 from .lanework import TOOL_NAMES, Task
+
+
+def check_isolation(executor: PipelineExecutor) -> str:
+    """The `check-policy` plug-in's statement of where the check ran (see its `isolation`)."""
+    for p in executor.pipeline.plugins:
+        if isinstance(p, CheckPolicyPlugin):
+            return p.isolation()
+    return "undeclared, unsandboxed"
 
 
 def build_task_executor(root: pathlib.Path, task: Task, tracked: Collection[str]) -> PipelineExecutor:

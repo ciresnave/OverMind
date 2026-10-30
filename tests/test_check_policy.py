@@ -135,6 +135,26 @@ class TestTaskProvenance(unittest.TestCase):
         self.assertEqual(task.check_profile, "cargo")
 
 
+class TestIsolationIsRecorded(RepoCase):
+    def test_trusted_task_says_unsandboxed(self):
+        r = lw.run_task(self.task(), Scripted(say("done")))
+        self.assertEqual(r.check_isolation, "trusted author's check, unsandboxed")
+        self.assertIn("unsandboxed", json.loads(r.to_json())["check_isolation"])
+
+    def test_registry_check_says_external_unsandboxed(self):
+        (self.repo / "go.mod").write_text("module x\n\ngo 1.22\n")
+        lw._git(self.repo, "add", "-A")
+        lw._git(self.repo, "-c", "user.name=t", "-c", "user.email=t@e.x", "commit", "-q", "-m", "go")
+        argv = repo_probe.infer_check(self.repo, "go").check
+        r = lw.run_task(self.task(trusted_author=False, check_profile="go", check=argv),
+                        Scripted(say("done")))
+        self.assertEqual(r.check_isolation, "external, unsandboxed")
+
+    def test_docs_only_says_no_check_ran(self):
+        r = lw.run_task(self.task(trusted_author=False, check=DOCS), Scripted(say("done")))
+        self.assertEqual(r.check_isolation, "docs-only: no check ran")
+
+
 class TestRunTaskRefuses(RepoCase):
     def test_a_caller_supplied_check_is_an_error_verdict_and_nothing_runs(self):
         class Counting(Scripted):

@@ -109,6 +109,7 @@ ALLOWED: frozenset[tuple[str, str]] = frozenset({
     ("workspace_plugin", "lanework"),
     ("lanework", "task_executor"),   # lazy, inside run_task (a call-time cycle, like agent -> fork)
     ("task_executor", "default_registry"),
+    ("task_executor", "check_policy_plugin"),
     ("task_executor", "dispatch_mcp"),       # DOCS_ONLY_CHECK, handed to the check-policy plug-in as config
     ("default_registry", "check_policy_plugin"),
     ("check_policy_plugin", "harness"),

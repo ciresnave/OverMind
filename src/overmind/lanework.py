@@ -241,6 +241,10 @@ class LaneResult:
     #: so the ledger shows what budget a run had, not just whether it was
     #: enough.
     max_tokens: int = 0
+    #: Where the check ran, from the `check-policy` plug-in: `external, unsandboxed`,
+    #: `trusted author's check, unsandboxed` or `docs-only: no check ran`. Empty when the
+    #: session never started. PM ruling 2026-10-30: nobody reads a PASS as sandboxed.
+    check_isolation: str = ""
 
     def to_json(self) -> str:
         return json.dumps(dataclasses.asdict(self), indent=2)
@@ -687,6 +691,7 @@ def run_task(task: Task, client: Any = None, *, publish: bool = False, keep: boo
     branch = f"agent/{task.id}-{uuid.uuid4().hex[:6]}"
     run: AgentRun | None = None
     result: LaneResult | None = None
+    isolation = ""
     try:
         _git(repo, "worktree", "add", "-q", "--detach", "--", str(root), task.base)
         _git(root, "switch", "-q", "-c", branch)
@@ -695,8 +700,9 @@ def run_task(task: Task, client: Any = None, *, publish: bool = False, keep: boo
                             _git(root, "ls-files", "-z").split("\0") if n)
         # The agent's tools run through the plug-in pipeline (task_executor.py); `ws`
         # stays the harness's own plain Workspace for the readings below.
-        from .task_executor import build_task_executor
+        from .task_executor import build_task_executor, check_isolation
         executor = build_task_executor(root, task, tracked)
+        isolation = check_isolation(executor)
         client = client or build_client(task)
         label = check_label(task)
         brief = (f"GOAL:\n{task.goal}\n\nFILES YOU MAY WRITE (globs): {task.writable}\n"
@@ -727,7 +733,7 @@ def run_task(task: Task, client: Any = None, *, publish: bool = False, keep: boo
             denied_calls=run.denied_count, steps=run.steps,
             tokens=dataclasses.asdict(run.usage) if dataclasses.is_dataclass(run.usage) else {},
             ledger_digest=run.ledger.digest(limit=30), final_text=run.final_text[:2000],
-            error=run.error, max_tokens=run.max_tokens)
+            error=run.error, max_tokens=run.max_tokens, check_isolation=isolation)
 
         if publish and verdict == "PASS":
             _git(root, "add", "-A")
@@ -739,7 +745,7 @@ def run_task(task: Task, client: Any = None, *, publish: bool = False, keep: boo
             body = (f"{task.pr_body}\n\n---\n**Made by a non-Claude model through OverMind.**\n\n"
                     f"- model: `{run.provider}/{run.model}` · steps {run.steps} · "
                     f"refused calls {run.denied_count}\n"
-                    f"- the harness ran `{label}` itself: exit {check_exit}\n"
+                    f"- the harness ran `{label}` itself: exit {check_exit} ({isolation})\n"
                     f"- changed (added removed path): {'; '.join(result.diff_numstat)}\n")
             base_branch = task.base.split("/", 1)[1] if task.base.startswith("origin/") else task.base
             result.branch = branch
@@ -753,7 +759,8 @@ def run_task(task: Task, client: Any = None, *, publish: bool = False, keep: boo
                 check_tail="", changed_files=[], model_ran_check=False,
                 model_claimed_success=False, unsupported_claim=False, denied_calls=0,
                 steps=getattr(run, "steps", 0), tokens={},
-                ledger_digest=run.ledger.digest(limit=30) if run else "", final_text="")
+                ledger_digest=run.ledger.digest(limit=30) if run else "", final_text="",
+                check_isolation=isolation)
         result.error = f"{type(exc).__name__}: {exc}"[:500]
     finally:
         if keep and result is not None and root.exists():

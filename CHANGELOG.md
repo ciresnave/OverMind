@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.14.33 (A3 P3.5 follow-up: the run record says where the check ran, 2026-10-30; provisional number)
+
+The PM's two conditions on #180 landed after the gate pinned its head, so they are here.
+- **Run record (PM ruling 2026-10-30):** `LaneResult.check_isolation` and the PR body say where the check ran: `external, unsandboxed` (registry entry), `trusted author's check, unsandboxed`, or `docs-only: no check ran`. Every value says unsandboxed until P3.7. A check with no declared effect is denied (fail closed; `test_an_entry_with_no_declared_effects_is_refused`).
+- Tests: `TestIsolationIsRecorded` (3) and an assertion in `test_a_pass_is_committed_pushed_and_opened`; mutations: `unsandboxed` dropped from the wording, the result not carrying it, the PR body not carrying it, each red on a named test. Fail-closed on an undeclared effect is already on main (`test_an_entry_with_no_declared_effects_is_refused`).
+
 ## 0.14.32 (A3 P3.5: the `check-policy` plug-in, 2026-10-30; provisional number)
 
 DESIGN-PROPOSAL 7.5 (CireSnave 2026-10-28), plan P3.5. Provenance design is the plan's proposal, unchanged.

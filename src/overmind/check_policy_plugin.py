@@ -46,6 +46,15 @@ class CheckPolicyPlugin(Plugin):
         reason = self._refusal()
         return Refuse(reason) if reason else Ok()
 
+    def isolation(self) -> str:
+        """What the run record says about where the check ran. EVERY value says
+        "unsandboxed" until P3.7: a PASS must never be read as a sandboxed one."""
+        if self._trusted:
+            return "trusted author's check, unsandboxed"
+        if self._check == self._docs_only:
+            return "docs-only: no check ran"
+        return f"{repo_probe.check_effect(self._root, self._profile) or 'undeclared'}, unsandboxed"
+
     def _refusal(self) -> str | None:
         if self._trusted:
             return None

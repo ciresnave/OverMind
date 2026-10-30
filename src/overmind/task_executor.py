@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import dataclasses
 import pathlib
-from typing import Collection
+from typing import Any, Collection
 
 from .check_policy_plugin import CheckPolicyPlugin
 from .default_registry import REGISTRY
@@ -38,6 +38,15 @@ def check_isolation(executor: PipelineExecutor) -> str:
     return "undeclared, unsandboxed"
 
 
+def check_runner_of(executor: PipelineExecutor) -> Any:
+    """The sandbox runner the `check-policy` plug-in chose for this task's check, or None
+    (the check runs on the host, as the host chose it)."""
+    for p in executor.pipeline.plugins:
+        if isinstance(p, CheckPolicyPlugin):
+            return p.check_runner
+    return None
+
+
 def build_task_executor(root: pathlib.Path, task: Task, tracked: Collection[str]) -> PipelineExecutor:
     """`tracked`: the repo's tracked file names, as `run_task` reads them (the
     policy casefolds them itself). Raises if the pipeline cannot be built or
@@ -50,14 +59,16 @@ def build_task_executor(root: pathlib.Path, task: Task, tracked: Collection[str]
         "plugins": [
             {"name": "check-policy", "version": "1", "config": {
                 "root": str(root), "check": list(task.check), "check_profile": task.check_profile,
-                "trusted_author": task.trusted_author, "docs_only_check": list(DOCS_ONLY_CHECK)}},
+                "trusted_author": task.trusted_author, "docs_only_check": list(DOCS_ONLY_CHECK),
+                "sandbox": task.check_sandbox}},
             {"name": "ledger", "version": "1", "config": {}},
             {"name": "gate", "version": "1", "config": {"policies": [
                 {"type": "workspace-confined", "root": str(root), "writable": list(task.writable),
                  "tracked": sorted(tracked), "extra_denied_globs": list(task.protected_globs)},
                 {"type": "deny-unless-declared", "reversible": sorted(TOOL_NAMES)}]}},
             {"name": "workspace-tools", "version": "1",
-             "config": {"root": str(root), "task": {k: v for k, v in dataclasses.asdict(task).items()
+             "config": {"root": str(root), "check_runner_from": "check-policy",
+                         "task": {k: v for k, v in dataclasses.asdict(task).items()
                                                     if k != "trusted_author"}}},
         ],
         "workspace": {"repo": task.repo, "base": task.base},

@@ -28,16 +28,20 @@ from .lanework import TOOL_NAMES, Task, Workspace, schemas
 
 class WorkspacePlugin(Plugin):
     def __init__(self, root: pathlib.Path, task: Task, name: str = "workspace-tools",
-                 version: str = "1") -> None:
+                 version: str = "1", check_runner: Any = None) -> None:
         self._root = pathlib.Path(root)
         self._task = task
+        #: A zero-argument provider, read at CALL time: the check-policy plug-in decides at
+        #: `on_session_start`, after this plug-in was built. None: the host runs the check.
+        self._check_runner = check_runner
         by_name = {s["function"]["name"]: s["function"]["parameters"] for s in schemas()}
         tools = tuple(ToolSpec(n, by_name[n], self._effect(n)) for n in TOOL_NAMES)
         self._decl = Declaration(name=name, version=version, api_version=API_VERSION, tools=tools)
 
     def _effect(self, tool: str):
         def effect(prims: Primitives, **arguments: Any) -> Any:
-            return getattr(Workspace(self._root, self._task, prims), tool)(**arguments)
+            return getattr(Workspace(self._root, self._task, prims,
+                                    self._check_runner() if self._check_runner else None), tool)(**arguments)
         return effect
 
     def declares(self) -> Declaration:

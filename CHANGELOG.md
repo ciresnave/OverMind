@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.14.33 (A3 P3.5 follow-up: the run record says where the check ran, 2026-10-30; provisional number)
+
+The PM's two conditions on #180 landed after the gate pinned its head, so they are here.
+- **Run record (PM ruling 2026-10-30):** `LaneResult.check_isolation` and the PR body say where the check ran: `external, unsandboxed` (registry entry), `trusted author's check, unsandboxed`, or `docs-only: no check ran`. Every value says unsandboxed until P3.7. A check with no declared effect is denied (fail closed; `test_an_entry_with_no_declared_effects_is_refused`).
+- Tests: `TestIsolationIsRecorded` (3) and an assertion in `test_a_pass_is_committed_pushed_and_opened`; mutations: `unsandboxed` dropped from the wording, the result not carrying it, the PR body not carrying it, each red on a named test. Fail-closed on an undeclared effect is already on main (`test_an_entry_with_no_declared_effects_is_refused`).
+
 ## 0.14.32 (A3 P3.5: the `check-policy` plug-in, 2026-10-30; provisional number)
 
 DESIGN-PROPOSAL 7.5 (CireSnave 2026-10-28), plan P3.5. Provenance design is the plan's proposal, unchanged.
@@ -7,7 +13,6 @@ DESIGN-PROPOSAL 7.5 (CireSnave 2026-10-28), plan P3.5. Provenance design is the 
 - **`Task.check_profile`** (set by `dispatch_mcp.build_task` from the request) and **`Task.trusted_author`** (default False; `lanework.main` sets it for a hand-run `task.json`; `Task.from_json` refuses the key, so no file or message can claim it).
 - **Effects declared**: `repo_probe.CHECK_TABLE_EFFECTS` / `NAMED_CHECK_PROFILE_EFFECTS` (`sandbox-safe | external`) plus `check_effect`; tests require every table and profile entry to be declared. ASSESSMENT for the PM: all eleven are `external` (they run the checkout's code, including what the model just wrote, and fetch dependencies); none is measured in a sandbox. Whether to ALSO sandbox them is the PM's call and P3.7's work.
 - Tests: `tests/test_check_policy.py` (23). `test_lanework.RepoCase.task` now builds a trusted task (a hand-written one). Mutations, each red on named tests: trusted ignored; argv equality dropped; effects not required; docs-only dropped; policy never refuses; file may claim `trusted_author`; CLI does not trust; dispatch drops the profile; executor drops the profile (first version survived; test added); executor trusts everyone; a profile left undeclared.
-- **Run record (PM ruling 2026-10-30):** `LaneResult.check_isolation` and the PR body say where the check ran: `external, unsandboxed` (registry entry), `trusted author's check, unsandboxed`, or `docs-only: no check ran`. Every value says unsandboxed until P3.7. A check with no declared effect is denied (fail closed; `test_an_entry_with_no_declared_effects_is_refused`).
 - NOT done: no sandbox (P3.7); `dispatch.py` still unconnected for agent-generated argvs; `check-policy` runs once at session start, so a worktree that changes before the check is not re-read; `Task.check` stays a plain list.
 
 ## 0.14.31 (A3 P3.4: `lanework.run_task` on the pipeline, 2026-10-30; provisional number)

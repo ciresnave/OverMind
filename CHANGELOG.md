@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.14.27 (docs + probe: claude-peers restore test, 2026-10-30; provisional number)
+
+- Added: `docs/CLAUDE-PEERS-RESTORE-TEST-2026-10-30.md` and `probe/peers_restore.py`: a scratch claude-peers broker (port 7897, scratch DB) started from its start command, two real MCP servers, one message each way, PASS; the live broker on 7899 untouched. Not verified: a real Claude session with the dev-channels flag and the handler record, broker auto-start, a restore onto the live DB. No code under `src/` changes.
+
 ## 0.14.25 (A3 P3.4: the MCP plug-in, 2026-10-29; provisional number; stacked on #172)
 
 - Added: `mcp_plugin.McpService` (what the HARNESS holds: opens an `McpToolSource` inside `harness_owned()`, its loop thread marks itself harness-owned first, per MEASUREMENTS s38) and `McpPlugin` (holds only the service NAME and the server's tool schemas; each tool's effect is `prims.call_service`). `McpToolSource.on_thread_start` (new optional hook, default none). `harness.services` (register/get a service by name) and `Primitives.call_service`, which refuses unless a call is allowed on this thread.

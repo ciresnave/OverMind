@@ -125,7 +125,12 @@ def plugin_sha256(plugin: Plugin) -> str:
 
 
 class Pipeline:
-    def __init__(self, plugins: Iterable[Plugin], ctx: SessionContext) -> None:
+    def __init__(self, plugins: Iterable[Plugin], ctx: SessionContext,
+                 declared: Mapping[int, Declaration] | None = None) -> None:
+        """`declared` maps `id(plugin)` to a declaration the CALLER already took
+        (checked here like any other), so `declares()` is not called again. A
+        fork's child pipeline uses it: no `declares()` runs inside the parent's
+        allowed `fork` call (spec section 3)."""
         self._plugins = list(plugins)
         self._ctx = ctx
         self._decl: dict[int, Declaration] = {}
@@ -135,13 +140,16 @@ class Pipeline:
         names: list[str] = []
         owners: dict[str, str] = {}
         for plugin in self._plugins:
-            with cleared():
-                try:
-                    raw = plugin.declares()
-                except Exception as exc:              # noqa: BLE001
-                    raise PluginError(
-                        f"plug-in {type(plugin).__name__}: declares() raised "
-                        f"{type(exc).__name__}: {exc}") from exc
+            if declared is not None and id(plugin) in declared:
+                raw = declared[id(plugin)]
+            else:
+                with cleared():
+                    try:
+                        raw = plugin.declares()
+                    except Exception as exc:          # noqa: BLE001
+                        raise PluginError(
+                            f"plug-in {type(plugin).__name__}: declares() raised "
+                            f"{type(exc).__name__}: {exc}") from exc
             decl = _check_declaration(raw)
             if decl.api_version != API_VERSION:
                 raise PluginError(
@@ -161,6 +169,10 @@ class Pipeline:
     def declarations(self) -> tuple[Declaration, ...]:
         """The snapshot taken at construction, in config order."""
         return tuple(self._decl[id(p)] for p in self._plugins)
+
+    @property
+    def tool_names(self) -> tuple[str, ...]:
+        return tuple(self._tools)
 
     # -- one guarded hook call ------------------------------------------------
 

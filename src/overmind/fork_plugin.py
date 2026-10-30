@@ -71,6 +71,14 @@ class ForkPlugin(Plugin):
         self._bound: dict[str, Any] | None = None
         self._result: ForkResult | None = None
 
+    @property
+    def gate(self) -> Gate:
+        return self._gate
+
+    @property
+    def config(self) -> ForkConfig:
+        return self._config
+
     def declares(self) -> Declaration:
         return self._decl
 

@@ -26,9 +26,15 @@ def _refuse(name: str):
 
 
 class PipelineExecutor(GatedExecutor):
-    def __init__(self, pipeline: Pipeline, gate: Gate) -> None:
+    def __init__(self, pipeline: Pipeline, gate: Gate, fork_plugin: Any = None) -> None:
+        """`fork_plugin`: the `ForkPlugin` in `pipeline`, if the run may fork;
+        `run_agent` then binds each turn to it before submitting a `fork` call."""
+        if fork_plugin is not None and fork_plugin.gate is not gate:
+            # the run reads this gate's ledger and policies; the fork rebuilds ITS gate
+            raise ValueError("the executor's gate is not the gate the fork plug-in was built on")
         super().__init__(gate, {n: _refuse(n) for n in pipeline.tool_names})
         self.pipeline = pipeline
+        self.fork_plugin = fork_plugin
 
     def execute(self, name: str, arguments: Mapping[str, Any] | None = None,
                 actor: str = "agent") -> ToolOutcome:

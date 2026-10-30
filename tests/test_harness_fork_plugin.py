@@ -247,5 +247,58 @@ class TestForkFixture(unittest.TestCase):
             self.assertFalse(os.path.exists(path))
 
 
+
+class TestRunAgentOnThePipeline(unittest.TestCase):
+    """`run_agent` drives a PipelineExecutor: same run as the GatedExecutor path."""
+
+    SCRIPT = [tool_turn(FORK_TOOL, '{"task": "look"}', call_id="p1"), tool_turn("echo", call_id="k1"),
+              {"role": "assistant", "content": "child done"},
+              {"role": "assistant", "content": "all done"}]
+
+    def test_a_fork_run_matches_the_gated_run(self):
+        from overmind.agent import run_agent
+        g = gate_for()
+        ex = GatedExecutor(g, {"echo": lambda **k: "echoed"})
+        want = run_agent(ScriptedClient(self.SCRIPT), ex, TOOLS, "t", fork=ForkConfig())
+        gate, parent, fp, echo = pipeline_world()
+        from overmind.harness.pipeline_executor import PipelineExecutor
+        got = run_agent(ScriptedClient(self.SCRIPT), PipelineExecutor(parent, gate, fp), TOOLS,
+                        "t", fork=fp.config)
+        self.assertEqual(got.final_text, want.final_text)
+        self.assertEqual(got.stop_reason, want.stop_reason)
+        self.assertEqual(rows(got.ledger), rows(want.ledger))
+        self.assertEqual(len(got.forks), 1)
+        self.assertEqual(got.forks[0].summary, want.forks[0].summary)
+        self.assertEqual(echo.effect_ran, 1)
+
+    def test_the_executors_gate_must_be_the_fork_plugins(self):
+        from overmind.harness.pipeline_executor import PipelineExecutor
+        gate, parent, fp, _ = pipeline_world()
+        with self.assertRaises(ValueError):
+            PipelineExecutor(parent, gate_for(), fp)
+
+    def test_fork_config_must_be_the_plugins(self):
+        from overmind.agent import run_agent
+        from overmind.harness.pipeline_executor import PipelineExecutor
+        gate, parent, fp, _ = pipeline_world()
+        with self.assertRaises(ValueError):
+            run_agent(ScriptedClient([]), PipelineExecutor(parent, gate, fp), TOOLS, "t",
+                      fork=ForkConfig(max_steps=2))
+
+    def test_a_plain_run_matches_including_a_denied_call(self):
+        from overmind.agent import run_agent
+        from overmind.harness.pipeline_executor import PipelineExecutor
+        script = [tool_turn("echo", call_id="a"), tool_turn("nope", call_id="b"),
+                  {"role": "assistant", "content": "ok"}]
+        g = gate_for()
+        want = run_agent(ScriptedClient(script), GatedExecutor(g, {"echo": lambda **k: "echoed"}),
+                         TOOLS, "t")
+        gate, parent, fp, _ = pipeline_world()
+        got = run_agent(ScriptedClient(script), PipelineExecutor(parent, gate), TOOLS, "t")
+        self.assertEqual(rows(got.ledger), rows(want.ledger))
+        self.assertEqual([e.executed for e in got.ledger.entries], [True, False])
+        self.assertEqual(got.final_text, want.final_text)
+
+
 if __name__ == "__main__":
     unittest.main()

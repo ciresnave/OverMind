@@ -141,6 +141,13 @@ class Task:
     #: §7.4's docs_only mode, which sets this to
     #: `dispatch_mcp.AGENT_INSTRUCTION_GLOBS`.
     protected_globs: list[str] = field(default_factory=list)
+    #: The `repo_probe.NAMED_CHECK_PROFILES` name `check` was inferred with (`None`:
+    #: `CHECK_TABLE`'s own order). The `check-policy` plug-in re-derives the check from it.
+    check_profile: str | None = None
+    #: True only for a hand-run `task.json` (the CLI entry sets it): the author wrote
+    #: `check` and is trusted to (DESIGN-PROPOSAL 7.5). `from_json` refuses the key, so
+    #: neither a file nor a dispatch message can claim it.
+    trusted_author: bool = False
 
     @classmethod
     def from_json(cls, data: Mapping[str, Any]) -> "Task":
@@ -151,6 +158,8 @@ class Task:
             # misspelt `writable` falls back to "nothing", which fails safe, but
             # a misspelt `check` must not silently become something else.
             raise ValueError(f"unknown task keys: {unknown}")
+        if "trusted_author" in data:
+            raise ValueError("`trusted_author` is set by the CLI entry, never by a task file")
         task = cls(**data)
         task._check_types()
         # ⚠️ `isinstance(list)` FIRST: a string is iterable and every element
@@ -180,11 +189,11 @@ class Task:
         # bool is an int: `check_timeout_s: true` must not pass as 1
         ok = (isinstance(self.id, str) and isinstance(self.goal, str)
               and strs(self.check) and strs(self.writable) and strs(self.protected_globs)
-              and isinstance(self.fetch, bool)
+              and isinstance(self.fetch, bool) and isinstance(self.trusted_author, bool)
               and type(self.check_timeout_s) is int and type(self.max_steps) is int
               and isinstance(self.provider, str) and isinstance(self.pr_body, str)
               and all(v is None or isinstance(v, str)
-                      for v in (self.model, self.pr_title, self.check_name)))
+                      for v in (self.model, self.pr_title, self.check_name, self.check_profile)))
         if not ok:
             raise ValueError("task fields have the wrong type: strings, string lists, "
                              "a boolean `fetch`, integer `check_timeout_s` / `max_steps`")
@@ -773,6 +782,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--keep", action="store_true", help="keep the worktree for inspection")
     args = parser.parse_args(argv)
     task = Task.from_json(json.loads(pathlib.Path(args.task).read_text(encoding="utf-8")))
+    task = dataclasses.replace(task, trusted_author=True)   # a hand-run file: the unchanged trust boundary
     result = run_task(task, publish=args.publish, keep=args.keep)
     try:
         cast(io.TextIOWrapper, sys.stdout).reconfigure(encoding="utf-8", errors="replace")

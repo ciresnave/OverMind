@@ -2,9 +2,10 @@
 """The default plug-in registry for a spawned session (plan P3.4).
 
 `spawn(config, registry="overmind.default_registry:REGISTRY")` names it; a config
-that asks for something not here is refused whole. Five entries, each built from
+that asks for something not here is refused whole. Six entries, each built from
 its JSON config alone, or from the plug-ins it DECLARES it needs (`requires`):
 
+  check-policy     {"root", "check", "docs_only_check", "check_profile"?, "trusted_author"?}
   ledger           {}
   gate             {"policies": [ {"type": ..., ...}, ... ]}      needs: ledger
   workspace-tools  {"root": <abs path>, "task": {<Task json>}}
@@ -24,6 +25,7 @@ from __future__ import annotations
 import pathlib
 from typing import Any, Callable, Mapping
 
+from .check_policy_plugin import CheckPolicyPlugin
 from .fork import ForkConfig
 from .fork_plugin import ForkPlugin
 from .gate import (DenyUnlessDeclared, ForbidTools, Gate, NoSelfMerge, RequirePrecondition)
@@ -130,7 +132,7 @@ POLICY_TYPES: dict[str, Callable[[Mapping[str, Any]], Any]] = {
 }
 
 
-# --- the five entries --------------------------------------------------------
+# --- the six entries --------------------------------------------------------
 
 def _ledger(config: Mapping[str, Any]) -> Plugin:
     _exact(config, "ledger")
@@ -163,6 +165,18 @@ def _workspace_tools(config: Mapping[str, Any]) -> Plugin:
     if not isinstance(config["task"], dict):
         raise RegistryConfigError("workspace-tools: task must be an object")
     return WorkspacePlugin(_abs_path(config["root"], "root"), Task.from_json(config["task"]))
+
+
+def _check_policy(config: Mapping[str, Any]) -> Plugin:
+    _exact(config, "check-policy", ("root", "check", "docs_only_check"), ("check_profile", "trusted_author"))
+    profile = config.get("check_profile")
+    if profile is not None:
+        profile = _str(profile, "check_profile")
+    trusted = config.get("trusted_author", False)
+    if type(trusted) is not bool:
+        raise RegistryConfigError("check-policy.trusted_author: expected a boolean")
+    return CheckPolicyPlugin(_abs_path(config["root"], "root"), _strings(config["check"], "check"),
+                             _strings(config["docs_only_check"], "docs_only_check"), profile, trusted)
 
 
 def _fork_needs(config: Mapping[str, Any]) -> tuple[str, ...]:
@@ -218,6 +232,7 @@ OPENERS: dict[str, Callable[[ServiceRef], Any]] = {"mcp-stdio": _open_mcp_stdio}
 
 
 REGISTRY: dict[str, Callable[..., Plugin]] = {
+    "check-policy": _check_policy,
     "ledger": _ledger,
     "gate": _gate,
     "workspace-tools": _workspace_tools,

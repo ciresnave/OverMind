@@ -79,7 +79,8 @@ class RepoCase(unittest.TestCase):
     def task(self, **kw):
         base = dict(id="t1", repo=str(self.repo), goal="make a.txt say fixed",
                     check=[sys.executable, "-c", CHECK_FIXED], writable=["a.txt"],
-                    base="HEAD", fetch=False, max_steps=8)
+                    base="HEAD", fetch=False, max_steps=8,
+                    trusted_author=True)   # a hand-written task, like a task.json the CLI runs
         base.update(kw)
         return lw.Task(**base)
 

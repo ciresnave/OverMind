@@ -265,6 +265,36 @@ NAMED_CHECK_PROFILES: dict[str, tuple[str, Callable[[pathlib.Path], _Resolution]
     "pnpm-workspace": ("package.json", _resolve_package_json),
 }
 
+#: What each pre-defined check does to the host (PM ruling 2026-10-28, plan P3.5):
+#: `"sandbox-safe"` (its effects stay inside the task worktree and need no network)
+#: or `"external"` (it can reach beyond it). EVERY entry above must be declared in
+#: one of the two tables below; `check_effect` returns `None` for one that is not,
+#: and the `check-policy` plug-in refuses it. All are `"external"` today, honestly:
+#: `pytest`, `cargo test`, `go test`, `make`, `npm test` and `pnpm test` run whatever
+#: the checkout holds, including what the model just wrote, and the build tools
+#: fetch dependencies over the network. None is measured inside a sandbox (P3.7).
+CHECK_TABLE_EFFECTS: dict[str, str] = {
+    "Cargo.toml": "external", "go.mod": "external", "Makefile": "external",
+    "pyproject.toml": "external", "setup.py": "external", "package.json": "external",
+}
+NAMED_CHECK_PROFILE_EFFECTS: dict[str, str] = {
+    "cargo": "external", "go": "external", "python-pytest": "external",
+    "python-unittest": "external", "pnpm-workspace": "external",
+}
+EFFECTS = frozenset({"sandbox-safe", "external"})
+
+
+def check_effect(root: pathlib.Path, check_profile: str | None = None) -> str | None:
+    """The declared effect of the registry entry `infer_check(root, check_profile)`
+    would pick, or `None` when no entry is picked or the entry declared none."""
+    if check_profile is not None:
+        effect = NAMED_CHECK_PROFILE_EFFECTS.get(check_profile)
+    else:
+        effect = next((CHECK_TABLE_EFFECTS.get(marker) for marker, _ in CHECK_TABLE
+                       if (root / marker).is_file()), None)
+    return effect if effect in EFFECTS else None
+
+
 #: CI config paths worth quoting into the goal as a hint. Read-only, and never
 #: the same list as `lanework.PROTECTED` by coincidence - that list exists so
 #: a task can't WRITE there; this one exists so context can READ from there.

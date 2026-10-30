@@ -269,7 +269,7 @@ def build_task(task_id: str, clone_dir: pathlib.Path, probe: RepoProbe,
         id=task_id, repo=str(clone_dir), goal=goal, check=probe.check,
         writable=list(request.writable), base="origin/HEAD", fetch=False,
         provider=request.provider, model=request.model, max_steps=request.max_steps,
-        check_name=probe.check_name, pr_body=pr_body,
+        check_name=probe.check_name, pr_body=pr_body, check_profile=request.check_profile,
     )
 
 

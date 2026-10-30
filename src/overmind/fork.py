@@ -27,7 +27,7 @@ from .providers import Usage
 
 __all__ = ["CURATE_INSTRUCTION", "Curation", "FORK_TOOL", "ForkConfig", "ForkCost",
            "ForkFacts", "ForkResult", "curate_now", "execute_fork", "fork_schema",
-           "run_fork"]
+           "run_child", "run_fork"]
 
 #: ⚠️ "State results, not steps": the harness hands the parent the fork's
 #: ledger separately, so a narrative of what was run is redundant at best and
@@ -320,6 +320,24 @@ def run_fork(client: Any, parent_executor: GatedExecutor,
     executor = GatedExecutor(gate, {k: v for k, v in parent_executor.tools.items()
                                     if k != FORK_TOOL})
 
+    return run_child(client, executor, child_ledger, tools, history=history,
+                     fork_call_id=fork_call_id, pending=pending, task=task,
+                     fork_id=fork_id, config=config, time_sensitive=time_sensitive,
+                     parent_call_index=parent_call_index, parent_model=parent_model)
+
+
+def run_child(client: Any, executor: GatedExecutor, child_ledger: Ledger,
+              tools: Sequence[Mapping[str, Any]], *,
+              history: Sequence[Mapping[str, Any]], fork_call_id: str,
+              pending: Sequence[tuple[str, str]], task: str, fork_id: str,
+              config: ForkConfig, time_sensitive: bool, parent_call_index: int,
+              parent_model: str | None) -> ForkResult:
+    """The fork's loop and curation, over an executor the caller built.
+
+    Shared by `run_fork` (a `GatedExecutor` rebuilt from the parent's gate) and
+    the fork plug-in (an executor over the child pipeline): `child_ledger` is
+    the ledger that executor writes, so a loop that dies still reports it.
+    """
     seed = [dict(m) for m in history]
     seed.append(_tool_result_message(fork_call_id, FORK_TOOL,
                                      f"Forked as {fork_id}. You are now the fork; "

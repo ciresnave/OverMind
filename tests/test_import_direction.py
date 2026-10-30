@@ -93,6 +93,9 @@ ALLOWED: frozenset[tuple[str, str]] = frozenset({
     ("fork", "agent"),          # fork.py:23 (with agent->fork: today's one cycle)
     ("fork", "gate"),           # fork.py:24
     ("fork", "providers"),      # fork.py:26
+    ("fork_plugin", "fork"),    # the fork plug-in runs fork.run_child over a child pipeline
+    ("fork_plugin", "gate"),
+    ("fork_plugin", "harness"),
     ("workspace_plugin", "harness"),   # the one flat module that carries a plug-in into the harness
     ("workspace_plugin", "lanework"),
     ("lanework", "agent"),      # lanework.py:63
@@ -108,11 +111,13 @@ ALLOWED: frozenset[tuple[str, str]] = frozenset({
 MODULES: frozenset[str] = frozenset({
     "agent", "dispatch", "dispatch_mcp", "fork", "gate", "lanework",
     "ledger", "mcp_tools", "outcome", "providers", "quota", "repo_probe", "workspace_plugin",
+    "fork_plugin",
     # the harness subpackage (plan P3.1): "pkg/mod" names, scanned below
     "harness/__init__", "harness/config", "harness/manifest",
     "harness/plugin_api", "harness/primitives", "harness/pipeline", "harness/gate_plugin",
     "harness/session", "harness/session_main", "harness/registry", "harness/proctree",
     "harness/chokepoint", "harness/static_scan", "harness/ledger_plugin",
+    "harness/pipeline_executor",
 })
 
 # Edges INSIDE the harness package, plus edges from it to the flat modules.
@@ -128,6 +133,9 @@ HARNESS_ALLOWED: frozenset[tuple[str, str]] = frozenset({
     ("harness/gate_plugin", "harness/plugin_api"),
     ("harness/ledger_plugin", "harness/plugin_api"),
     ("harness/ledger_plugin", "gate"),        # the Ledger adapter, like gate_plugin
+    ("harness/pipeline_executor", "gate"),    # the GatedExecutor-shaped view run_agent drives
+    ("harness/pipeline_executor", "harness/pipeline"),
+    ("harness/pipeline_executor", "harness/plugin_api"),
     ("harness/gate_plugin", "gate"),          # the Gate adapter: the one place harness meets a flat module
     ("harness/session", "harness/config"),
     ("harness/session", "harness/manifest"),

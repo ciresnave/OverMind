@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.14.26 (A3 P3.4: run_agent on the pipeline, 2026-10-30; provisional number)
+
+- Changed: `run_agent` can drive a `harness.pipeline_executor.PipelineExecutor` (it always could: the executor is `GatedExecutor`-shaped). New: `PipelineExecutor(pipeline, gate, fork_plugin=...)`; when it carries a `ForkPlugin`, `run_agent` binds the turn (`ForkPlugin.bind`) and submits the `fork` call through the pipeline instead of `execute_fork`, so the child pipeline and the absorb into the parent ledger happen in the plug-in. `fork=` must then equal `ForkPlugin.config` (new property) or `run_agent` raises. The `GatedExecutor` path is untouched.
+- Evidence: differential tests, same scripted client through `GatedExecutor` and through the pipeline: a fork run (same final text, stop reason, parent ledger rows with lineage, same fork summary) and a plain run with a denied call. Mutations, each red on a named test: bind skipped, pipeline fork path off, config mismatch unchecked, forks not recorded, executor/plug-in gate tie unchecked (review-found: `PipelineExecutor` now refuses a gate that is not the fork plug-in's; `ForkPlugin.gate` is new). Review also found the new tests sat after the `__main__` guard; moved.
+- NOT done: no production caller uses it yet (`lanework.run_task` and `dispatch` still build `GatedExecutor`); default registry; declared-service opening/enforcement; `LedgerPlugin.facts()` into the gate.
+
 ## 0.14.25 (A3 P3.4: the MCP plug-in, 2026-10-29; provisional number; stacked on #172)
 
 - Added: `mcp_plugin.McpService` (what the HARNESS holds: opens an `McpToolSource` inside `harness_owned()`, its loop thread marks itself harness-owned first, per MEASUREMENTS s38) and `McpPlugin` (holds only the service NAME and the server's tool schemas; each tool's effect is `prims.call_service`). `McpToolSource.on_thread_start` (new optional hook, default none). `harness.services` (register/get a service by name) and `Primitives.call_service`, which refuses unless a call is allowed on this thread.

@@ -148,6 +148,11 @@ class Task:
     #: `check` and is trusted to (DESIGN-PROPOSAL 7.5). `from_json` refuses the key, so
     #: neither a file nor a dispatch message can claim it.
     trusted_author: bool = False
+    #: The orchestrator OFFERS the sandbox for a check the host did not choose (P3.7). The
+    #: `check-policy` plug-in still decides: no spawn, no certified launcher, or a non-python
+    #: check is a refusal, never a host run. A task file may set it: it only OFFERS a
+    #: sandbox (lowers privilege), unlike `trusted_author`, which `from_json` refuses.
+    check_sandbox: bool = False
 
     @classmethod
     def from_json(cls, data: Mapping[str, Any]) -> "Task":
@@ -190,6 +195,7 @@ class Task:
         ok = (isinstance(self.id, str) and isinstance(self.goal, str)
               and strs(self.check) and strs(self.writable) and strs(self.protected_globs)
               and isinstance(self.fetch, bool) and isinstance(self.trusted_author, bool)
+              and isinstance(self.check_sandbox, bool)
               and type(self.check_timeout_s) is int and type(self.max_steps) is int
               and isinstance(self.provider, str) and isinstance(self.pr_body, str)
               and all(v is None or isinstance(v, str)
@@ -397,9 +403,13 @@ def _clip(text: str, limit: int = MAX_TOOL_CHARS) -> str:
 class Workspace:
     """The tools a model may call, bound to one worktree."""
 
-    def __init__(self, root: pathlib.Path, task: Task, prims: Any = None) -> None:
+    def __init__(self, root: pathlib.Path, task: Task, prims: Any = None,
+                 check_runner: Any = None) -> None:
         self.root = root
         self.task = task
+        #: `(execute, task, root) -> (exit code, tail)` when the `check-policy` plug-in sent this
+        #: task's check to the sandbox; None: the check runs here, as the host chose it.
+        self.check_runner = check_runner
         #: Effect primitives (harness/primitives.py). None: today's direct I/O.
         #: With them, every process and every write goes through the primitive
         #: that the chokepoint attributes to the allowed call.
@@ -505,6 +515,8 @@ class Workspace:
 
     def check(self) -> tuple[int, str]:
         """The declared check. ⚠️ No argument reaches it from the model."""
+        if self.check_runner is not None:
+            return self.check_runner(self._run, self.task, self.root)
         try:
             proc = self._run(self.task.check, self.root, self.task.check_timeout_s, scrubbed_env())
         except subprocess.TimeoutExpired:
@@ -695,13 +707,13 @@ def run_task(task: Task, client: Any = None, *, publish: bool = False, keep: boo
     try:
         _git(repo, "worktree", "add", "-q", "--detach", "--", str(root), task.base)
         _git(root, "switch", "-q", "-c", branch)
-        ws = Workspace(root, task)
         tracked = frozenset(n.casefold() for n in
                             _git(root, "ls-files", "-z").split("\0") if n)
         # The agent's tools run through the plug-in pipeline (task_executor.py); `ws`
         # stays the harness's own plain Workspace for the readings below.
-        from .task_executor import build_task_executor, check_isolation
+        from .task_executor import build_task_executor, check_isolation, check_runner_of
         executor = build_task_executor(root, task, tracked)
+        ws = Workspace(root, task, check_runner=check_runner_of(executor))
         isolation = check_isolation(executor)
         client = client or build_client(task)
         label = check_label(task)

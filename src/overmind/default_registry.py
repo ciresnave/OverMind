@@ -37,6 +37,7 @@ from .harness.config import ServiceRef
 from .harness.services import get_service
 from .lanework import Task, WorkspaceConfined
 from .mcp_plugin import McpPlugin, McpService
+from .sandbox_check import SandboxRunner
 from .workspace_plugin import WorkspacePlugin
 
 __all__ = ["REGISTRY", "POLICY_TYPES"]
@@ -160,15 +161,32 @@ def _gate(config: Mapping[str, Any], ctx: BuildContext) -> Plugin:
     return GatePlugin(Gate(policies, facts=ledger.facts(), ledger=ledger.ledger))
 
 
-def _workspace_tools(config: Mapping[str, Any]) -> Plugin:
-    _exact(config, "workspace-tools", ("root", "task"))
+def _workspace_needs(config: Mapping[str, Any]) -> tuple[str, ...]:
+    source = config.get("check_runner_from")
+    return (_str(source, "check_runner_from"),) if source is not None else ()
+
+
+@requires(_workspace_needs)
+def _workspace_tools(config: Mapping[str, Any], ctx: BuildContext) -> Plugin:
+    _exact(config, "workspace-tools", ("root", "task"), ("check_runner_from",))
     if not isinstance(config["task"], dict):
         raise RegistryConfigError("workspace-tools: task must be an object")
-    return WorkspacePlugin(_abs_path(config["root"], "root"), Task.from_json(config["task"]))
+    runner = None
+    if "check_runner_from" in config:
+        source = ctx.built[config["check_runner_from"]]
+        if not isinstance(source, CheckPolicyPlugin):
+            raise RegistryConfigError("workspace-tools.check_runner_from: not a check-policy plug-in")
+        runner = lambda: source.check_runner    # read at call time: the policy decides at session start
+    return WorkspacePlugin(_abs_path(config["root"], "root"), Task.from_json(config["task"]),
+                           check_runner=runner)
 
 
 def _check_policy(config: Mapping[str, Any]) -> Plugin:
-    _exact(config, "check-policy", ("root", "check", "docs_only_check"), ("check_profile", "trusted_author"))
+    _exact(config, "check-policy", ("root", "check", "docs_only_check"),
+           ("check_profile", "trusted_author", "sandbox"))
+    sandbox = config.get("sandbox", False)
+    if type(sandbox) is not bool:
+        raise RegistryConfigError("check-policy.sandbox: expected a boolean")
     profile = config.get("check_profile")
     if profile is not None:
         profile = _str(profile, "check_profile")
@@ -176,7 +194,8 @@ def _check_policy(config: Mapping[str, Any]) -> Plugin:
     if type(trusted) is not bool:
         raise RegistryConfigError("check-policy.trusted_author: expected a boolean")
     return CheckPolicyPlugin(_abs_path(config["root"], "root"), _strings(config["check"], "check"),
-                             _strings(config["docs_only_check"], "docs_only_check"), profile, trusted)
+                             _strings(config["docs_only_check"], "docs_only_check"), profile, trusted,
+                             sandbox=SandboxRunner.from_env if sandbox else None)
 
 
 def _fork_needs(config: Mapping[str, Any]) -> tuple[str, ...]:

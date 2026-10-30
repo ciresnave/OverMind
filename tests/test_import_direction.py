@@ -107,6 +107,10 @@ ALLOWED: frozenset[tuple[str, str]] = frozenset({
     ("fork_plugin", "harness"),
     ("workspace_plugin", "harness"),   # the one flat module that carries a plug-in into the harness
     ("workspace_plugin", "lanework"),
+    ("lanework", "task_executor"),   # lazy, inside run_task (a call-time cycle, like agent -> fork)
+    ("task_executor", "default_registry"),
+    ("task_executor", "harness"),
+    ("task_executor", "lanework"),
     ("lanework", "agent"),      # lanework.py:63
     ("lanework", "gate"),       # lanework.py:64
     ("lanework", "outcome"),    # lanework.py:68
@@ -120,7 +124,7 @@ ALLOWED: frozenset[tuple[str, str]] = frozenset({
 MODULES: frozenset[str] = frozenset({
     "agent", "dispatch", "dispatch_mcp", "fork", "gate", "lanework",
     "ledger", "mcp_tools", "outcome", "providers", "quota", "repo_probe", "workspace_plugin",
-    "fork_plugin", "mcp_plugin", "default_registry",
+    "fork_plugin", "mcp_plugin", "default_registry", "task_executor",
     # the harness subpackage (plan P3.1): "pkg/mod" names, scanned below
     "harness/__init__", "harness/config", "harness/manifest",
     "harness/plugin_api", "harness/primitives", "harness/pipeline", "harness/gate_plugin",

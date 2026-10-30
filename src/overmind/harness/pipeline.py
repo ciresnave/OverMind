@@ -173,6 +173,10 @@ class Pipeline:
         return tuple(self._decl[id(p)] for p in self._plugins)
 
     @property
+    def plugins(self) -> tuple[Plugin, ...]:
+        return tuple(self._plugins)
+
+    @property
     def tool_names(self) -> tuple[str, ...]:
         return tuple(self._tools)
 

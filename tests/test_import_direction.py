@@ -93,6 +93,13 @@ ALLOWED: frozenset[tuple[str, str]] = frozenset({
     ("fork", "agent"),          # fork.py:23 (with agent->fork: today's one cycle)
     ("fork", "gate"),           # fork.py:24
     ("fork", "providers"),      # fork.py:26
+    ("default_registry", "fork"),         # the default registry: the one flat module that names every plug-in
+    ("default_registry", "fork_plugin"),
+    ("default_registry", "gate"),
+    ("default_registry", "harness"),
+    ("default_registry", "lanework"),
+    ("default_registry", "mcp_plugin"),
+    ("default_registry", "workspace_plugin"),
     ("mcp_plugin", "harness"),  # a flat module that carries MCP into the harness
     ("mcp_plugin", "mcp_tools"),
     ("fork_plugin", "fork"),    # the fork plug-in runs fork.run_child over a child pipeline
@@ -113,7 +120,7 @@ ALLOWED: frozenset[tuple[str, str]] = frozenset({
 MODULES: frozenset[str] = frozenset({
     "agent", "dispatch", "dispatch_mcp", "fork", "gate", "lanework",
     "ledger", "mcp_tools", "outcome", "providers", "quota", "repo_probe", "workspace_plugin",
-    "fork_plugin", "mcp_plugin",
+    "fork_plugin", "mcp_plugin", "default_registry",
     # the harness subpackage (plan P3.1): "pkg/mod" names, scanned below
     "harness/__init__", "harness/config", "harness/manifest",
     "harness/plugin_api", "harness/primitives", "harness/pipeline", "harness/gate_plugin",

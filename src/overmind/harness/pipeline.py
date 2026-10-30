@@ -31,7 +31,7 @@ from typing import Any, Callable, Iterable, Mapping
 from .config import ConfigError, SessionConfig, check_text
 from .manifest import LoadedManifest, PluginRecord, source_sha256
 from .plugin_api import (
-    API_VERSION, Allow, Correct, Declaration, Deny, Drop, HarnessCall, NoOpinion, Ok, Pass,
+    API_VERSION, Allow, BuildContext, Correct, Declaration, Deny, Drop, HarnessCall, NoOpinion, Ok, Pass,
     Plugin, PipelineOutcome, Redact, Refuse, Rewrite, SessionContext, Stop, ToolSpec,
 )
 from .primitives import Primitives, allowing, cleared
@@ -351,20 +351,113 @@ class Pipeline:
         return LoadedManifest(plugins=tuple(records), tools=tuple(self._tools), services=tuple(services))
 
 
+def _takes_context(factory: Callable[..., Plugin], name: str) -> bool:
+    """`factory(config)` (the original form) or `factory(config, ctx)`.
+
+    ⚠️ A v1 factory must be called EXACTLY as before, so the context is sent only
+    when the factory asks for it: its second positional argument is REQUIRED, or it
+    carries a `requires` mark (`harness.registry.requires`). An old `def f(config,
+    strict=False)` therefore never has `strict` replaced by a context. Anything
+    that accepts neither form is refused naming the fix. An uninspectable callable
+    is the original form."""
+    try:
+        sig = inspect.signature(factory)
+    except (TypeError, ValueError):
+        return False
+    one = two = True
+    try:
+        sig.bind({})
+    except TypeError:
+        one = False
+    try:
+        sig.bind({}, BuildContext({}))
+    except TypeError:
+        two = False
+    if two and (not one or hasattr(factory, "requires")):
+        return True
+    if one:
+        return False
+    raise PluginError(f"plug-in {name!r}: its factory must accept (config) or (config, ctx)")
+
+
+def _needs(factory: Callable[..., Plugin], ref_config: Mapping[str, Any], name: str,
+           takes_ctx: bool) -> tuple[str, ...]:
+    declared: Any = getattr(factory, "requires", ())
+    needs: Any
+    try:
+        needs = declared(ref_config) if callable(declared) else declared
+    except Exception as exc:                          # noqa: BLE001
+        raise PluginError(f"plug-in {name!r}: its requires raised {type(exc).__name__}: {exc}") from exc
+    if (type(needs) not in (tuple, list) or not all(type(n) is str and n for n in needs)
+            or len(set(needs)) != len(needs)):
+        raise PluginError(f"plug-in {name!r}: requires must be distinct non-empty names, not {needs!r}")
+    if needs and not takes_ctx:
+        raise PluginError(f"plug-in {name!r} declares requires {tuple(needs)} but its factory takes "
+                          f"only (config); make it factory(config, ctx) to receive them")
+    return tuple(needs)
+
+
+def _build_order(names: list[str], needs: Mapping[str, tuple[str, ...]]) -> list[str]:
+    """Dependencies first; config order otherwise. A missing need or a cycle is refused."""
+    for name in names:
+        for need in needs[name]:
+            if need not in needs:
+                raise PluginError(f"plug-in {name!r} requires {need!r}, which is not in the config")
+    order: list[str] = []
+    state: dict[str, int] = {}                        # 1 = in progress, 2 = done
+
+    def visit(name: str, path: tuple[str, ...]) -> None:
+        if state.get(name) == 2:
+            return
+        if state.get(name) == 1:
+            cycle = path[path.index(name):] + (name,)
+            raise PluginError("plug-in requirements form a cycle: " + " -> ".join(cycle))
+        state[name] = 1
+        for need in needs[name]:
+            visit(need, path + (name,))
+        state[name] = 2
+        order.append(name)
+
+    for name in names:
+        visit(name, ())
+    return order
+
+
 def load_pipeline(config: SessionConfig,
-                  registry: Mapping[str, Callable[[Mapping[str, Any]], Plugin]]) -> Pipeline:
-    """Build the pipeline a config asks for, or refuse all of it."""
-    plugins: list[Plugin] = []
+                  registry: Mapping[str, Callable[..., Plugin]]) -> Pipeline:
+    """Build the pipeline a config asks for, or refuse all of it.
+
+    Factories run in dependency order (`requires`); the pipeline runs its hooks in
+    CONFIG order. API_VERSION stays 1: the original `factory(config)` is unchanged."""
+    names = [ref.name for ref in config.plugins]
+    dupes = sorted({n for n in names if names.count(n) > 1})
+    if dupes:
+        raise PluginError(f"plug-in {dupes[0]!r} is in the config twice")
+    by_name = {ref.name: ref for ref in config.plugins}
+    factories: dict[str, Callable[..., Plugin]] = {}
+    takes: dict[str, bool] = {}
+    needs: dict[str, tuple[str, ...]] = {}
     for ref in config.plugins:
         factory = registry.get(ref.name)
         if factory is None:
             raise PluginError(f"plug-in {ref.name!r} is in the config but not registered")
+        factories[ref.name] = factory
+        takes[ref.name] = _takes_context(factory, ref.name)
+        needs[ref.name] = _needs(factory, ref.config, ref.name, takes[ref.name])
+    built: dict[str, Plugin] = {}
+    for name in _build_order(names, needs):
+        ref = by_name[name]
         try:
-            plugins.append(factory(ref.config))
+            if takes[name]:
+                built[name] = factories[name](ref.config, BuildContext(
+                    {n: built[n] for n in needs[name]}, frozenset(names[:names.index(name)])))
+            else:
+                built[name] = factories[name](ref.config)
         except PluginError:
             raise
         except Exception as exc:                      # noqa: BLE001
-            raise PluginError(f"plug-in {ref.name!r}: its factory raised {type(exc).__name__}: {exc}") from exc
+            raise PluginError(f"plug-in {name!r}: its factory raised {type(exc).__name__}: {exc}") from exc
+    plugins = [built[n] for n in names]
     pipeline = Pipeline(plugins, SessionContext(session_id=config.session_id))
     for ref, decl in zip(config.plugins, pipeline.declarations):
         if decl.name != ref.name:

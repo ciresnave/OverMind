@@ -694,6 +694,11 @@ def run_task(task: Task, client: Any = None, *, publish: bool = False, keep: boo
                  f"ACCEPTANCE CHECK (run with the run_check tool): {label}")
         run = run_agent(client, executor, schemas(), brief, system=SYSTEM,
                         max_steps=task.max_steps, offer="permitted")
+        # The pipeline swallows a ledger/observer failure into `observer_errors`; the old
+        # `GatedExecutor` let it escape. A ledger that missed a call would make `did()`
+        # and the denied count wrong, so it is an ERROR verdict, never a quiet one.
+        if executor.pipeline.observer_errors:
+            raise RuntimeError(f"the pipeline's ledger failed: {executor.pipeline.observer_errors[0]}")
 
         # 🔴 THE HARNESS'S OWN READING. Nothing below consults the model.
         changed = ws.changed_files()

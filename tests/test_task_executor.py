@@ -44,6 +44,26 @@ class TestTheTaskRunsOnThePipeline(RepoCase):
         self.assertIsInstance(seen[0], PipelineExecutor)
         self.assertIsInstance(seen[0], GatedExecutor)         # still the shape run_agent drives
 
+    def test_a_ledger_failure_is_an_ERROR_verdict_not_a_quiet_one(self):
+        real = task_executor.build_task_executor
+
+        def poisoned(*a, **kw):
+            ex = real(*a, **kw)
+            ex.pipeline._observer_errors.append("ledger: disk full")      # noqa: SLF001
+            return ex
+        with mock.patch.object(task_executor, "build_task_executor", poisoned):
+            r = self.run_it(call(("run_check", {})), say("done"))
+        self.assertEqual(r.verdict, "ERROR")
+        self.assertIn("disk full", r.error or "")
+
+    def test_a_pipeline_that_cannot_be_built_is_an_ERROR_verdict(self):
+        def broken(*a, **kw):
+            raise RuntimeError("no pipeline")
+        with mock.patch.object(task_executor, "build_task_executor", broken):
+            r = self.run_it(say("done"))
+        self.assertEqual(r.verdict, "ERROR")
+        self.assertIn("no pipeline", r.error or "")
+
     def test_the_gate_policy_refuses_a_write_outside_writable(self):
         task = self.task(writable=["a.txt"])
         ex = task_executor.build_task_executor(self.repo, task, ["a.txt", "Cargo.toml"])

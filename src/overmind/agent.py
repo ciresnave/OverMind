@@ -41,7 +41,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Mapping, Sequence, cast
 
 from .gate import GatedExecutor, Ledger, detect_smuggled_tool_call
 from .providers import ChatResult, ProviderClient, Usage, normalise_for_echo
@@ -277,13 +277,22 @@ def run_agent(client: ProviderClient, executor: GatedExecutor,
         raise ValueError(f"context_mode must be 'transcript', 'ledger' or "
                          f"'ledger+closure', not {context_mode!r}")
     if fork is not None:
-        from .fork import FORK_TOOL, execute_fork, fork_schema   # fork.py imports this module
+        from .fork import FORK_TOOL, ForkResult, execute_fork, fork_schema   # fork.py imports this module
         if context_mode != "transcript":
             raise ValueError("fork requires context_mode='transcript': a fork continues "
                              "its parent's transcript, and the ledger modes have none")
         if any((t.get("function") or {}).get("name") == FORK_TOOL for t in tools):
             raise ValueError(f"the caller's tools already name {FORK_TOOL!r}")
-        if FORK_TOOL in executor.tools:
+        plugin = getattr(executor, "fork_plugin", None)
+        if plugin is not None:
+            # a pipeline executor carries the fork as a plug-in: it must be the one
+            # registering `fork`, and its config is the fork's config
+            if FORK_TOOL not in executor.tools:
+                raise ValueError("the fork plug-in is not in the executor's pipeline")
+            if fork != plugin.config:
+                raise ValueError("fork= differs from the fork plug-in's config; pass "
+                                 "the plug-in's own (ForkPlugin.config)")
+        elif FORK_TOOL in executor.tools:
             raise ValueError(f"the executor already registers {FORK_TOOL!r}")
         if executor.gate.certainly_denied([FORK_TOOL]):
             # ⚠️ Its schema would be paid for on every turn and never usable
@@ -488,7 +497,22 @@ def run_agent(client: ProviderClient, executor: GatedExecutor,
                     "NOT RUN: a call in this turn repeats one that was already "
                     "stopped, so the run ends now and the fork was not started."))
                 continue
-            if fork is not None and name == FORK_TOOL:  # pyright: ignore[reportPossiblyUnbound]
+            if (fork is not None and name == FORK_TOOL  # pyright: ignore[reportPossiblyUnbound]
+                    and getattr(executor, "fork_plugin", None) is not None):
+                # the pipeline path: bind this turn, submit the call, and the plug-in
+                # absorbs the child's ledger; the result is what the effect returned
+                cast(Any, executor).fork_plugin.bind(
+                    client, tools, messages=messages, calls=calls, index=index,
+                    time_sensitive=time_sensitive, parent_call_index=len(call_usage) - 1,
+                    parent_model=result.model, fork_id=f"f{len(forks) + 1}")
+                outcome = executor.execute(name, args, actor=actor)
+                forked = (outcome.result if outcome.executed and outcome.error is None
+                          and isinstance(outcome.result, ForkResult) else None)  # pyright: ignore[reportPossiblyUnbound]
+                if forked is not None:
+                    forks.append(forked)
+                    forked.cost.finalize(call_usage)
+                    spent = spent + forked.run.usage + forked.cost.curation
+            elif fork is not None and name == FORK_TOOL:  # pyright: ignore[reportPossiblyUnbound]
                 outcome, forked = execute_fork(  # pyright: ignore[reportPossiblyUnbound]
                     client, executor, tools, messages=messages, calls=calls, index=index,
                     args=args, actor=actor, config=fork, time_sensitive=time_sensitive,

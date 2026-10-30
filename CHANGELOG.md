@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.14.32 (A3 P3.5: the `check-policy` plug-in, 2026-10-30; provisional number)
+
+DESIGN-PROPOSAL 7.5 (CireSnave 2026-10-28), plan P3.5. Provenance design is the plan's proposal, unchanged.
+- **New plug-in `check-policy`** (`check_policy_plugin.py`, registered in `default_registry`; first in the `run_task` pipeline). At `on_session_start` it refuses the session unless the task's `check` EQUALS `repo_probe.infer_check(worktree, check_profile).check` AND that registry entry declares its effects, or equals `DOCS_ONLY_CHECK`, or `trusted_author` is set. Refusal is an ERROR verdict before any process starts. A caller-supplied argv, a registry argv for another repo or profile, an unknown profile and a refused inference are all refused.
+- **`Task.check_profile`** (set by `dispatch_mcp.build_task` from the request) and **`Task.trusted_author`** (default False; `lanework.main` sets it for a hand-run `task.json`; `Task.from_json` refuses the key, so no file or message can claim it).
+- **Effects declared**: `repo_probe.CHECK_TABLE_EFFECTS` / `NAMED_CHECK_PROFILE_EFFECTS` (`sandbox-safe | external`) plus `check_effect`; tests require every table and profile entry to be declared. ASSESSMENT for the PM: all eleven are `external` (they run the checkout's code, including what the model just wrote, and fetch dependencies); none is measured in a sandbox. Whether to ALSO sandbox them is the PM's call and P3.7's work.
+- Tests: `tests/test_check_policy.py` (23). `test_lanework.RepoCase.task` now builds a trusted task (a hand-written one). Mutations, each red on named tests: trusted ignored; argv equality dropped; effects not required; docs-only dropped; policy never refuses; file may claim `trusted_author`; CLI does not trust; dispatch drops the profile; executor drops the profile (first version survived; test added); executor trusts everyone; a profile left undeclared.
+- NOT done: no sandbox (P3.7); `dispatch.py` still unconnected for agent-generated argvs; `check-policy` runs once at session start, so a worktree that changes before the check is not re-read; `Task.check` stays a plain list.
+
 ## 0.14.31 (A3 P3.4: `lanework.run_task` on the pipeline, 2026-10-30; provisional number)
 
 - Changed: `run_task` hands the agent a `PipelineExecutor` over the plug-in pipeline `default_registry.REGISTRY` builds (`ledger`, `gate` with `workspace-confined` then `deny-unless-declared` over the six workspace tools, `workspace-tools`), via the new `task_executor.build_task_executor`. Same policies, same task fields (`writable`, `protected_globs`, the tracked-file list). The harness's own readings after the run (`changed_files`, the check) still use `run_task`'s plain `Workspace`. New: `Pipeline.plugins` (read-only tuple). `lanework` imports `task_executor` lazily inside `run_task` (a call-time cycle, like `agent` -> `fork`); the import-direction allow-list names the three edges.

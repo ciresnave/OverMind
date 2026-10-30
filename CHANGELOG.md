@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.14.29 (A3 P3.4: the harness opens the services a session declares, 2026-10-30; provisional number)
+
+PM ruling 2026-10-30: option A. `API_VERSION` and `schema_version` stay 1.
+- **`SessionConfig.services`** (optional; absent means none, and an old config loads and round-trips with no `services` key): `[{name, kind, options}]`, names unique. `spawn(openers="module:attr")` names the kind -> opener table (default `overmind.harness.services:OPENERS`, empty; `overmind.default_registry:OPENERS` has `mcp-stdio` with `command`, `args?`, `env?`, `cwd?`, absolute `cwd`, unknown keys refused). Like the registry, the table is an orchestrator argument and never part of the config.
+- **The session child opens them** (`services.open_services`) inside `harness_owned()` AFTER the chokepoint is armed and BEFORE `load_pipeline` (a plug-in reads its service's tools at construction), all or none, and closes them in reverse on every exit path including a refused load.
+- **Refused at load:** a plug-in declaring a service the config does not open; a configured service no plug-in declares; an unknown kind; an opener that raises; a name already registered.
+- **`call_service` checks the declaration:** `allowing(call, services)` carries the services the plug-in OWNING the allowed call declared, `call_service` refuses any other (fail closed: the default is none), cleared with the allowance for hooks.
+- Evidence: `tests/test_harness_services.py` (18, including real child processes) and two tests in `test_default_registry.py` (a real session opening the stub MCP server through `mcp-stdio` with the chokepoint armed and no violation; skipped without the `mcp` package). Mutations, each red on named tests: declaration check off; services of ALL plug-ins allowed (first version survived: the second plug-in owned no tool; test fixed); declared-but-unconfigured unchecked; configured-nobody-declares unchecked; never closed; opened after the plug-ins; partial open not rolled back; a duplicate name leaked; closed in open order; empty `services` key emitted; duplicate service name accepted. Existing tests changed: the `call_service` control passes its services, the registry `mcp` test configures the service, the import allow-list gains `services -> config` and `session_main -> primitives, services`.
+- NOT done: the opener table is one orchestrator-trusted module (a kind cannot be added by config); an MCP service can only be stdio; no restart or health check of a service that dies mid-session; `run_task`/`dispatch` still `GatedExecutor`; child fork pipelines still get no `on_session_start`/`on_stop`.
+
 ## 0.14.28 (A3 P3.4: the default registry and factories that declare their needs, 2026-10-30; provisional number)
 
 Design note (PM approved option A with three conditions, 2026-10-30):

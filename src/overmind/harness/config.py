@@ -118,6 +118,15 @@ class PluginRef:
 
 
 @dataclass(frozen=True)
+class ServiceRef:
+    """A service the HARNESS opens for the session (spec section 2): `kind` picks
+    the opener the orchestrator named at spawn, `options` is its JSON config."""
+    name: str
+    kind: str
+    options: dict[str, Any]
+
+
+@dataclass(frozen=True)
 class Workspace:
     repo: str
     base: str
@@ -132,11 +141,14 @@ class SessionConfig:
     plugins: tuple[PluginRef, ...]
     workspace: Workspace
     schema_version: int = SCHEMA_VERSION
+    #: Optional on the wire: a config without `services` is valid and means none.
+    services: tuple[ServiceRef, ...] = ()
 
     @classmethod
     def from_dict(cls, data: Any) -> "SessionConfig":
         top = _obj(data, "config",
-                   ("schema_version", "session_id", "handler", "route", "limits", "plugins", "workspace"))
+                   ("schema_version", "session_id", "handler", "route", "limits", "plugins", "workspace"),
+                   ("services",))
         if type(top["schema_version"]) is not int or top["schema_version"] != SCHEMA_VERSION:
             raise ConfigError(f"schema_version: this harness knows {SCHEMA_VERSION}, got {top['schema_version']!r}")
 
@@ -169,11 +181,28 @@ class SessionConfig:
             plugins.append(PluginRef(name, _text(p["version"], f"plugins[{i}].version"),
                                      _json_value(p["config"], f"plugins[{i}].config")))
 
+        services: list[ServiceRef] = []
+        if "services" in top:
+            if not isinstance(top["services"], list):
+                raise ConfigError("services: expected a list")
+            seen_services: set[str] = set()
+            for i, s in enumerate(top["services"]):
+                s = _obj(s, f"services[{i}]", ("name", "kind", "options"))
+                sname = _text(s["name"], f"services[{i}].name")
+                if sname in seen_services:
+                    raise ConfigError(f"services[{i}].name: duplicate service {sname!r}")
+                seen_services.add(sname)
+                if not isinstance(s["options"], dict):
+                    raise ConfigError(f"services[{i}].options: expected an object")
+                services.append(ServiceRef(sname, _text(s["kind"], f"services[{i}].kind"),
+                                           _json_value(s["options"], f"services[{i}].options")))
+
         w = _obj(top["workspace"], "workspace", ("repo", "base"))
         workspace = Workspace(_text(w["repo"], "workspace.repo"), _text(w["base"], "workspace.base"))
 
         return cls(session_id=_text(top["session_id"], "session_id"), handler=handler,
-                   route=tuple(route), limits=limits, plugins=tuple(plugins), workspace=workspace)
+                   route=tuple(route), limits=limits, plugins=tuple(plugins), workspace=workspace,
+                   services=tuple(services))
 
     @classmethod
     def from_json(cls, text: str) -> "SessionConfig":
@@ -184,7 +213,7 @@ class SessionConfig:
         return cls.from_dict(data)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        out = {
             "schema_version": self.schema_version,
             "session_id": self.session_id,
             "handler": {"kind": self.handler.kind, "version": self.handler.version},
@@ -195,6 +224,9 @@ class SessionConfig:
             "plugins": [{"name": p.name, "version": p.version, "config": p.config} for p in self.plugins],
             "workspace": {"repo": self.workspace.repo, "base": self.workspace.base},
         }
+        if self.services:                             # absent when empty: an old config round-trips as itself
+            out["services"] = [{"name": s.name, "kind": s.kind, "options": s.options} for s in self.services]
+        return out
 
     def to_json(self) -> str:
         return json.dumps(self.to_dict(), sort_keys=False)

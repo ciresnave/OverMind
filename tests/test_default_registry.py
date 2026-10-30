@@ -15,6 +15,7 @@ Two claims, each with a negative control:
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import subprocess
 import sys
@@ -41,9 +42,10 @@ from overmind.fork import FORK_TOOL  # noqa: E402
 CHECK = [sys.executable, "-c", "print('ok')"]
 
 
-def cfg(*plugins):
+def cfg(*plugins, services=None):
     """plugins: (name, config) pairs."""
-    return SessionConfig.from_dict({
+    extra = {"services": services} if services is not None else {}
+    return SessionConfig.from_dict({**extra,
         "schema_version": 1, "session_id": "s-1",
         "handler": {"kind": "openai-chat", "version": 1},
         "route": [{"provider": "p", "model": "m"}],
@@ -196,8 +198,8 @@ class TestLoader(unittest.TestCase):
 POLICY = {"type": "deny-unless-declared", "reversible": ["list_files", "fork"]}
 
 
-def base(*extra, policies=None):
-    return cfg(("ledger", {}), ("gate", {"policies": policies or [POLICY]}), *extra)
+def base(*extra, policies=None, services=None):
+    return cfg(("ledger", {}), ("gate", {"policies": policies or [POLICY]}), *extra, services=services)
 
 
 class TestRegistryConfigIsNeverIgnored(unittest.TestCase):
@@ -288,7 +290,7 @@ class TestRegistryConfigIsNeverIgnored(unittest.TestCase):
             self.load(base(("fork", {"max_steps": 0})))
 
     def test_mcp_needs_a_service_the_harness_opened(self):
-        conf = cfg(("mcp", {"service": "srv"}))
+        conf = cfg(("mcp", {"service": "srv"}), services=[{"name": "srv", "kind": "k", "options": {}}])
         with self.assertRaisesRegex(PluginError, "srv"):
             self.load(conf)
 
@@ -351,6 +353,36 @@ class TestSpawnedSession(unittest.TestCase):
             self.assertIn("fork", m.tools)
         finally:
             h.stop(timeout=5)
+
+    @unittest.skipUnless(importlib.util.find_spec("mcp"), "the `mcp` package is not installed")
+    def test_a_real_session_opens_a_configured_mcp_service_and_loads_its_plugin(self):
+        """The child opens the stdio server itself (harness-owned, chokepoint armed),
+        BEFORE the `mcp` plug-in is built from its tools; nothing is registered in
+        this process."""
+        stub = os.path.join(HERE, "stub_mcp_server.py")
+        config = base(("mcp", {"service": "stub"}), services=[
+            {"name": "stub", "kind": "mcp-stdio", "options": {"command": sys.executable, "args": ["-I", stub]}}])
+        h = spawn(config, registry="overmind.default_registry:REGISTRY",
+                  openers="overmind.default_registry:OPENERS")
+        try:
+            m = h.loaded(timeout=120)
+            self.assertEqual(m.services, ("stub",))
+            self.assertIn("shout", m.tools)
+        finally:
+            result = h.stop(timeout=30)
+        self.assertEqual(result.violations, ())
+
+    def test_the_mcp_stdio_opener_refuses_unknown_and_relative_options(self):
+        from overmind.default_registry import OPENERS, RegistryConfigError
+        from overmind.harness.config import ServiceRef
+        opener = OPENERS["mcp-stdio"]
+        for label, options in {"unknown key": {"command": "x", "shell": True},
+                               "missing command": {},
+                               "relative cwd": {"command": "x", "cwd": "rel"},
+                               "env not strings": {"command": "x", "env": {"A": 1}},
+                               "args not strings": {"command": "x", "args": [1]}}.items():
+            with self.subTest(label), self.assertRaises(RegistryConfigError):
+                opener(ServiceRef("s", "mcp-stdio", options))
 
 
 if __name__ == "__main__":

@@ -139,6 +139,7 @@ class Pipeline:
         self._observer_errors_dropped = 0
         names: list[str] = []
         owners: dict[str, str] = {}
+        self._tool_services: dict[str, frozenset[str]] = {}
         for plugin in self._plugins:
             if declared is not None and id(plugin) in declared:
                 raw = declared[id(plugin)]
@@ -164,6 +165,7 @@ class Pipeline:
                         f"tool {spec.name!r} is declared by both {owners[spec.name]!r} and {decl.name!r}")
                 owners[spec.name] = decl.name
                 self._tools[spec.name] = spec
+                self._tool_services[spec.name] = frozenset(decl.services)
 
     @property
     def declarations(self) -> tuple[Declaration, ...]:
@@ -310,7 +312,8 @@ class Pipeline:
         result: Any = None
         error: str | None = None
         # the effect runs on the pristine copy: what was decided is what executes
-        with allowing(HarnessCall(name=name, arguments=copy.deepcopy(pristine), actor=actor)):
+        with allowing(HarnessCall(name=name, arguments=copy.deepcopy(pristine), actor=actor),
+                      self._tool_services[name]):
             try:
                 result = spec.effect(Primitives(), **copy.deepcopy(pristine))
             except Exception as exc:                  # noqa: BLE001 - recorded, not swallowed
@@ -459,6 +462,14 @@ def load_pipeline(config: SessionConfig,
             raise PluginError(f"plug-in {name!r}: its factory raised {type(exc).__name__}: {exc}") from exc
     plugins = [built[n] for n in names]
     pipeline = Pipeline(plugins, SessionContext(session_id=config.session_id))
+    configured = {s.name for s in config.services}
+    declared_services = {s for decl in pipeline.declarations for s in decl.services}
+    for decl in pipeline.declarations:
+        for s in decl.services:
+            if s not in configured:
+                raise PluginError(f"plug-in {decl.name!r} declares service {s!r}, which the config does not open")
+    for s in sorted(configured - declared_services):
+        raise PluginError(f"service {s!r} is opened by the config but no plug-in declares it")
     for ref, decl in zip(config.plugins, pipeline.declarations):
         if decl.name != ref.name:
             raise PluginError(f"plug-in {ref.name!r}: the registered plug-in declares itself {decl.name!r}")

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.14.30 (docs: ROADMAP rows R1-R3 for the slice 3 follow-ups, 2026-10-30; provisional number)
+
+- Added: three rows in ROADMAP section 4 for what OverMind#177 listed as not done (close-on-EOF and fork child service set run not read; `open_services` BaseException leak; `--openers`/`--registry` argv IndexError), each with its file reference. PM asked for them in OverMind's own ROADMAP. No code changes.
+
 ## 0.14.29 (A3 P3.4: the harness opens the services a session declares, 2026-10-30; provisional number)
 
 PM ruling 2026-10-30: option A. `API_VERSION` and `schema_version` stay 1.

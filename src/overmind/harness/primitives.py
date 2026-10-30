@@ -37,6 +37,7 @@ from typing import Any, Iterator, Mapping, Sequence, cast
 
 from .plugin_api import HarnessCall
 from .proctree import ProcessTree
+from .services import get_service
 
 _state = threading.local()
 
@@ -146,6 +147,18 @@ class Primitives:
             if parents:
                 os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
             _do_write(path, payload)
+
+    def call_service(self, service: str, tool: str, arguments: Mapping[str, Any]) -> Any:
+        """Call `tool` on a service the HARNESS opened (services.py). Refuses unless
+        a tool call is allowed on this thread, so a hook cannot use an already-open
+        connection: no audit event fires for it, this refusal is the only guard."""
+        call = self._require("call_service")
+        if tool != call.name:
+            # the gate allowed THIS call; another tool on the same connection was never decided
+            raise PrimitiveRefused(
+                f"call_service: tool {tool!r} is not the allowed call {call.name!r}")
+        with _frame("call_service", call):
+            return get_service(service).call(tool, dict(arguments))
 
     def run_process(self, argv: Sequence[str], *, cwd: str, timeout: float,
                     env: Mapping[str, str]) -> "subprocess.CompletedProcess[str]":

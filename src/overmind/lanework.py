@@ -62,10 +62,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping, Sequence, cast
 
 from .agent import AgentRun, run_agent
-from .gate import (
-    Decision, DenyUnlessDeclared, FactSource, Gate, GatedExecutor, Ledger,
-    StaticFacts, ToolCall,
-)
+from .gate import Decision, FactSource, ToolCall
 from .outcome import claims_success
 from .providers import PROVIDERS, ProviderClient, RoutedClient
 from .quota import QuotaBook, default_path
@@ -687,11 +684,10 @@ def run_task(task: Task, client: Any = None, *, publish: bool = False, keep: boo
         ws = Workspace(root, task)
         tracked = frozenset(n.casefold() for n in
                             _git(root, "ls-files", "-z").split("\0") if n)
-        gate = Gate([WorkspaceConfined(root, task.writable, tracked,
-                                       extra_denied_globs=task.protected_globs),
-                     DenyUnlessDeclared(reversible=frozenset(TOOL_NAMES))],
-                    facts=StaticFacts(), ledger=Ledger())
-        executor = GatedExecutor(gate, ws.tools())
+        # The agent's tools run through the plug-in pipeline (task_executor.py); `ws`
+        # stays the harness's own plain Workspace for the readings below.
+        from .task_executor import build_task_executor
+        executor = build_task_executor(root, task, tracked)
         client = client or build_client(task)
         label = check_label(task)
         brief = (f"GOAL:\n{task.goal}\n\nFILES YOU MAY WRITE (globs): {task.writable}\n"

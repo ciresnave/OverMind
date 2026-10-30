@@ -14,4 +14,18 @@ from typing import Any, Callable, Mapping
 
 from .plugin_api import Plugin
 
+
+def requires(*names: Any):
+    """Declare the plug-ins a factory needs built before it, by registry name.
+
+    The factory then takes `(config, ctx)` and reads them from `ctx.built`. A
+    factory with no `requires` and one argument, `factory(config)`, is the
+    original form and still works unchanged. `names` may instead be ONE callable
+    `config -> tuple of names`, for a need that depends on the config.
+    """
+    def mark(factory):
+        factory.requires = names[0] if len(names) == 1 and callable(names[0]) else names
+        return factory
+    return mark
+
 REGISTRY: dict[str, Callable[[Mapping[str, Any]], Plugin]] = {}

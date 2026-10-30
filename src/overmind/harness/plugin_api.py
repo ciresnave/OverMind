@@ -95,6 +95,20 @@ class NoOpinion:
     """before_tool_call: nothing here covers this tool."""
 
 
+# --- what a factory is handed ------------------------------------------------
+
+@dataclass(frozen=True)
+class BuildContext:
+    """What a registry factory may ask for besides its own config: the plug-ins
+    it NAMED in `requires` (see `harness.registry.requires`), already built, by
+    name. Nothing else: a factory sees only what it declared it needs."""
+    built: Mapping[str, "Plugin"]
+    #: Names of the plug-ins that come BEFORE this one in the config, i.e. whose
+    #: hooks run before its own. A factory whose plug-in must follow another in
+    #: hook order (the fork follows the ledger) checks it here, at load.
+    earlier: frozenset[str] = frozenset()
+
+
 # --- what a hook is handed --------------------------------------------------
 
 @dataclass(frozen=True)

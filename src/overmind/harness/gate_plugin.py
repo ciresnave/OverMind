@@ -23,6 +23,10 @@ class GatePlugin(Plugin):
         self._gate = gate
         self._decl = Declaration(name=name, version=version, api_version=API_VERSION)
 
+    @property
+    def gate(self) -> Gate:
+        return self._gate
+
     def declares(self) -> Declaration:
         return self._decl
 

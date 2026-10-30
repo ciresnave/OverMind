@@ -151,6 +151,9 @@ HARNESS_ALLOWED: frozenset[tuple[str, str]] = frozenset({
     ("harness/session", "harness/proctree"),
     ("harness/primitives", "harness/proctree"),
     ("harness/primitives", "harness/services"),
+    ("harness/services", "harness/config"),   # open_services takes the config's ServiceRef
+    ("harness/session_main", "harness/primitives"),
+    ("harness/session_main", "harness/services"),
     ("harness/session_main", "harness/config"),
     ("harness/session_main", "harness/pipeline"),
     ("harness/session_main", "harness/plugin_api"),

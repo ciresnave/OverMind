@@ -42,6 +42,8 @@ from . import chokepoint
 from .config import ConfigError, SessionConfig
 from .pipeline import PluginError, load_pipeline
 from .plugin_api import Refuse
+from .primitives import harness_owned
+from .services import ServiceOpenError, close_services, open_services
 
 
 def _emit(proto: TextIO, nonce: str, event: dict[str, Any]) -> None:
@@ -66,20 +68,29 @@ def _records_for_the_wire(records: dict[str, Any]) -> dict[str, Any]:
         return out
 
 
-def _load_registry(spec: str) -> Mapping[str, Any]:
+def _load_registry(spec: str, what: str = "registry") -> Mapping[str, Any]:
     module_name, _, attr = spec.partition(":")
     if not module_name or not attr:
-        raise PluginError(f"registry {spec!r} is not 'module:attr'")
+        raise PluginError(f"{what} {spec!r} is not 'module:attr'")
     try:
         registry = getattr(importlib.import_module(module_name), attr)
     except (ImportError, AttributeError) as exc:
-        raise PluginError(f"registry {spec!r} cannot be loaded: {type(exc).__name__}: {exc}") from exc
+        raise PluginError(f"{what} {spec!r} cannot be loaded: {type(exc).__name__}: {exc}") from exc
     if not isinstance(registry, Mapping):
-        raise PluginError(f"registry {spec!r} is not a mapping")
+        raise PluginError(f"{what} {spec!r} is not a mapping")
     return registry
 
 
 def main(argv: list[str]) -> int:
+    opened: list[str] = []
+    try:
+        return _main(argv, opened)
+    finally:
+        with harness_owned():
+            close_services(opened)                    # every exit path closes what the harness opened
+
+
+def _main(argv: list[str], opened: list[str]) -> int:
     proto = os.fdopen(os.dup(1), "w", encoding="utf-8", buffering=1)
     os.dup2(2, 1)
     sys.stdout = sys.stderr
@@ -87,6 +98,9 @@ def main(argv: list[str]) -> int:
     registry_spec = "overmind.harness.registry:REGISTRY"
     if "--registry" in argv:
         registry_spec = argv[argv.index("--registry") + 1]
+    openers_spec = "overmind.harness.services:OPENERS"
+    if "--openers" in argv:
+        openers_spec = argv[argv.index("--openers") + 1]
 
     nonce = sys.stdin.readline().strip()
     if not nonce:
@@ -103,13 +117,18 @@ def main(argv: list[str]) -> int:
 
     try:
         config = SessionConfig.from_json(sys.stdin.readline())
+        # The HARNESS opens the services, before the plug-ins are built (a plug-in
+        # reads its service's tools at construction) and in a harness-owned frame.
+        if config.services:
+            with harness_owned():
+                opened.extend(open_services(config.services, _load_registry(openers_spec, "openers")))
         pipeline = load_pipeline(config, _load_registry(registry_spec))
         started = pipeline.start()
         if isinstance(started, Refuse):
             emit({"event": "refused", "reason": started.reason})
             return 2
         manifest = pipeline.manifest()
-    except (ConfigError, PluginError) as exc:
+    except (ConfigError, PluginError, ServiceOpenError) as exc:
         emit({"event": "refused", "reason": f"{type(exc).__name__}: {exc}"})
         return 2
     except Exception as exc:                          # noqa: BLE001 - reported, not swallowed

@@ -106,7 +106,7 @@ class TestMcpPlugin(unittest.TestCase):
         self.assertEqual(self.svc.calls, [])
 
     def test_control_the_same_call_inside_an_allowed_call_works(self):
-        with allowing(HarnessCall("shout", {}, "t")):
+        with allowing(HarnessCall("shout", {}, "t"), frozenset({"srv"})):
             self.assertEqual(Primitives().call_service("srv", "shout", {"text": "x"}), "SHOUT:x")
 
     def test_an_effect_cannot_call_a_tool_other_than_the_one_allowed(self):

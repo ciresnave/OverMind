@@ -31,9 +31,10 @@ from .harness.gate_plugin import GatePlugin
 from .harness.ledger_plugin import LedgerPlugin
 from .harness.plugin_api import BuildContext, Plugin
 from .harness.registry import requires
+from .harness.config import ServiceRef
 from .harness.services import get_service
 from .lanework import Task, WorkspaceConfined
-from .mcp_plugin import McpPlugin
+from .mcp_plugin import McpPlugin, McpService
 from .workspace_plugin import WorkspacePlugin
 
 __all__ = ["REGISTRY", "POLICY_TYPES"]
@@ -192,6 +193,28 @@ def _mcp(config: Mapping[str, Any]) -> Plugin:
     name = _str(config["service"], "service")
     service: Any = get_service(name)                 # raises if the harness has not opened it
     return McpPlugin(name, service)
+
+
+def _open_mcp_stdio(ref: ServiceRef) -> McpService:
+    """Opener for `{"kind": "mcp-stdio", "options": {"command", "args"?, "env"?, "cwd"?}}`."""
+    o = ref.options
+    where = f"service {ref.name!r}"
+    _exact(o, where, ("command",), ("args", "env", "cwd"))
+    kw: dict[str, Any] = {}
+    if "env" in o:
+        env = o["env"]
+        if (type(env) is not dict
+                or not all(type(k) is str and type(v) is str for k, v in env.items())):
+            raise RegistryConfigError(f"{where}.env: expected an object of strings")
+        kw["env"] = env
+    if "cwd" in o:
+        kw["cwd"] = str(_abs_path(o["cwd"], f"{where}.cwd"))
+    return McpService.stdio(_str(o["command"], f"{where}.command"),
+                            _strings(o.get("args", []), f"{where}.args"), **kw).open()
+
+
+#: Name this with `spawn(openers="overmind.default_registry:OPENERS")`.
+OPENERS: dict[str, Callable[[ServiceRef], Any]] = {"mcp-stdio": _open_mcp_stdio}
 
 
 REGISTRY: dict[str, Callable[..., Plugin]] = {

@@ -50,6 +50,11 @@ def allowed_call() -> HarnessCall | None:
     return getattr(_state, "allowed", None)
 
 
+def allowed_services() -> frozenset[str]:
+    """The services the plug-in that owns the allowed call declared."""
+    return getattr(_state, "services", frozenset())
+
+
 def primitive_frame() -> tuple[str, HarnessCall] | None:
     """`(primitive name, the allowed call it runs for)` while a primitive runs."""
     return getattr(_state, "frame", None)
@@ -85,14 +90,19 @@ def mark_thread_harness_owned() -> None:
 
 
 @contextmanager
-def allowing(call: HarnessCall) -> Iterator[None]:
-    """Set the allowance for the duration of one allowed call's effect."""
+def allowing(call: HarnessCall, services: frozenset[str] = frozenset()) -> Iterator[None]:
+    """Set the allowance for the duration of one allowed call's effect.
+    `services` is what the call's owning plug-in declared (`Declaration.services`);
+    the default is none, so `call_service` fails closed."""
     previous = allowed_call()
+    previous_services = allowed_services()
     _state.allowed = call
+    _state.services = services
     try:
         yield
     finally:
         _state.allowed = previous
+        _state.services = previous_services
 
 
 @contextmanager
@@ -101,13 +111,16 @@ def cleared() -> Iterator[None]:
     restoring it after (a fork's child pipeline nests inside the parent's
     allowed call)."""
     previous = allowed_call()
+    previous_services = allowed_services()
     previous_owned = in_harness_owned_frame()
     _state.allowed = None
+    _state.services = frozenset()
     _state.owned = False
     try:
         yield
     finally:
         _state.allowed = previous
+        _state.services = previous_services
         _state.owned = previous_owned
 
 
@@ -157,6 +170,11 @@ class Primitives:
             # the gate allowed THIS call; another tool on the same connection was never decided
             raise PrimitiveRefused(
                 f"call_service: tool {tool!r} is not the allowed call {call.name!r}")
+        if service not in allowed_services():
+            # the plug-in that owns this call never declared the service: a declaration
+            # is what the manifest and the orchestrator's review are about
+            raise PrimitiveRefused(
+                f"call_service: service {service!r} is not declared by the plug-in that owns {call.name!r}")
         with _frame("call_service", call):
             return get_service(service).call(tool, dict(arguments))
 

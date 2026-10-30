@@ -271,14 +271,14 @@ class SessionHandle:
 
 
 def spawn(config: SessionConfig, *, registry: str = "overmind.harness.registry:REGISTRY",
-          extra_paths: Sequence[str] = (), env: Mapping[str, str] | None = None,
+          openers: str = "overmind.harness.services:OPENERS", extra_paths: Sequence[str] = (), env: Mapping[str, str] | None = None,
           python: str | None = None) -> SessionHandle:
     """Start one harness process for `config`. The child's code is this
     process's own `overmind` (its source root goes first on the child's path)."""
     argv = [python or sys.executable, "-I", "-c", _BOOT, "--path", _overmind_src_root()]
     for p in extra_paths:
         argv += ["--path", str(p)]
-    argv += ["--registry", registry]
+    argv += ["--registry", registry, "--openers", openers]
     group: dict[str, Any] = ({"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
                              if sys.platform == "win32" else {"start_new_session": True})
     nonce = secrets.token_hex(16)

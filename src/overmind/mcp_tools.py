@@ -193,6 +193,9 @@ class McpToolSource:
     #: Experimental capability keys to subscribe to, e.g. "claude/channel".
     #: The notification method is derived as "notifications/" + key.
     expect_channels: Sequence[str] = ()
+    #: Run first on the loop thread this source starts. The harness passes
+    #: `mark_thread_harness_owned` so that thread's I/O is its own (MEASUREMENTS s38).
+    on_thread_start: Callable[[], None] | None = None
 
     _loop: Any = field(default=None, repr=False)
     _thread: Any = field(default=None, repr=False)
@@ -235,8 +238,14 @@ class McpToolSource:
                 "the `mcp` package is required for MCP tool sources: pip install mcp") from exc
 
         self._loop = asyncio.new_event_loop()
-        self._thread = threading.Thread(target=self._loop.run_forever, daemon=True,
-                                        name="overmind-mcp")
+        loop, started = self._loop, self.on_thread_start
+
+        def _loop_main() -> None:
+            if started is not None:
+                started()
+            loop.run_forever()
+
+        self._thread = threading.Thread(target=_loop_main, daemon=True, name="overmind-mcp")
         self._thread.start()
 
         params = StdioServerParameters(command=self.command, args=list(self.args),

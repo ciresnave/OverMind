@@ -93,6 +93,8 @@ ALLOWED: frozenset[tuple[str, str]] = frozenset({
     ("fork", "agent"),          # fork.py:23 (with agent->fork: today's one cycle)
     ("fork", "gate"),           # fork.py:24
     ("fork", "providers"),      # fork.py:26
+    ("mcp_plugin", "harness"),  # a flat module that carries MCP into the harness
+    ("mcp_plugin", "mcp_tools"),
     ("fork_plugin", "fork"),    # the fork plug-in runs fork.run_child over a child pipeline
     ("fork_plugin", "gate"),
     ("fork_plugin", "harness"),
@@ -111,13 +113,13 @@ ALLOWED: frozenset[tuple[str, str]] = frozenset({
 MODULES: frozenset[str] = frozenset({
     "agent", "dispatch", "dispatch_mcp", "fork", "gate", "lanework",
     "ledger", "mcp_tools", "outcome", "providers", "quota", "repo_probe", "workspace_plugin",
-    "fork_plugin",
+    "fork_plugin", "mcp_plugin",
     # the harness subpackage (plan P3.1): "pkg/mod" names, scanned below
     "harness/__init__", "harness/config", "harness/manifest",
     "harness/plugin_api", "harness/primitives", "harness/pipeline", "harness/gate_plugin",
     "harness/session", "harness/session_main", "harness/registry", "harness/proctree",
     "harness/chokepoint", "harness/static_scan", "harness/ledger_plugin",
-    "harness/pipeline_executor",
+    "harness/pipeline_executor", "harness/services",
 })
 
 # Edges INSIDE the harness package, plus edges from it to the flat modules.
@@ -141,6 +143,7 @@ HARNESS_ALLOWED: frozenset[tuple[str, str]] = frozenset({
     ("harness/session", "harness/manifest"),
     ("harness/session", "harness/proctree"),
     ("harness/primitives", "harness/proctree"),
+    ("harness/primitives", "harness/services"),
     ("harness/session_main", "harness/config"),
     ("harness/session_main", "harness/pipeline"),
     ("harness/session_main", "harness/plugin_api"),

@@ -202,6 +202,26 @@ class TestCallServiceNeedsTheDeclaration(unittest.TestCase):
         self.assertIn("not declared", out.error)
         self.assertEqual(self.echo.calls, 0)
 
+    def test_a_hook_gets_no_services_even_inside_an_allowed_call(self):
+        from overmind.harness.primitives import PrimitiveRefused, Primitives, allowed_services, allowing, cleared
+        from overmind.harness.plugin_api import HarnessCall
+        with allowing(HarnessCall("t", {}, "a"), frozenset({"srv"})):
+            self.assertEqual(Primitives().call_service("srv", "t", {}), "ok")      # control
+            with cleared():
+                self.assertEqual(allowed_services(), frozenset())
+                with self.assertRaises(PrimitiveRefused):
+                    Primitives().call_service("srv", "t", {})
+            self.assertEqual(allowed_services(), frozenset({"srv"}))               # restored
+        self.assertEqual(allowed_services(), frozenset())
+
+    def test_the_services_are_restored_when_the_effect_raises(self):
+        from overmind.harness.primitives import allowed_services, allowing
+        from overmind.harness.plugin_api import HarnessCall
+        with self.assertRaises(ValueError):
+            with allowing(HarnessCall("t", {}, "a"), frozenset({"srv"})):
+                raise ValueError
+        self.assertEqual(allowed_services(), frozenset())
+
     def test_a_hook_cannot_use_the_declaration_of_a_tool_it_does_not_run(self):
         out = Pipeline([AllowAll(), UsesService()], CTX).execute("t", {})     # control: allowed call works
         self.assertEqual(out.result, "ok")
@@ -231,7 +251,15 @@ REGISTRY_SOURCE = textwrap.dedent('''
             return Declaration("plain", "1", API_VERSION)
 
 
-    REGISTRY = {"needs": Needs, "plain": Plain}
+    class Boom(Plugin):
+        def __init__(self, conf):
+            raise RuntimeError("factory blew up")
+
+        def declares(self):
+            return Declaration("boom", "1", API_VERSION)
+
+
+    REGISTRY = {"needs": Needs, "plain": Plain, "boom": Boom}
 ''')
 
 OPENERS_SOURCE = textwrap.dedent('''
@@ -299,6 +327,14 @@ class TestRealSession(unittest.TestCase):
         with self.assertRaises(SessionRefused) as cm:
             h.loaded()
         self.assertIn("no plug-in declares it", str(cm.exception))
+        h.stop()
+        self.assertEqual(self.closed(), 1)
+
+    def test_the_service_is_closed_when_a_factory_raises(self):
+        h = self.start(["boom"], [svc(marker=self.marker)])
+        with self.assertRaises(SessionRefused) as cm:
+            h.loaded()
+        self.assertIn("factory blew up", str(cm.exception))
         h.stop()
         self.assertEqual(self.closed(), 1)
 

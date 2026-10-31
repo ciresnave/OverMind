@@ -16,7 +16,7 @@ from typing import Any, Mapping
 
 from ..gate import Decision, Gate, GatedExecutor, ToolCall, ToolOutcome
 from .pipeline import Pipeline
-from .plugin_api import Allow
+from .plugin_api import Allow, ModelStep
 
 
 def _refuse(name: str):
@@ -35,6 +35,11 @@ class PipelineExecutor(GatedExecutor):
         super().__init__(gate, {n: _refuse(n) for n in pipeline.tool_names})
         self.pipeline = pipeline
         self.fork_plugin = fork_plugin
+
+    def observe_model_step(self, *, step: int, model: str | None, provider: str | None,
+                           tool_calls: int, truncated: bool) -> None:
+        """`run_agent` calls this after every model call that returned (if present)."""
+        self.pipeline.observe_model_step(ModelStep(step, model, provider, tool_calls, truncated))
 
     def execute(self, name: str, arguments: Mapping[str, Any] | None = None,
                 actor: str = "agent") -> ToolOutcome:

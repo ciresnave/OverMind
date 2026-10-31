@@ -32,7 +32,7 @@ from .config import ConfigError, SessionConfig, check_text
 from .manifest import LoadedManifest, PluginRecord, source_sha256
 from .plugin_api import (
     API_VERSION, Allow, BuildContext, Correct, Declaration, Deny, Drop, HarnessCall, NoOpinion, Ok, Pass,
-    Plugin, PipelineOutcome, Redact, Refuse, Rewrite, SessionContext, Stop, ToolSpec,
+    ModelStep, Plugin, PipelineOutcome, Redact, Refuse, Rewrite, SessionContext, Stop, ToolSpec,
 )
 from .primitives import Primitives, allowing, cleared
 
@@ -288,6 +288,18 @@ class Pipeline:
                 except Exception as exc:              # noqa: BLE001 - recorded, decision unchanged
                     self._note_observer_error(
                         f"plug-in {name!r} on_tool_outcome raised {type(exc).__name__}: {exc}")
+
+    def observe_model_step(self, step: ModelStep) -> None:
+        """Tell every plug-in a model step happened. Observe-only: a plug-in that
+        raises is recorded in `observer_errors` and the step carries on."""
+        for plugin in self._plugins:
+            name = self._decl[id(plugin)].name
+            with cleared():
+                try:
+                    plugin.on_model_step(self._ctx, replace(step))   # its own copy
+                except Exception as exc:              # noqa: BLE001 - recorded, step unchanged
+                    self._note_observer_error(
+                        f"plug-in {name!r} on_model_step raised {type(exc).__name__}: {exc}")
 
     def execute(self, name: str, arguments: Mapping[str, Any] | None = None,
                 actor: str = "agent") -> PipelineOutcome:

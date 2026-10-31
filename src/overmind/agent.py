@@ -408,6 +408,10 @@ def run_agent(client: ProviderClient, executor: GatedExecutor,
             f.cost.finalize(call_usage)
         messages.append(normalise_for_echo(result.message))
         calls = result.tool_calls
+        observe = getattr(executor, "observe_model_step", None)
+        if observe is not None:                        # a pipeline executor: tell its plug-ins
+            observe(step=step, model=result.model, provider=result.provider,
+                    tool_calls=len(calls), truncated=bool(result.truncated))
 
         if not calls and result.truncated:
             # ⚠️ CHECKED BEFORE "it is finished" AND BEFORE the smuggle check.

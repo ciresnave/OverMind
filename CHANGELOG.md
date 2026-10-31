@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.14.36 (A3 follow-up R3: a valueless `--openers` / `--registry`, 2026-10-30; provisional number)
+
+OverMind roadmap row R3 (PM ruling 2026-10-30). `--openers` or `--registry` as the last argv token raised `IndexError` in `session_main._main` before the handshake. Now `_flag_value` raises `ValueError`, `_main` prints `session_main: <flag> needs a value` to stderr and returns 1 (no handshake, nothing opened). Tests: `TestArgv` in `tests/test_harness_session.py` (mutation: the old parsing turns both flags' cases red). NOT done: a flag followed by another flag still takes it as the value (fails later as `refused`), and the first of a repeated flag wins.
+
 ## 0.14.35 (A3: dispatch.py wired to lanework for authenticated, allowlisted senders, 2026-10-30; provisional number)
 
 PM ruling 2026-10-30: option A. **INERT BY DESIGN until a transport adapter that authenticates exists** (ROADMAP R4): OverMind has no Synapse source adapter and FAM never sets `authenticated_sender`, so today every structured request is refused "no authenticated sender" and nothing runs.

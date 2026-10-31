@@ -90,17 +90,26 @@ def main(argv: list[str]) -> int:
             close_services(opened)                    # every exit path closes what the harness opened
 
 
+def _flag_value(argv: list[str], flag: str, default: str) -> str:
+    if flag not in argv:
+        return default
+    at = argv.index(flag) + 1
+    if at >= len(argv):
+        raise ValueError(f"{flag} needs a value")
+    return argv[at]
+
+
 def _main(argv: list[str], opened: list[str]) -> int:
     proto = os.fdopen(os.dup(1), "w", encoding="utf-8", buffering=1)
     os.dup2(2, 1)
     sys.stdout = sys.stderr
 
-    registry_spec = "overmind.harness.registry:REGISTRY"
-    if "--registry" in argv:
-        registry_spec = argv[argv.index("--registry") + 1]
-    openers_spec = "overmind.harness.services:OPENERS"
-    if "--openers" in argv:
-        openers_spec = argv[argv.index("--openers") + 1]
+    try:
+        registry_spec = _flag_value(argv, "--registry", "overmind.harness.registry:REGISTRY")
+        openers_spec = _flag_value(argv, "--openers", "overmind.harness.services:OPENERS")
+    except ValueError as exc:                         # before the handshake: stderr is all we have
+        print(f"session_main: {exc}", file=sys.stderr)
+        return 1
 
     nonce = sys.stdin.readline().strip()
     if not nonce:

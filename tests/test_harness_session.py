@@ -365,5 +365,32 @@ class TestManifestWireForm(unittest.TestCase):
                 LoadedManifest.from_dict(d)
 
 
+class TestArgv(unittest.TestCase):
+    """A flag with no value ends the child cleanly, before the handshake (R3)."""
+
+    SRC = os.path.join(os.path.dirname(__file__), "..", "src")
+
+    def _run(self, *args: str) -> subprocess.CompletedProcess[str]:
+        code = ("import sys; sys.path.insert(0, sys.argv[1])\n"
+                "from overmind.harness.session_main import main\n"
+                "raise SystemExit(main(sys.argv[2:]))\n")
+        return subprocess.run([sys.executable, "-I", "-c", code, self.SRC, *args],
+                              input="", capture_output=True, text=True, timeout=60)
+
+    def test_trailing_flag_without_value_is_a_clean_exit(self) -> None:
+        for flag in ("--openers", "--registry"):
+            with self.subTest(flag=flag):
+                done = self._run(flag)
+                self.assertEqual(done.returncode, 1)
+                self.assertIn(f"{flag} needs a value", done.stderr)
+                self.assertNotIn("Traceback", done.stderr)
+
+    def test_flag_with_value_still_reaches_the_handshake(self) -> None:
+        # negative control: empty stdin means "no handshake" (exit 1, no complaint about the flag)
+        done = self._run("--openers", "x:Y")
+        self.assertEqual(done.returncode, 1)
+        self.assertNotIn("needs a value", done.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()

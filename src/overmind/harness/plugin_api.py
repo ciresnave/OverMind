@@ -77,6 +77,17 @@ class Stop:
 
 
 @dataclass(frozen=True)
+class ModelStep:
+    """What `on_model_step` is told: THAT a model step happened, never what was said
+    (no text, no arguments), so an activity reporter cannot leak content."""
+    step: int                                 # 0-based index in the run
+    model: str | None
+    provider: str | None
+    tool_calls: int                           # how many the model asked for in this turn
+    truncated: bool                           # the reply was cut off by the output budget
+
+
+@dataclass(frozen=True)
 class Allow:
     """before_tool_call: this plug-in does not object. Not a bypass."""
     reason: str = "no policy objected"
@@ -190,6 +201,14 @@ class Plugin:
         per submitted call with a private copy of the outcome, denied calls
         included. The return value is ignored: an observer cannot change or veto
         anything. An exception is recorded in `Pipeline.observer_errors`."""
+        return None
+
+    def on_model_step(self, ctx: SessionContext, step: "ModelStep") -> None:
+        """Observe-only (ninth hook, additive; API_VERSION unchanged). Called once per
+        model call that returned, before any tool call in it runs. The return value
+        is ignored and an exception is recorded in `Pipeline.observer_errors`: it
+        can neither stop nor correct the step (that is `on_model_output`'s job, and
+        that one fails closed). Meant for activity reporting."""
         return None
 
     def on_stop(self, ctx: SessionContext, run: Any) -> Any:

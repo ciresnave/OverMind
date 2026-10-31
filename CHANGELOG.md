@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.14.39 (A3: the ninth, observe-only hook `on_model_step`, 2026-10-31; provisional number)
+
+PM ruling 2026-10-31 ([FIX] on the activity-report ASK): both activity-reporting routes need a per-model-step event, so wire one. DEVIATION FROM THE WORDING, flagged to the PM: the ruling said "`on_model_output` fires per model step", but `on_model_output` is a CONTROL hook that fails closed (a raising plug-in becomes `Stop`), which contradicts its own condition "a plug-in error must not break the step". It stays unwired and unchanged; the event is a new observe-only hook beside `on_tool_outcome`.
+- **`Plugin.on_model_step(ctx, ModelStep)`** (additive; `API_VERSION` stays 1): `ModelStep(step, model, provider, tool_calls, truncated)` and nothing else (no text, no arguments). `Pipeline.observe_model_step` calls every plug-in, each with its own copy, with the allowance cleared; an exception goes to `observer_errors` ("... on_model_step raised ...") and changes nothing.
+- **`run_agent`** calls `executor.observe_model_step(...)` if the executor has one (`PipelineExecutor` does; a plain `GatedExecutor` does not, so its runs are byte-for-byte unchanged), after every model call that RETURNED and before any tool call in it runs.
+- Tests: `tests/test_harness_model_step.py` (6). Mutations, each red on named tests: `run_agent` never reporting; a raising plug-in escaping; a content field added to `ModelStep`; every plug-in handed the SAME step object (one tampering with it through `object.__setattr__` changed what the next saw: each now gets its own copy).
+- Known, same as `on_tool_outcome`: only `Exception` is caught (a `SystemExit` raised by a hook ends the run); a slow hook stalls the step (nothing times it out).
+- NOT done: `fork` children are not reported (their loop is `fork.run_child`); the reporter itself (nothing here makes a network call: the Synapse call shape is the Synapse lane's design note); a per-step report from a run that crashes inside the model call.
+
 ## 0.14.37 (A3 follow-up R2: an interrupt while a service is being opened, 2026-10-31; provisional number)
 
 OverMind roadmap row R2 (PM ruling 2026-10-30). `open_services` caught only `Exception` around the register step, so a `BaseException` (KeyboardInterrupt) after an opener returned left that service open and, if `register_service` had already run, in the registry. Now an interrupt raised inside the register step closes the service and unregisters it, but only the entry that is its own (a pre-existing entry of the same name is left alone); the services opened earlier were already closed on any `BaseException`. Tests: two in `TestOpenServices` (mutations: the old code, and dropping the own-entry guard, each turn a named test red).

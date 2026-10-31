@@ -354,6 +354,17 @@ class TestRealSession(unittest.TestCase):
         h.stop()
         self.assertEqual(self.closed(), 1)
 
+    def test_the_child_closes_the_service_when_stdin_reaches_eof(self):
+        # R1: no `stop` command; the parent's pipe just closes (the parent is gone)
+        h = self.start(["needs"], [svc(marker=self.marker)])
+        h.loaded()
+        self.assertEqual(self.closed(), 0)               # control: open while the session lives
+        proc = h._proc
+        assert proc.stdin is not None
+        proc.stdin.close()
+        self.assertEqual(proc.wait(timeout=20), 0)
+        self.assertEqual(self.closed(), 1)
+
     def test_the_service_is_closed_when_the_load_is_refused(self):
         h = self.start(["plain"], [svc(marker=self.marker)])    # configured, nobody declares it
         with self.assertRaises(SessionRefused) as cm:

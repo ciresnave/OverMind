@@ -72,6 +72,29 @@ class DispatchRecord:
     max_tokens: int = 0
 
 
+def default_audit_path() -> pathlib.Path:
+    """`OVERMIND_DISPATCH_AUDIT_FILE`, else `~/.overmind/dispatch_audit.jsonl`."""
+    env = os.environ.get("OVERMIND_DISPATCH_AUDIT_FILE")
+    return (pathlib.Path(env) if env
+            else pathlib.Path.home() / ".overmind" / "dispatch_audit.jsonl")
+
+
+def append_audit(event: dict[str, Any], path: pathlib.Path | None = None) -> bool:
+    """One audit line for a structured dispatch request: who (the AUTHENTICATED sender, or
+    null), the sha256 of the request text, and whether it was refused or run. Append-only and
+    best-effort like `append`, but it REPORTS whether the line was written: a dispatch service
+    that cannot audit a run does not start it."""
+    try:
+        path = path if path is not None else default_audit_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps({"at": time.time(), **event}, sort_keys=True) + "\n")
+        return True
+    except (OSError, RuntimeError) as exc:
+        print(f"overmind.ledger: could not append to {path if path else 'the audit file'}: {exc}")
+        return False
+
+
 def append(record: DispatchRecord, path: pathlib.Path | None = None) -> None:
     """Appends one JSON line. Never truncates, never opens for write-
     replace - `open(path, "a")` is the whole safety property here, same as

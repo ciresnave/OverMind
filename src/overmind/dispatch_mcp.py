@@ -159,6 +159,11 @@ class DispatchRequest:
     #: SELECTION changes, never the source of the argv. `None` (the
     #: default) keeps auto-inference exactly as it was.
     check_profile: str | None = None
+    #: An AGENT-SUPPLIED check argv (a dispatch message only; the MCP tool cannot set it).
+    #: It is never run on this host: `Task.check_sandbox` offers the sandbox and the
+    #: `check-policy` plug-in refuses it unless a certified one exists (P3.7). Exclusive with
+    #: `check_profile` and `docs_only`.
+    check: Sequence[str] | None = None
     #: PM ask, 2026-09-19 ("retry piece 1 ONCE on nvidia/z-ai/glm-5.3"): a
     #: caller who wants ONE SPECIFIC model, not `provider`'s own preference
     #: order or failover - even a model that's FIRST in a provider's
@@ -209,6 +214,8 @@ class NoCheckInferred(ValueError):
 #: requires a real, non-empty argv) satisfied while making the absence of
 #: real verification impossible to miss.
 DOCS_ONLY_CHECK: list[str] = [sys.executable, "-c", "pass"]
+#: Public label of an agent-supplied check: the argv itself is never quoted into a PR or a brief.
+AGENT_CHECK_NAME = "agent-supplied python check, run in a sandbox (UNMEASURED) - never on the host"
 DOCS_ONLY_CHECK_NAME = "docs-only mode: no executable check ran - unverified, human review required"
 
 #: §7.4, CireSnave's own ruling: NEVER caller-overridable, so a docs_only
@@ -240,6 +247,8 @@ def build_task(task_id: str, clone_dir: pathlib.Path, probe: RepoProbe,
     requirements_text = ""
     if request.requirements_url:
         requirements_text = fetch_requirements(request.requirements_url)
+    if request.check and (request.check_profile or request.docs_only):
+        raise ValueError("`check` is exclusive with `check_profile` and `docs_only`")
     goal = build_goal(request.prompt, probe, request, requirements_text)
 
     if request.docs_only:
@@ -256,6 +265,16 @@ def build_task(task_id: str, clone_dir: pathlib.Path, probe: RepoProbe,
             provider=request.provider, model=request.model, max_steps=request.max_steps,
             check_name=DOCS_ONLY_CHECK_NAME, pr_body="\n\n".join(pr_body_lines),
             protected_globs=list(AGENT_INSTRUCTION_GLOBS),
+        )
+
+    if request.check:
+        return Task(
+            id=task_id, repo=str(clone_dir), goal=goal, check=list(request.check),
+            writable=list(request.writable), base="origin/HEAD", fetch=False,
+            provider=request.provider, model=request.model, max_steps=request.max_steps,
+            check_name=AGENT_CHECK_NAME, check_sandbox=True,
+            pr_body=("Requested capabilities: " + ", ".join(request.capabilities))
+            if request.capabilities else "",
         )
 
     if probe.check is None:

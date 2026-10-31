@@ -86,6 +86,8 @@ ALLOWED: frozenset[tuple[str, str]] = frozenset({
     ("agent", "providers"),     # agent.py:47
     ("dispatch", "agent"),      # dispatch.py:37
     ("dispatch", "gate"),       # dispatch.py:38
+    ("dispatch", "dispatch_mcp"),   # lazy, inside parse_request / _handle_request
+    ("dispatch", "ledger"),         # lazy, the audit line
     ("dispatch_mcp", "lanework"),    # dispatch_mcp.py:57
     ("dispatch_mcp", "ledger"),      # dispatch_mcp.py:56 (`from . import ledger`)
     ("dispatch_mcp", "quota"),       # dispatch_mcp.py:58

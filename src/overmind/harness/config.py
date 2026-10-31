@@ -15,6 +15,7 @@ The model never writes one of these; only the orchestrator does.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from typing import Any, Mapping
 
@@ -97,6 +98,10 @@ class Handler:
     version: int
 
 
+#: An authenticated transport identity: `role@account`, no wildcards, no whitespace.
+SENDER_RE = re.compile(r"[A-Za-z0-9._-]{1,64}@[A-Za-z0-9._-]{1,64}")
+
+
 @dataclass(frozen=True)
 class RouteEntry:
     provider: str
@@ -143,12 +148,16 @@ class SessionConfig:
     schema_version: int = SCHEMA_VERSION
     #: Optional on the wire: a config without `services` is valid and means none.
     services: tuple[ServiceRef, ...] = ()
+    #: Optional on the wire: absent means NONE. The authenticated transport identities
+    #: (`role@account`, e.g. a Synapse sender) whose structured task requests a dispatch
+    #: service may act on. Never a name from a message body.
+    dispatch_senders: tuple[str, ...] = ()
 
     @classmethod
     def from_dict(cls, data: Any) -> "SessionConfig":
         top = _obj(data, "config",
                    ("schema_version", "session_id", "handler", "route", "limits", "plugins", "workspace"),
-                   ("services",))
+                   ("services", "dispatch_senders"))
         if type(top["schema_version"]) is not int or top["schema_version"] != SCHEMA_VERSION:
             raise ConfigError(f"schema_version: this harness knows {SCHEMA_VERSION}, got {top['schema_version']!r}")
 
@@ -197,12 +206,24 @@ class SessionConfig:
                 services.append(ServiceRef(sname, _text(s["kind"], f"services[{i}].kind"),
                                            _json_value(s["options"], f"services[{i}].options")))
 
+        senders: list[str] = []
+        if "dispatch_senders" in top:
+            if not isinstance(top["dispatch_senders"], list):
+                raise ConfigError("dispatch_senders: expected a list")
+            for i, who in enumerate(top["dispatch_senders"]):
+                if type(who) is not str or not SENDER_RE.fullmatch(who):
+                    raise ConfigError(f"dispatch_senders[{i}]: expected an identity like role@account, "
+                                      f"got {who!r}")
+                if who in senders:
+                    raise ConfigError(f"dispatch_senders[{i}]: duplicate sender {who!r}")
+                senders.append(who)
+
         w = _obj(top["workspace"], "workspace", ("repo", "base"))
         workspace = Workspace(_text(w["repo"], "workspace.repo"), _text(w["base"], "workspace.base"))
 
         return cls(session_id=_text(top["session_id"], "session_id"), handler=handler,
                    route=tuple(route), limits=limits, plugins=tuple(plugins), workspace=workspace,
-                   services=tuple(services))
+                   services=tuple(services), dispatch_senders=tuple(senders))
 
     @classmethod
     def from_json(cls, text: str) -> "SessionConfig":
@@ -226,6 +247,8 @@ class SessionConfig:
         }
         if self.services:                             # absent when empty: an old config round-trips as itself
             out["services"] = [{"name": s.name, "kind": s.kind, "options": s.options} for s in self.services]
+        if self.dispatch_senders:
+            out["dispatch_senders"] = list(self.dispatch_senders)
         return out
 
     def to_json(self) -> str:

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.14.38 (A3 follow-up R1: two slice-3 paths run, not read, 2026-10-31; provisional number)
+
+OverMind roadmap row R1 (PM ruling 2026-10-30, OverMind#177). Tests only; no source change.
+- `test_the_child_closes_the_service_when_stdin_reaches_eof` (real child via `spawn`): the parent's pipe is closed with no `stop` command; the child exits 0 and its service's `close` ran once (marker file), while it was still open before (control).
+- `TestForkChildServices` (fork child pipeline built from the `declared=` snapshots): a tool whose plug-in declared `srv` reaches it in the child; a tool in another plug-in that declared nothing is refused ("not declared").
+- Mutations, each red on a named test only: the EOF path ending in `os._exit(0)` (skipping the `finally` close); the child's declarations stripped of services; every tool given every service.
+- NOT done: the fork child's service CLOSE (the parent owns the services; the child never opens any); the EOF path with a service that is mid-call.
+
 ## 0.14.37 (A3 follow-up R2: an interrupt while a service is being opened, 2026-10-31; provisional number)
 
 OverMind roadmap row R2 (PM ruling 2026-10-30). `open_services` caught only `Exception` around the register step, so a `BaseException` (KeyboardInterrupt) after an opener returned left that service open and, if `register_service` had already run, in the registry. Now an interrupt raised inside the register step closes the service and unregisters it, but only the entry that is its own (a pre-existing entry of the same name is left alone); the services opened earlier were already closed on any `BaseException`. Tests: two in `TestOpenServices` (mutations: the old code, and dropping the own-entry guard, each turn a named test red).

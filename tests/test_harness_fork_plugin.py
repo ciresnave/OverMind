@@ -213,6 +213,78 @@ class TestForkPlugin(unittest.TestCase):
         self.assertIsNone(allowed_call())
 
 
+class SrvTool(Plugin):
+    """Declares service `srv` with tool `viasrv`; the effect calls it and records the outcome."""
+
+    def __init__(self, outcomes):
+        self.outcomes = outcomes
+
+    def declares(self):
+        return Declaration("srv-tool", "1", API_VERSION, services=("srv",), tools=(
+            ToolSpec("viasrv", {"type": "object"}, self._effect),))
+
+    def _effect(self, prims, **kw):
+        self.outcomes["viasrv"] = prims.call_service("srv", "viasrv", {})
+        return "ok"
+
+
+class NoSrvTool(Plugin):
+    """Declares NO service; its effect reaches for `srv` anyway and records what happened."""
+
+    def __init__(self, outcomes):
+        self.outcomes = outcomes
+
+    def declares(self):
+        return Declaration("no-srv-tool", "1", API_VERSION, tools=(
+            ToolSpec("nosrv", {"type": "object"}, self._effect),))
+
+    def _effect(self, prims, **kw):
+        try:
+            self.outcomes["nosrv"] = prims.call_service("srv", "nosrv", {})
+        except PrimitiveRefused as exc:
+            self.outcomes["nosrv"] = f"refused: {exc}"
+        return "ok"
+
+
+class FakeSrv:
+    def call(self, tool, arguments):
+        return f"svc:{tool}"
+
+    def close(self):
+        pass
+
+
+class TestForkChildServices(unittest.TestCase):
+    """R1: run, not read. A fork child pipeline gets the right service set PER TOOL,
+    from the `declared=` snapshots (`ForkPlugin._child`, `Pipeline._tool_services`)."""
+
+    def setUp(self):
+        from overmind.harness import services
+        services.register_service("srv", FakeSrv())
+        self.addCleanup(lambda: services.close_services(["srv"]))
+
+    def run_fork(self):
+        outcomes: dict[str, str] = {}
+        gate = Gate([DenyUnlessDeclared(reversible=frozenset({"viasrv", "nosrv", FORK_TOOL}))],
+                    ledger=Ledger())
+        gp, lp = GatePlugin(gate), LedgerPlugin(gate.ledger)
+        fp = ForkPlugin(gp, lp, gate, shared=[SrvTool(outcomes), NoSrvTool(outcomes)])
+        parent = Pipeline([gp, lp, *fp._shared, fp], CTX)
+        bind(fp, ScriptedClient([tool_turn("viasrv", call_id="k1"), tool_turn("nosrv", call_id="k2"),
+                                 {"role": "assistant", "content": "child done"}]))
+        out = parent.execute(FORK_TOOL, {"task": "look"}, actor="a")
+        self.assertTrue(out.executed, out.error)
+        return outcomes
+
+    def test_the_declaring_tool_reaches_its_service_in_the_child(self):
+        self.assertEqual(self.run_fork().get("viasrv"), "svc:viasrv")
+
+    def test_a_tool_that_did_not_declare_the_service_is_refused_the_service_in_the_child(self):
+        outcome = self.run_fork().get("nosrv", "")
+        self.assertTrue(outcome.startswith("refused:"), outcome)
+        self.assertIn("not declared", outcome)
+
+
 class RogueHook(Plugin):
     """The spec's fork fixture: its before_tool_call reaches for a primitive."""
 

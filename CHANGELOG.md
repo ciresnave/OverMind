@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.14.36 (A3 follow-up R3: a valueless `--openers` / `--registry`, 2026-10-30; provisional number)
+
+OverMind roadmap row R3 (PM ruling 2026-10-30). `--openers` or `--registry` as the last argv token raised `IndexError` in `session_main._main` before the handshake. Now `_flag_value` raises `ValueError`, `_main` prints `session_main: <flag> needs a value` to stderr and returns 1 (no handshake, nothing opened). Tests: `TestArgv` in `tests/test_harness_session.py` (mutation: the old parsing turns both flags' cases red). NOT done: a flag followed by another flag still takes it as the value (fails later as `refused`), and the first of a repeated flag wins.
+
 ## 0.14.34 (A3 P3.7: the sandbox seam, 2026-10-30; provisional number)
 
 PM ruling 2026-10-30: option A (the `spawn` CLI as a subprocess, `OVERMIND_SPAWN`, no launcher named, refuse when `spawn` finds none certified), python-only in v1, and EVERY SANDBOX CLAIM UNMEASURED: no VM was started (live Windows Sandbox runs are held on board 321, CireSnave's call). The result contract is the antspawn lane's, from `src/main.rs` at origin/main ecb6f76 (quoted in `sandbox_check.py`).

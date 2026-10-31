@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.14.37 (A3 follow-up R2: an interrupt while a service is being opened, 2026-10-31; provisional number)
+
+OverMind roadmap row R2 (PM ruling 2026-10-30). `open_services` caught only `Exception` around the register step, so a `BaseException` (KeyboardInterrupt) after an opener returned left that service open and, if `register_service` had already run, in the registry. Now an interrupt raised inside the register step closes the service and unregisters it, but only the entry that is its own (a pre-existing entry of the same name is left alone); the services opened earlier were already closed on any `BaseException`. Tests: two in `TestOpenServices` (mutations: the old code, and dropping the own-entry guard, each turn a named test red).
+- NOT done / cannot be done here: the few bytecodes between `opener(ref)` returning and entry to the `try` (not closable in pure Python); an opener that itself raises `BaseException` (or `Exception`) after acquiring part of what it opens: the harness never gets that object, so there is nothing to close. The `open_services` docstring now says an opener must release its own partial state before it raises.
+
 ## 0.14.36 (A3 follow-up R3: a valueless `--openers` / `--registry`, 2026-10-30; provisional number)
 
 OverMind roadmap row R3 (PM ruling 2026-10-30). `--openers` or `--registry` as the last argv token raised `IndexError` in `session_main._main` before the handshake. Now `_flag_value` raises `ValueError`, `_main` prints `session_main: <flag> needs a value` to stderr and returns 1 (no handshake, nothing opened). Tests: `TestArgv` in `tests/test_harness_session.py` (mutation: the old parsing turns both flags' cases red). NOT done: a flag followed by another flag still takes it as the value (fails later as `refused`), and the first of a repeated flag wins.

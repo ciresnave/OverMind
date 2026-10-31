@@ -17,6 +17,7 @@ import sys
 import tempfile
 import textwrap
 import unittest
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "src"))
@@ -113,6 +114,37 @@ class TestOpenServices(unittest.TestCase):
         self.assertIn(("closed", "a"), self.log)
         with self.assertRaises(services.UnknownService):
             services.get_service("a")                    # control: it WAS registered first
+
+    def test_an_interrupt_after_the_opener_returned_closes_and_unregisters_everything(self):
+        real = services.register_service
+
+        def interrupted(name, service):
+            real(name, service)
+            if name == "b":
+                raise KeyboardInterrupt
+
+        refs = [ServiceRef("a", "k", {}), ServiceRef("b", "k", {})]
+        with mock.patch.object(services, "register_service", interrupted):
+            with self.assertRaises(KeyboardInterrupt):
+                services.open_services(refs, {"k": self.opener})
+        self.assertIn(("closed", "b"), self.log)         # the one the interrupt hit
+        self.assertIn(("closed", "a"), self.log)         # the one opened before it
+        for name in ("a", "b"):
+            with self.assertRaises(services.UnknownService):
+                services.get_service(name)
+
+    def test_an_interrupt_leaves_a_pre_existing_entry_alone(self):
+        services.register_service("a", Closing(self.log, "pre"))
+
+        def interrupted(name, service):
+            raise KeyboardInterrupt
+
+        with mock.patch.object(services, "register_service", interrupted):
+            with self.assertRaises(KeyboardInterrupt):
+                services.open_services([ServiceRef("a", "k", {})], {"k": self.opener})
+        self.assertIn(("closed", "a"), self.log)         # the new object was closed
+        self.assertNotIn(("closed", "pre"), self.log)
+        self.assertIsNotNone(services.get_service("a"))  # the pre-existing entry is still there
 
     def test_an_unknown_kind_is_refused(self):
         with self.assertRaisesRegex(services.ServiceOpenError, "no opener for kind 'nope'"):

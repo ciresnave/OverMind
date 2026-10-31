@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.14.40 (CI: repin the CodeRipper portfolio workflow to 0.10.0, 2026-10-31; provisional number)
+
+PM [TASK]: `.github/workflows/ci.yml` pins `ciresnave/coderipper/.github/workflows/portfolio.yml` at `b45eb41` (CodeRipper 0.10.0, default-branch exclusion; the pin agentlife, releaseant and antspawn use) instead of `c665210`. One line; no code change, no waiver added.
+
 ## 0.14.39 (A3: the ninth, observe-only hook `on_model_step`, 2026-10-31; provisional number)
 
 PM ruling 2026-10-31 ([FIX] on the activity-report ASK): both activity-reporting routes need a per-model-step event, so wire one. DEVIATION FROM THE WORDING, flagged to the PM: the ruling said "`on_model_output` fires per model step", but `on_model_output` is a CONTROL hook that fails closed (a raising plug-in becomes `Stop`), which contradicts its own condition "a plug-in error must not break the step". It stays unwired and unchanged; the event is a new observe-only hook beside `on_tool_outcome`.

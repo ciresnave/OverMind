@@ -46,7 +46,10 @@ class ServiceOpenError(RuntimeError):
 def open_services(refs: Sequence[ServiceRef], openers: Mapping[str, Callable[[ServiceRef], Any]]) -> list[str]:
     """Open and register every configured service, or none: on any failure the
     ones already opened are closed and unregistered. Returns the names, for
-    `close_services`. An opener returns an object with `call`, `close`."""
+    `close_services`. An opener returns an object with `call`, `close`. An opener that
+    raises leaves nothing for the harness to close (it never got the object): an opener
+    that acquires more than one resource must release its own partial state before it
+    raises. What the harness can close, it does on any exception, interrupts included."""
     opened: list[str] = []
     try:
         for ref in refs:
@@ -60,10 +63,17 @@ def open_services(refs: Sequence[ServiceRef], openers: Mapping[str, Callable[[Se
                     f"service {ref.name!r}: opening it raised {type(exc).__name__}: {exc}") from exc
             try:
                 register_service(ref.name, service)
+                opened.append(ref.name)               # last in the try: recorded, or handled below
             except ValueError as exc:
                 _close(service)
                 raise ServiceOpenError(str(exc)) from exc
-            opened.append(ref.name)
+            except BaseException:                     # an interrupt between "returned" and "recorded"
+                try:
+                    if _services.get(ref.name) is service:
+                        unregister_service(ref.name)  # only our own entry, never a pre-existing one
+                finally:
+                    _close(service)
+                raise
     except BaseException:
         close_services(opened)
         raise

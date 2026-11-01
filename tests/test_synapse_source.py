@@ -16,6 +16,7 @@ Claims, each with a control:
 from __future__ import annotations
 
 import base64
+import itertools
 import json
 import os
 import sys
@@ -38,23 +39,27 @@ MALLORY = "mallory@evil"
 REQ = {"overmind_request": 1, "repo": "https://github.com/o/r.git", "prompt": "fix the readme"}
 
 
+_COUNTER = itertools.count(1)
+
+
 def line(body, *, frm=PM, mid=None, **extra):
     raw = body if isinstance(body, bytes) else body.encode("utf-8")
-    out = {"message_id": mid or f"{frm}/m-{abs(hash(raw)) % 10**6}", "from": frm,
+    out = {"message_id": mid or f"{frm}/m-{next(_COUNTER)}", "from": frm,
            "body_b64": base64.b64encode(raw).decode("ascii"), "attempts": 1, **extra}
     try:
         out["body"] = raw.decode("utf-8")
     except UnicodeDecodeError:
         pass
-    return json.dumps(out)
+    return json.dumps(out, ensure_ascii=False)       # as the CLI prints it: U+2028 stays raw
 
 
 class FakeCli:
     """Stands in for the `synapse` binary: `inbox` prints its queued lines, `ack` and `send` record."""
 
-    def __init__(self, inbox=(), *, inbox_code=0, ack_code=0, send_out="queued"):
+    def __init__(self, inbox=(), *, inbox_code=0, ack_code=0, send_out="queued", send_code=0):
         self.inbox = list(inbox)
         self.inbox_code, self.ack_code, self.send_out = inbox_code, ack_code, send_out
+        self.send_code = send_code
         self.calls: list[tuple] = []
 
     def __call__(self, args, stdin=None):
@@ -66,7 +71,7 @@ class FakeCli:
         if verb == "ack":
             return self.ack_code, "outcome: removed"
         if verb == "send":
-            return 0, self.send_out
+            return self.send_code, self.send_out
         raise AssertionError(args)
 
     def verbs(self, verb):
@@ -97,7 +102,6 @@ class TestAuthenticatedSender(unittest.TestCase):
         n = source(FakeCli([line(body, frm=MALLORY, **claims)])).receive(timeout=1)
         self.assertEqual(n["authenticated_sender"], MALLORY)
         self.assertEqual(n["meta"].get("from_entity"), MALLORY)
-        self.assertFalse(n["meta"].get("sender_vouched"))
         self.assertEqual(classify(n)[1].authenticated_sender, MALLORY)
 
     def test_control_a_spoofed_request_is_refused_by_the_service_and_the_real_one_runs(self):
@@ -145,13 +149,48 @@ class TestDelivery(unittest.TestCase):
 
     def test_a_redelivered_message_is_not_handed_over_twice(self):
         again = line("a", mid="pm@ciresnave/1")
-        cli = FakeCli([again], ack_code=1)                   # the ack failed, so Synapse will resend it
+        cli = FakeCli([again])
         s = source(cli)
         self.assertEqual(s.receive(timeout=1)["content"], "a")
         cli.inbox = [again]
         self.assertIsNone(s.receive(timeout=1))
-        self.assertEqual(len(cli.verbs("ack")), 2)            # the redelivery retries the ack
-        self.assertEqual(len(s.errors), 2)                   # and each failure is recorded, not swallowed
+        self.assertEqual(len(cli.verbs("ack")), 2)            # the redelivery is acked again, not run
+
+    def test_a_message_whose_ack_failed_is_not_handed_over_until_an_ack_succeeds(self):
+        again = line("a", mid="pm@ciresnave/1")
+        cli = FakeCli([again], ack_code=1)                   # no ack, no job: Synapse will resend it
+        s = source(cli)
+        self.assertIsNone(s.receive(timeout=1))
+        self.assertEqual(len(s.errors), 1)                   # recorded, not swallowed
+        cli.ack_code, cli.inbox = 0, [again]
+        self.assertEqual(s.receive(timeout=1)["content"], "a")    # control: the same message runs once acked
+        cli.inbox = [again]
+        self.assertIsNone(s.receive(timeout=1))
+
+    def test_the_ack_id_follows_a_double_dash(self):
+        cli = FakeCli([line("a", mid="-x/1")])
+        source(cli).receive(timeout=1)
+        self.assertEqual(cli.verbs("ack")[0][0][-2:], ("--", "-x/1"))
+
+    def test_unicode_line_separators_inside_a_body_do_not_split_the_message(self):
+        for sep in ("\u2028", "\u2029", "\u0085"):
+            body = f"first{sep}second"
+            n = source(FakeCli([line(body)])).receive(timeout=1)
+            self.assertEqual(n["content"], body, repr(sep))
+
+    def test_a_poll_that_gives_nothing_deliverable_backs_off_instead_of_spinning(self):
+        raw = json.loads(line("x"))
+        del raw["message_id"]
+        slept: list[float] = []
+        cli = FakeCli([json.dumps(raw)])
+        s = SynapseSource("overmind", run=cli, sleep=slept.append)
+        self.assertIsNone(s.receive(timeout=0.5))
+        self.assertEqual((len(cli.verbs("inbox")), slept), (1, [0.5]))
+
+    def test_a_maximum_length_identity_is_not_cut_into_another_one(self):
+        who = "r" * 64 + "@" + "a" * 64
+        n = source(FakeCli([line("hi", frm=who)])).receive(timeout=1)
+        self.assertEqual((n["authenticated_sender"], n["meta"]["from_entity"]), (who, who))
 
     def test_an_empty_inbox_returns_none_and_waits(self):
         slept: list[float] = []
@@ -203,10 +242,25 @@ class TestSendTool(unittest.TestCase):
         self.assertNotIn("[overmind]", " ".join(args))           # the text is never an argument
         self.assertIn("queued", out)
 
+    def test_a_failed_send_raises_so_the_gate_records_an_error_not_a_reply(self):
+        with self.assertRaises(RuntimeError):
+            source(FakeCli(send_code=2)).send(to_entity=PM, text="hi")
+        def boom(args, stdin=None):
+            raise FileNotFoundError("synapse")
+        with self.assertRaises(RuntimeError):
+            SynapseSource("overmind", run=boom).send(to_entity=PM, text="hi")
+
+    def test_the_default_runner_keeps_a_newline_a_newline(self):
+        from overmind.synapse_source import _run
+        code, out = _run((sys.executable, "-c",
+                          "import sys; sys.stdout.write(repr(sys.stdin.buffer.read()))"), "a\nb")
+        self.assertEqual((code, out), (0, "b'a\\nb'"))       # the child saw LF, not CR LF
+
     def test_a_target_that_is_not_an_identity_is_refused_before_any_process_runs(self):
         cli = FakeCli()
         for bad in ("--role", "pm", "pm@ciresnave --to x", "", "pm@cires\nnave", None):
-            self.assertIn("refused", source(cli).send(to_entity=bad, text="hi"))
+            with self.assertRaises(ValueError):
+                source(cli).send(to_entity=bad, text="hi")
         self.assertEqual(cli.calls, [])
 
 

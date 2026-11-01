@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.14.41 (A3 R4: a Synapse source for `DispatchService`, 2026-10-31; provisional number)
+
+PM [TASK] 2026-10-31 (ROADMAP R4, ruled 2026-10-30): `src/overmind/synapse_source.py`, Synapse as it is today, no new cross-project contract.
+- **`SynapseSource(role)`** reads `synapse inbox` (one JSON line per message), acks with `synapse ack`, replies with `synapse send` (`.send(to_entity, text)` is the reply tool; the target must be a plain `role@account`, the text goes on stdin). It sets the notification's top-level `authenticated_sender` from the line's `from` (the sender's global id as the daemon verified it) and from NOTHING else; a `from` that is not `role@account` authenticates nobody.
+- **Negative control** (`test_a_claim_in_the_body_summary_cwd_entity_or_extra_field_is_ignored`, `test_control_a_spoofed_request_is_refused_by_the_service_and_the_real_one_runs`): a body, `from_summary`, `from_cwd`, `from_entity`, `sender_vouched` or an extra line field claiming `authenticated_sender` changes nothing.
+- **`service_from_config(config, source, executor, client, **kw)`** builds the service with `allowed_senders=SessionConfig.dispatch_senders`.
+- Delivery is at-most-once for the job: a message is acked BEFORE it is handed over (a repo job run twice is the worse failure), and a redelivery is recognised by id. A crash between the ack and the job drops the request.
+- Tests: `tests/test_synapse_source.py` (19). Seven mutations, each red on named tests (a claimed field read; identity shape unchecked; no ack; redelivery handed over; allowlist unwired; send target unchecked; non-text body shown).
+- NOT done: nothing starts `DispatchService.serve` in a process yet (no entry point; `lanework`/P3.6 or a later row owns it), and the gate that wraps `SynapseSource.send` must declare it reversible for the reply to go out; not run against a live daemon (UNMEASURED: the `inbox` line shape is read from synapse `origin/main` `inbox_line`, not captured); a `from` is only as good as the daemon's verification; no per-sender rate limit; the CLI's 30 s timeout is a guess.
+
 ## 0.14.40 (CI: repin the CodeRipper portfolio workflow to 0.10.0, 2026-10-31; provisional number)
 
 PM [TASK]: `.github/workflows/ci.yml` pins `ciresnave/coderipper/.github/workflows/portfolio.yml` at `b45eb41` (CodeRipper 0.10.0, default-branch exclusion; the pin agentlife, releaseant and antspawn use) instead of `c665210`. One line; no code change, no waiver added.

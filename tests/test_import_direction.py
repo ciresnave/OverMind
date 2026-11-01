@@ -88,6 +88,7 @@ ALLOWED: frozenset[tuple[str, str]] = frozenset({
     ("dispatch", "gate"),       # dispatch.py:38
     ("dispatch", "dispatch_mcp"),   # lazy, inside parse_request / _handle_request
     ("dispatch", "ledger"),         # lazy, the audit line
+    ("synapse_source", "dispatch"),  # A3 R4: the identity regex and DispatchService (the source feeds the service)
     ("dispatch_mcp", "lanework"),    # dispatch_mcp.py:57
     ("dispatch_mcp", "ledger"),      # dispatch_mcp.py:56 (`from . import ledger`)
     ("dispatch_mcp", "quota"),       # dispatch_mcp.py:58
@@ -133,7 +134,7 @@ ALLOWED: frozenset[tuple[str, str]] = frozenset({
 MODULES: frozenset[str] = frozenset({
     "agent", "dispatch", "dispatch_mcp", "fork", "gate", "lanework",
     "ledger", "mcp_tools", "outcome", "providers", "quota", "repo_probe", "workspace_plugin",
-    "fork_plugin", "mcp_plugin", "default_registry", "task_executor", "check_policy_plugin", "sandbox_check",
+    "fork_plugin", "mcp_plugin", "synapse_source", "default_registry", "task_executor", "check_policy_plugin", "sandbox_check",
     # the harness subpackage (plan P3.1): "pkg/mod" names, scanned below
     "harness/__init__", "harness/config", "harness/manifest",
     "harness/plugin_api", "harness/primitives", "harness/pipeline", "harness/gate_plugin",

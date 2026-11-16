@@ -6,6 +6,7 @@
 - The job's `stdout.tail` / `stderr.tail` are returned in the tail (windows-sandbox: combined `stdout.tail`; the old `windows-sandbox.cmd.log` is a fallback). With process code 0, any status but `exited` with `exit_code` int 0 (or absent) is never a pass (timed_out, killed, unknown, malformed `exit_code`); nested-JSON `RecursionError` falls back to the code. Found by the Sonnet review.
 - Tests: 12 new + 1 reworked in `tests/test_sandbox_check.py`; seven mutations each red on named tests. Full suite: 1 failure, `test_lanework...test_public_text_carries_no_local_paths`, which also fails on origin/main 2920f08 (this box's interpreter path under `Program Files`), not caused here.
 - NOT done: every sandbox claim stays UNMEASURED (no live Windows Sandbox run, board 321); `account` tails need antspawn's `spawn-runner` redeployed (antspawn says UNVERIFIED); the real `spawn` binary was not run against this code.
+- also: `@hono/node-server` 2.1.5 -> 2.1.8 in `/probe` via #190 (dependabot, lockfile only; merged 2026-11-16 by the gate, covered by this version).
 
 ## 0.14.41 (A3 R4: a Synapse source for `DispatchService`, 2026-10-31; provisional number)
 

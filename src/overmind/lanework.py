@@ -602,7 +602,7 @@ def claims_done(text: str) -> bool:
 #: `scriptsx.py` (caught at the gate on #35; its own control was one
 #: directory deep, which cannot contain an interior run).
 _ABS_DIRS = re.compile(r"(?:^|(?<=[=,;])|(?<=^-[A-Za-z]))"
-                       r"(?:[A-Za-z]:)?[\\/]+(?:[^\\/\s\"'=,;]+[\\/]+)+")
+                       r"(?:[A-Za-z]:)?[\\/]+(?:(?:[^\\/\s\"'=,;]| )+[\\/]+)+")
 
 
 def _public_arg(arg: str) -> str:

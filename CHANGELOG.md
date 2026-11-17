@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.14.43 (lanework: redact directories with a space, OverMind#192, 2026-11-17; provisional number)
+
+- `lanework._ABS_DIRS` now matches a directory component that contains a space, so `check_label` reduces `C:\Program Files\Python315\python.exe` to `python.exe`. Before, the interpreter path was published whole in the PR body and commit message whenever the interpreter lived under a spaced directory; `test_public_text_carries_no_local_paths` was red on main for that reason (code wrong, test right).
+- Tests: `test_a_directory_with_a_space_is_removed_too` (red on the old regex, green on the new; includes a control that a relative argument with spaces stays whole). `test_lanework.py`: 42 pass.
+- NOT done: other public text (e.g. a model-supplied string) is not scanned for paths, only the check label; a path with a space but no separator after it (a bare `C:\Program Files`) is still not matched.
+
 ## 0.14.42 (sandbox seam: antspawn#49 exit codes, 2026-11-16; provisional number)
 
 - `sandbox_check.run_check` reads `<results>/spawn-result.json` first (`status` exited|timed_out|killed|refused|error is authoritative); refusal is 125 and a spawn-side error 126 (was both 2). Without the file, 125/126 are still "NOT run" (a job exiting 125/126 looks identical by code: said so in the tail). A job exiting 2 is now an ordinary job failure (negative control `test_a_job_that_itself_exits_2_is_a_job_failure_not_a_refusal`).

@@ -391,6 +391,20 @@ class TestPieces(unittest.TestCase):
                          "a relative argv is already public and stays whole")
         self.assertEqual(label(["/abs/x"], name="readme bullet check"), "readme bullet check")
 
+    def test_a_directory_with_a_space_is_removed_too(self):
+        """OverMind#192: `C:\\Program Files\\Python315\\python.exe` is one argv
+        element, but a space inside a directory name stopped the match, so the
+        interpreter path was published whole."""
+        def label(argv):
+            return lw.check_label(lw.Task(id="x", repo=".", goal="g", check=argv, writable=[]))
+        self.assertEqual(label(["C:\\Program Files\\Python315\\python.exe", "fixed_check.py"]),
+                         "python.exe fixed_check.py")
+        self.assertEqual(label(["/Users/some one/My Documents/c.py"]), "c.py")
+        self.assertEqual(label(["tool", "--config=C:\\Users\\a b\\cfg.toml"]),
+                         "tool --config=cfg.toml")
+        self.assertEqual(label(["echo", "hello world", "a b/c"]), "echo hello world a b/c",
+                         "control: a relative argument with spaces stays whole")
+
     def test_embedded_absolute_paths_are_removed_too(self):
         """🔴 Caught at the gate on #33: only a LEADING path was reduced."""
         def label(argv):

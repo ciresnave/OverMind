@@ -8,6 +8,7 @@ on the host."""
 from __future__ import annotations
 
 import os
+import json
 import pathlib
 import subprocess
 import sys
@@ -173,18 +174,92 @@ class TestRunCheck(Base):
         (code, tail), _ = self.run_it(run_code=7)
         self.assertEqual(code, 7)
 
-    def test_a_spawn_side_error_is_not_a_pass_and_says_it_did_not_run(self):
-        (code, tail), _ = self.run_it(run_code=2, run_err=b"spawn: no launcher is certified for every need")
-        self.assertEqual(code, 2)
+    def with_result(self, code, status=None, message="", exit_code=None, files=None, err=b""):
+        """A runner whose `spawn run` leaves spawn-result.json (and tails) in --results."""
+        def execute(argv, cwd, timeout=120, env=None):
+            if argv[1] == "providers":
+                return Done(0, b"winsbx\tsatisfies all needs\n")
+            results = pathlib.Path(argv[argv.index("--results") + 1])
+            results.mkdir(parents=True, exist_ok=True)
+            if status is not None:
+                body = {"status": status, "message": message}
+                if exit_code is not None:
+                    body["exit_code"] = exit_code
+                (results / "spawn-result.json").write_text(json.dumps(body))
+            for name, text in (files or {}).items():
+                (results / name).write_text(text)
+            return Done(code, b"", err)
+        return sbx.SandboxRunner("spawn", self.home, execute).run_check(PY, self.checkout, 30)
+
+    def test_a_refusal_125_is_not_a_pass_and_says_it_did_not_run(self):
+        code, tail = self.with_result(125, "refused", "no launcher is certified for every need")
+        self.assertEqual(code, 125)
         self.assertIn("NOT run", tail)
+        self.assertIn("no launcher is certified", tail)
+
+    def test_a_spawn_error_126_is_not_a_pass_and_says_it_did_not_run(self):
+        code, tail = self.with_result(126, "error", "bad spec")
+        self.assertEqual(code, 126)
+        self.assertIn("NOT run", tail)
+
+    def test_without_a_result_file_125_and_126_are_still_not_run(self):
+        for c in (125, 126):
+            code, tail = self.with_result(c, err=b"spawn: x")
+            self.assertEqual(code, c)
+            self.assertIn("NOT run", tail)
+
+    def test_a_job_exiting_125_with_an_exited_result_is_a_job_failure(self):
+        code, tail = self.with_result(125, "exited", exit_code=125)
+        self.assertEqual(code, 125)
+        self.assertNotIn("NOT run", tail)
+
+    def test_a_refused_status_with_a_zero_exit_is_never_a_pass(self):
+        code, tail = self.with_result(0, "refused", "none")
+        self.assertNotEqual(code, 0)
+        self.assertIn("NOT run", tail)
+
+    def test_an_exited_result_disagreeing_with_a_zero_code_is_never_a_pass(self):
+        code, _ = self.with_result(0, "exited", exit_code=3)
+        self.assertNotEqual(code, 0)
+
+    def test_other_statuses_with_a_zero_code_are_never_a_pass(self):
+        for status in ("timed_out", "killed", "bogus"):
+            code, _ = self.with_result(0, status)
+            self.assertNotEqual(code, 0, status)
+
+    def test_a_malformed_exit_code_on_an_exited_result_is_never_a_pass(self):
+        for bad in ("3", 3.0, True, [3]):
+            code, _ = self.with_result(0, "exited", exit_code=bad)
+            self.assertNotEqual(code, 0, repr(bad))
+
+    def test_control_an_exited_zero_result_with_a_zero_code_passes(self):
+        self.assertEqual(self.with_result(0, "exited", exit_code=0)[0], 0)
+        self.assertEqual(self.with_result(0, "exited")[0], 0)
+
+    def test_deeply_nested_result_json_falls_back_without_raising(self):
+        code, _ = self.with_result(7, files={"spawn-result.json": "[" * 200000})
+        self.assertEqual(code, 7)
+
+    def test_the_stdout_and_stderr_tails_are_returned(self):
+        code, tail = self.with_result(1, "exited", exit_code=1,
+                                      files={"stdout.tail": "OUT-LINE", "stderr.tail": "ERR-LINE"})
+        self.assertEqual(code, 1)
+        self.assertIn("OUT-LINE", tail)
+        self.assertIn("ERR-LINE", tail)
+
+    def test_a_corrupt_result_file_falls_back_to_the_exit_code(self):
+        code, tail = self.with_result(7, files={"spawn-result.json": "{not json"})
+        self.assertEqual(code, 7)
 
     def test_killed_is_not_a_pass(self):
         (code, _), _ = self.run_it(run_code=137)
         self.assertEqual(code, 137)
 
-    def test_a_job_that_itself_exits_2_is_still_not_a_pass(self):
-        (code, _), _ = self.run_it(run_code=2, run_err=b"")
+    def test_a_job_that_itself_exits_2_is_a_job_failure_not_a_refusal(self):
+        # Negative control (antspawn#49): 2 used to mean "spawn refused"; now it is only a job exit.
+        code, tail = self.with_result(2, "exited", exit_code=2, err=b"spawn: looks like a refusal")
         self.assertEqual(code, 2)
+        self.assertNotIn("NOT run", tail)
 
     def test_a_timeout_is_124(self):
         def slow(*a, **k):

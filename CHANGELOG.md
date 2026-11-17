@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.14.42 (sandbox seam: antspawn#49 exit codes, 2026-11-16; provisional number)
+
+- `sandbox_check.run_check` reads `<results>/spawn-result.json` first (`status` exited|timed_out|killed|refused|error is authoritative); refusal is 125 and a spawn-side error 126 (was both 2). Without the file, 125/126 are still "NOT run" (a job exiting 125/126 looks identical by code: said so in the tail). A job exiting 2 is now an ordinary job failure (negative control `test_a_job_that_itself_exits_2_is_a_job_failure_not_a_refusal`).
+- The job's `stdout.tail` / `stderr.tail` are returned in the tail (windows-sandbox: combined `stdout.tail`; the old `windows-sandbox.cmd.log` is a fallback). With process code 0, any status but `exited` with `exit_code` int 0 (or absent) is never a pass (timed_out, killed, unknown, malformed `exit_code`); nested-JSON `RecursionError` falls back to the code. Found by the Sonnet review.
+- Tests: 12 new + 1 reworked in `tests/test_sandbox_check.py`; seven mutations each red on named tests. Full suite: 1 failure, `test_lanework...test_public_text_carries_no_local_paths`, which also fails on origin/main 2920f08 (this box's interpreter path under `Program Files`), not caused here.
+- NOT done: every sandbox claim stays UNMEASURED (no live Windows Sandbox run, board 321); `account` tails need antspawn's `spawn-runner` redeployed (antspawn says UNVERIFIED); the real `spawn` binary was not run against this code.
+- also: `@hono/node-server` 2.1.5 -> 2.1.8 in `/probe` via #190 (dependabot, lockfile only; merged 2026-11-16 by the gate, covered by this version).
+
 ## 0.14.41 (A3 R4: a Synapse source for `DispatchService`, 2026-10-31; provisional number)
 
 PM [TASK] 2026-10-31 (ROADMAP R4, ruled 2026-10-30): `src/overmind/synapse_source.py`, Synapse as it is today, no new cross-project contract.

@@ -1,0 +1,15 @@
+version: 2
+updates:
+  # /probe's npm tree is almost all transitive (hono, @hono/node-server come in
+  # through @modelcontextprotocol/sdk): group the updates weekly so one PR
+  # carries them, instead of one PR per package (OverMind#190, #193).
+  - package-ecosystem: "npm"
+    directory: "/probe"
+    schedule:
+      interval: "weekly"
+    allow:
+      - dependency-type: "all"
+    groups:
+      probe-npm:
+        patterns:
+          - "*"

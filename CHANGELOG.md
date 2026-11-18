@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.14.44 (probe: hono 4.13.13 -> 4.13.19, dependabot grouping, 2026-11-18; provisional number)
+
+- `/probe` lockfile: `hono` 4.13.13 -> 4.13.19 (folds in dependabot #193, which could not go through the gate: no stamper route for a lockfile-only bot PR). `hono` is transitive (via `@modelcontextprotocol/sdk` 1.32.0, with `@hono/node-server` 2.1.8); `probe/package.json` is unchanged. Release notes 4.13.14-4.13.19 read: no breaking changes; security fixes in 4.13.16 and 4.13.18 (validator, bodyLimit, mount, serveStatic, RegExpRouter, css, csrf). Command: `npm update hono --package-lock-only` in `/probe`, same 3-line lockfile diff as #193; `npm ci` clean, `npm audit` 0 vulnerabilities, a Hono request plus the SDK and `@hono/node-server` imports run.
+- New `.github/dependabot.yml` (none existed): `/probe` npm, weekly, one grouped PR, `dependency-type: all` so transitive packages are covered.
+- NOT done: the probe's own Python/TS scripts were not re-run (none import hono directly); no dependabot fragment route (pm-platform's question).
+
 ## 0.14.43 (lanework: redact directories with a space, OverMind#192, 2026-11-17; provisional number)
 
 - `lanework._ABS_DIRS` now matches a directory component that contains a space, so `check_label` reduces `C:\Program Files\Python315\python.exe` to `python.exe`. Before, the interpreter path was published whole in the PR body and commit message whenever the interpreter lived under a spaced directory; `test_public_text_carries_no_local_paths` was red on main for that reason (code wrong, test right).

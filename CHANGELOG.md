@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.14.45 (probe: probe-npm dependabot group, 7 updates, 2026-11-19)
+
+- `/probe` npm dependencies: the dependabot `probe-npm` group of 7 updates (`probe/package.json`, `probe/package-lock.json`; dependabot PR #196). Non-breaking.
+
 ## 0.14.44 (probe: hono 4.13.13 -> 4.13.19, dependabot grouping, 2026-11-18; provisional number)
 
 - `/probe` lockfile: `hono` 4.13.13 -> 4.13.19 (folds in dependabot #193, which could not go through the gate: no stamper route for a lockfile-only bot PR). `hono` is transitive (via `@modelcontextprotocol/sdk` 1.32.0, with `@hono/node-server` 2.1.8); `probe/package.json` is unchanged. Release notes 4.13.14-4.13.19 read: no breaking changes; security fixes in 4.13.16 and 4.13.18 (validator, bodyLimit, mount, serveStatic, RegExpRouter, css, csrf). Command: `npm update hono --package-lock-only` in `/probe`, same 3-line lockfile diff as #193; `npm ci` clean, `npm audit` 0 vulnerabilities, a Hono request plus the SDK and `@hono/node-server` imports run.

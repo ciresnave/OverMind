@@ -2,7 +2,33 @@
 
 > **Licence-header tooling moved (0.13.6):** `spdx.py`, `preflight.py` and `gate_fleet.py`, their tests and the fleet workflow now live in [ThinkersJournal/licence-tools](https://github.com/ThinkersJournal/licence-tools) (private; history kept). This repository keeps its own `.github/spdx_gate.py`.
 
-A multi-agent orchestrating harness for running routine agent work on **non-Claude** providers.
+An **orchestrator** for running routine agent work on **non-Claude** providers: it decides what runs,
+starts each agent session, watches it, and checks the result itself instead of taking the agent's word.
+It is the top layer of four ([`ARCHITECTURE-LAYERS-SPEC.md`](ARCHITECTURE-LAYERS-SPEC.md) §1, approved by
+CireSnave 2026-10-08):
+
+```
+ORCHESTRATOR   writes a SessionConfig; spawns, observes and stops sessions     (OverMind's own job)
+HARNESS        one process per session; every model output and tool call passes the plug-in pipeline
+PLUG-INS       gate, ledger, workspace tools, check policy, MCP, fork          (src/overmind/harness + *_plugin.py)
+HANDLER / MODEL CLIENT   one OpenAI-shaped wire format; HTTP to providers, quota, failover
+```
+
+Today the harness, the plug-in API and the first plug-ins are built here, and `lanework.py` runs its
+tasks through the plug-in pipeline. The orchestrator proper (what `spawn` is for) is not built yet: the
+dispatch path has no entry point that runs it, and the handler and routing layers are not separated
+(ROADMAP A3-A5). New dispatch and cross-project work is held until CireSnave decides the shape of the
+whole agent stack (CireSnave, 2026-10-31, relayed by the PM).
+
+### Where the pieces OverMind gave up now live
+
+| Piece | Now at |
+|---|---|
+| `lane-restart` (session restart tool) and lane state | agentlife, `crates/lane-restart` (`RESTART-TOOL-DESIGN.md` stays here as the design record) |
+| `user-request` and `with-secret` (the secret vault and its approvals) | [`ciresnave/consent`](https://github.com/ciresnave/consent) |
+| Licence-header tooling (`spdx.py`, `preflight.py`, `gate_fleet.py`, fleet workflow) | [ThinkersJournal/licence-tools](https://github.com/ThinkersJournal/licence-tools) (private) |
+| The user-repo app-folders spec | agentlife, `USER-REPO-APP-FOLDERS-SPEC.md` |
+| `MEASUREMENTS.md` and the probes that do not import `overmind` | **still here**; a move to `ciresnave/measurements` is planned but unruled (ROADMAP 3, step 7b) |
 
 **Status: doing real lane work, on free-tier providers only, at small daily volume.** The first
 non-Claude-written pull request merged 2026-09-17 (OverMind#31); see [`MEASUREMENTS.md`](MEASUREMENTS.md)
@@ -36,6 +62,14 @@ failover across several providers (`RoutedClient`) needs several tokens in ONE p
 
 ## What is built
 
+- **`src/overmind/harness/`** — the session harness and plug-in host. `session.spawn(config)` starts one
+  harness process per session and returns a handle (`loaded()`, `events()`, `stop()`); the child inherits
+  an allowlisted environment, not the parent's. `pipeline.py` runs plug-ins in config order with the
+  gate's rules kept (the first `Deny` wins, a call nobody covers is denied); `plugin_api.py` is the
+  plug-in interface; `chokepoint.py` (a run-time audit hook) and `static_scan.py` (a parse of each plug-in
+  module for direct I/O imports) are the two layers that keep effects inside the pipeline. The plug-ins: `gate_plugin`, `ledger_plugin`, and, as flat modules,
+  `workspace_plugin`, `check_policy_plugin`, `fork_plugin`, `mcp_plugin` (registry:
+  `default_registry.py`).
 - **`src/overmind/lanework.py`** — the runner. `python -m overmind.lanework task.json [--publish]`
   gives a model six tools (list/read/search/write/replace/run the declared check) in a fresh git
   worktree, refuses writes to CI/tool config whatever the task declares, and lets an existing file
@@ -58,7 +92,13 @@ failover across several providers (`RoutedClient`) needs several tokens in ONE p
   summary (testimony) and its ledger (evidence).
 - **`src/overmind/mcp_tools.py`** — MCP as an alternative tool source, so an agent can be a
   participant in a fabric rather than a gated script. ⚠️ The gate stays at tool execution; `gate.py`
-  is untouched by it. Not currently used by `lanework.py`, which has its own six tools.
+  is untouched by it. Not currently used by `lanework.py`, which has its own six tools (run through the plug-in pipeline).
+- **`src/overmind/synapse_source.py`** — the Synapse source for `dispatch.py`: it reads the inbox and
+  takes the sender from the transport's own envelope, never from the message body. Nothing runs
+  `DispatchService` yet, so dispatch stays inert end to end.
+- **`src/overmind/sandbox_check.py`** — runs an agent-supplied check through AntSpawn in a sandbox; a
+  check the host did not choose never runs on this host. Its sandbox claims are unmeasured (no live
+  Windows Sandbox run).
 - **`src/overmind/dispatch.py`** — being dispatched to over a live channel. An inbound message
   becomes a task, runs through the gate, and the answer goes back. ⚠️ Inbound content is
   **untrusted** — another agent's text becoming this model's instructions — and the gate is what

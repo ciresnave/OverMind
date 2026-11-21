@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.14.46 (docs: ROADMAP R1-R5 done, README, USER-REPO-APP-FOLDERS-SPEC.md removed, OverMind#197, 2026-11-21; allocated by pm-assist)
+
+- Docs only: README and ROADMAP updated; `USER-REPO-APP-FOLDERS-SPEC.md` deleted. No code change.
+
 ## 0.14.45 (probe: probe-npm dependabot group, 7 updates, 2026-11-19)
 
 - `/probe` npm dependencies: the dependabot `probe-npm` group of 7 updates (`probe/package.json`, `probe/package-lock.json`; dependabot PR #196). Non-breaking.

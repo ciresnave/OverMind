@@ -1,5 +1,7 @@
 # Changelog
 
+## 0.14.47 (docs and CI pin: ROADMAP, coderipper portfolio pin dc45e36, OverMind#198, 2026-11-24; allocated by pm-assist)\n\n- Docs and CI only: ROADMAP updated; the CodeRipper portfolio pin moves to dc45e36. No code change.
+
 ## 0.14.46 (docs: ROADMAP R1-R5 done, README, USER-REPO-APP-FOLDERS-SPEC.md removed, OverMind#197, 2026-11-21; allocated by pm-assist)
 
 - Docs only: README and ROADMAP updated; `USER-REPO-APP-FOLDERS-SPEC.md` deleted. No code change.

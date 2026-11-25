@@ -1,5 +1,7 @@
 # Changelog
 
+## 0.14.48 (docs: ROADMAP 6/6b DONE, Phase 0 Step 3 ticked, OverMind#199, 2026-11-25; allocated by pm-assist)\n\n- Docs only: ROADMAP and the phase0 import-direction plan updated. No code change.
+
 ## 0.14.47 (docs and CI pin: ROADMAP, coderipper portfolio pin dc45e36, OverMind#198, 2026-11-24; allocated by pm-assist)\n\n- Docs and CI only: ROADMAP updated; the CodeRipper portfolio pin moves to dc45e36. No code change.
 
 ## 0.14.46 (docs: ROADMAP R1-R5 done, README, USER-REPO-APP-FOLDERS-SPEC.md removed, OverMind#197, 2026-11-21; allocated by pm-assist)

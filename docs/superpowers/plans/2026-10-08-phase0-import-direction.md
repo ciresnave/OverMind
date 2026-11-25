@@ -367,7 +367,7 @@ The body states:
 - that its version bump (PM-allocated) also covers #121, the architecture spec, per the PM's ruling
   of 2026-10-08.
 
-- [ ] **Step 3: [READY] to the PM** in the compact format (CLAUDE.md §10), once CI is green. Read the
+- [x] **Step 3: [READY] to the PM** in the compact format (CLAUDE.md §10), once CI is green. Read the
   checks and the review threads first.
 
 ---

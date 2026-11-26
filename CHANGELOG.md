@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.14.49 (CI only: coderipper portfolio pin 467fd259 and the SUP-016 licence gate beside spdx_gate.py, OverMind#201, 2026-11-26; allocated by pm-assist)
+
+- CI only; no code change; not breaking.
+
 ## 0.14.48 (docs: ROADMAP 6/6b DONE, Phase 0 Step 3 ticked, OverMind#199, 2026-11-25; allocated by pm-assist)\n\n- Docs only: ROADMAP and the phase0 import-direction plan updated. No code change.
 
 ## 0.14.47 (docs and CI pin: ROADMAP, coderipper portfolio pin dc45e36, OverMind#198, 2026-11-24; allocated by pm-assist)\n\n- Docs and CI only: ROADMAP updated; the CodeRipper portfolio pin moves to dc45e36. No code change.

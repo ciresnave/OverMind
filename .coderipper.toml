@@ -19,3 +19,11 @@ reason = "false positive: flagged line is a file-path open() for a log, no secre
 check = "SEC-002"
 file = "probe/pty_v4.py"
 reason = "false positive: flagged line is a file-path open() for a log, no secret"
+
+# Per-file licence gate (SUP-016 opt-in): will replace .github/spdx_gate.py.
+[sup016]
+gate = true
+licence = "MIT OR Apache-2.0"
+extensions = [".py", ".ts", ".sh", ".rs"]
+min_files = 35
+copyright_expected = ["spdx_gate.py", ".coderipper.toml"]
